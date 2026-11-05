@@ -1,0 +1,44 @@
+# INVARIANTS (keep when adapting):
+# - pull_request_target with no checkout: PR code is never executed
+# - guarded by repo name, bot author and same-repo head
+# - never semver-major
+# Scope is a go-ahead decision (default below: security-patch-minor group, patch/minor;
+# alternatives: + any patch, + any patch/minor -> relax the dependency-group condition).
+# - gh pr merge --auto --match-head-commit
+name: Dependabot auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: >-
+      github.repository == 'IgorGuariroba/software-factories' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # No checkout: no PR code is ever executed here.
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      # Any ecosystem: only the security-patch-minor group, only patch/minor.
+      - name: Enable auto-merge (security patch/minor)
+        if: >-
+          steps.metadata.outputs.dependency-group == 'security-patch-minor' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+           steps.metadata.outputs.update-type == 'version-update:semver-minor')
+        run: gh pr merge "$PR_URL" --auto --squash --match-head-commit "$HEAD_SHA"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
