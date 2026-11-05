@@ -124,6 +124,20 @@ describe("Telegram: pausar e retomar", () => {
     );
   });
 
+  it("aceita sequência menor após uma semana sem comandos, inclusive após reinício", async () => {
+    let { telegram, clock, f } = await startWith([]);
+    telegram.say("/pausar");
+    await eventually(async () => expect(await api(f, "GET", "/daemon")).toEqual({ paused: true }));
+    telegram.say("/retomar");
+    await eventually(async () => expect(await api(f, "GET", "/daemon")).toEqual({ paused: false }));
+    f = await f.restart();
+    factory = f;
+    clock.advanceTo(new Date(clock.now() + 7 * 24 * 60 * 60 * 1000 + 1));
+    telegram.resetSequence(1);
+    telegram.say("/pausar");
+    await eventually(async () => expect(await api(f, "GET", "/daemon")).toEqual({ paused: true }));
+  });
+
   it("o aviso de que assumiu traz o botão Pausar", async () => {
     const { telegram, f } = await startWith([card("PROJ-1", "A Fazer")]);
     await poll(f);
@@ -133,6 +147,7 @@ describe("Telegram: pausar e retomar", () => {
   it("comando desconhecido ou card inexistente recebem ajuda, sem efeito", async () => {
     const { telegram, f } = await startWith([card("PROJ-1", "A Fazer")]);
     telegram.say("/pausar");
+    await eventually(async () => expect(await api(f, "GET", "/daemon")).toEqual({ paused: true }));
     await poll(f);
 
     telegram.say("/apagar-tudo");

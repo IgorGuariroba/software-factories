@@ -62,6 +62,10 @@ export interface EffectWriter {
     repo: string,
     issue: { title: string; body: string },
   ): Promise<{ number: number; url: string } | undefined>;
+  /** Aplica o mesmo saneamento público para comparar textos já publicados. */
+  publicRetroText(cardKey: string, text: string): Promise<string>;
+  /** Sinaliza valores privados que o saneamento não conseguiu remover. */
+  publicRetroPreview(cardKey: string, text: string): Promise<{ text: string; leftovers: string[] }>;
   /** Comenta numa issue do repositório da fábrica, com as mesmas regras de `openRetroIssue`. */
   commentRetroIssue(cardKey: string, repo: string, issue: number, body: string): Promise<void>;
 }
@@ -180,6 +184,10 @@ export function createEffectWriter(opts: {
   const statusFor = (state: CardState) => Object.entries(config.statuses).find(([, s]) => s === state)?.[0];
 
   return {
+    async publicRetroText(cardKey, text) {
+      return (await publicText(cardKey, text)).text;
+    },
+    publicRetroPreview: publicText,
     comment(cardKey, body) {
       return addOwnComment(cardKey, body, false);
     },

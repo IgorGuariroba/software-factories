@@ -61,7 +61,7 @@ vetoMinutes: 30
 telegram:
   content: full
 
-# Prefixo do título/chave ou board do card -> repositório (o primeiro que corresponder vale).
+# Prefixo do título/chave do card -> repositório (o primeiro que corresponder vale).
 # path é a sua cópia local: a fábrica só lê dela e trabalha num clone próprio ao lado do estado durável
 # (<dir do FACTORY_STATE_PATH>/worktrees/<projeto>/<card>), com push para o mesmo remoto origin.
 # test.command é o argv do comando de teste, sem shell; o modelo só pode rodá-lo como está.
@@ -75,7 +75,7 @@ repositories:
       # Opcional: padrões (glob) dos arquivos de teste; o padrão cobre *.test.*, *.spec.*, test/, tests/ etc.
       # files: ["src/**/*.test.ts"]
   - path: /home/voce/projetos/meu-app
-    board: Mobile
+    prefix: "[mobile]"
     test:
       command: [npm, test]
 

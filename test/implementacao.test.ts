@@ -231,7 +231,7 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
       model,
       config: {
         repositories: [
-          { path: mobile.user, board: "Mobile", test: NODE_TEST },
+          { path: mobile.user, prefix: "[mobile]", test: NODE_TEST },
           { path: web.user, prefix: "[web]", test: NODE_TEST },
         ],
       },
@@ -244,18 +244,18 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
     expect(await mobile.branches()).toEqual(["main"]);
   });
 
-  it("resolve o repositório pelo board do card quando o prefixo não corresponde", async () => {
+  it("resolve o repositório pelo prefixo da chave quando o título não corresponde", async () => {
     const web = await createRemoteRepo(root, "web");
     const mobile = await createRemoteRepo(root, "mobile");
     const model = new FakeModel();
     scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
     factory = await startTestFactory({
-      cards: [card({ board: "Mobile" })],
+      cards: [card()],
       model,
       config: {
         repositories: [
           { path: web.user, prefix: "[web]", test: NODE_TEST },
-          { path: mobile.user, board: "Mobile", test: NODE_TEST },
+          { path: mobile.user, prefix: "PROJ", test: NODE_TEST },
         ],
       },
     });
@@ -389,7 +389,8 @@ describe("guardrails da implementação", { timeout: SLOW }, () => {
     const outside = join(root, "fora");
     await mkdir(outside);
     await symlink(outside, join(repo.user, "atalho"));
-    await git(repo.user, "add", "atalho");
+    await symlink(join(outside, "novo.txt"), join(repo.user, "atalho-pendente"));
+    await git(repo.user, "add", "atalho", "atalho-pendente");
     await git(repo.user, "commit", "--quiet", "-m", "chore: atalho");
     await git(repo.user, "push", "--quiet", "origin", "main");
     const mainBefore = await git(repo.bare, "rev-parse", "main");
@@ -399,6 +400,7 @@ describe("guardrails da implementação", { timeout: SLOW }, () => {
       ".git/hooks/pre-commit",
       "src/../.GIT/config",
       "atalho/fora.txt",
+      "atalho-pendente",
     ];
     const model = new FakeModel();
     scriptImplementer(model, ONE_TICKET, [

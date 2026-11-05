@@ -42,7 +42,7 @@ import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import type { RetroSink } from "./retro-sink.js";
-import { newTaskRef, RetroExtension, runRetro } from "./retro-stage.js";
+import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import {
   answerFollowUp,
   isShallowCard,
@@ -605,7 +605,17 @@ export async function startFactory(opts: {
   async function checkAnswers(): Promise<void> {
     for (const task of (await readState()).tasks) {
       const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
-      if (pending) await checkAnswer(task, pending);
+      if (!pending) continue;
+      try {
+        await checkAnswer(task, pending);
+      } catch (err) {
+        await events.append({
+          type: "error",
+          project: task.project,
+          target: task.key,
+          message: `falha ao conferir a resposta: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
   }
 
@@ -826,6 +836,7 @@ export async function startFactory(opts: {
     return raw ? JSON.parse(raw) : undefined;
   };
   const streams = new Set<ServerResponse>();
+  const approvingRetros = new Set<string>();
 
   /**
    * Só clientes locais: Host precisa ser localhost/127.0.0.1 na porta do servidor (barra DNS rebinding) e um POST com
@@ -862,6 +873,69 @@ export async function startFactory(opts: {
         return task
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
+      }
+      const retroRoute = url.pathname.match(
+        /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(spec|implementacao|tarefa)\/(\d+)(\/approve)?$/,
+      );
+      if (retroRoute && (req.method === "GET" || req.method === "POST")) {
+        const [, encodedProject, encodedKey, stage, number, approval] = retroRoute;
+        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
+        const projectName = decodeURIComponent(encodedProject as string);
+        const cardKey = decodeURIComponent(encodedKey as string);
+        const taskId = `${projectName}/${cardKey}`;
+        const lock = `${taskId}/${stage}/${number}`;
+        if (approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
+          return json(res, 409, { error: "uma proposta já está sendo publicada; tente novamente" });
+        if (req.method === "POST") approvingRetros.add(lock);
+        try {
+          const task = (await readState()).tasks.find((t) => t.id === taskId);
+          const retro = task?.retros?.find((r) => r.stage === stage);
+          const proposal = retro?.proposals?.find((p) => p.n === Number(number));
+          if (!task || !retro || !proposal || proposal.kind !== "fabrica")
+            return json(res, 404, { error: "proposta não encontrada" });
+          if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
+            return json(res, 409, { error: "proposta não está disponível para revisão" });
+          if (!opts.retro?.sink || !opts.retro.repo)
+            return json(res, 409, { error: "repositório da fábrica não configurado" });
+          const project = projectOf(projectName);
+          const publication = {
+            writer: project.writer,
+            cardKey,
+            config: project.config,
+            sink: opts.retro.sink,
+            repo: opts.retro.repo,
+            stage: retro.stage,
+            ref: task.ref,
+            proposal,
+          };
+          const preview = await previewFactoryRetro(publication);
+          if (req.method === "GET")
+            return json(res, 200, {
+              title: preview.title,
+              body: preview.body,
+              revision: preview.revision,
+              repo: opts.retro.repo,
+              dryRun: project.config.dryRun,
+              blocked: preview.blocked,
+            });
+          if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+          const body = (await readBody(req)) as { revision?: unknown } | undefined;
+          if (body?.revision !== preview.revision)
+            return json(res, 409, { error: "prévia alterada; revise novamente" });
+          if (preview.blocked)
+            return json(res, 409, { error: "texto ainda contém valores privados; publicação bloqueada" });
+          await publishFactoryRetro(publication, preview);
+          await harness.commit(async (tx) => {
+            const current = (await tx.doc(StateDoc)).tasks
+              .find((t) => t.id === taskId)
+              ?.retros?.find((r) => r.stage === stage)
+              ?.proposals?.find((p) => p.n === Number(number));
+            if (current?.status === "pendente") Object.assign(current, proposal);
+          }, context);
+          return json(res, 200, { ok: true, status: proposal.status, issue: proposal.issue });
+        } finally {
+          if (req.method === "POST") approvingRetros.delete(lock);
+        }
       }
       if (route === "POST /poll") {
         await serializedPoll();

@@ -213,6 +213,8 @@ export type ManagementProgress = {
   eventCursor: number | null;
   /** Próximo update a receber (no Telegram, o `offset` do `getUpdates`). */
   updateOffset: number;
+  /** Instante do último comando ou reinício preventivo da sequência. */
+  lastUpdateAt?: number;
 };
 
 /** Progresso de cada interface de gestão, pelo nome dela: um reinício não republica nem reprocessa nada. */

@@ -19,6 +19,27 @@ export class FakeGh {
   runner: GhRunner = async (args) => {
     this.calls.push(args);
     const [cmd, sub] = args;
+    if (cmd === "api") {
+      const endpoint = args.at(-1) ?? "";
+      const match = endpoint.match(/^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+)\/comments)?\?/);
+      if (!match) return fail(`endpoint não suportado: ${endpoint}`);
+      const [, repo, number] = match;
+      const records = this.store.issuesOf(repo ?? "");
+      const values = number
+        ? (records.find((i) => i.number === Number(number))?.comments ?? []).map((body) => ({ body }))
+        : records
+            .filter((i) => i.state === "open" && i.labels.includes("retro"))
+            .map((i) => ({
+              number: i.number,
+              title: i.title,
+              body: i.body,
+              html_url: i.url,
+              comments: i.comments.length,
+            }));
+      const pages = [];
+      for (let i = 0; i < values.length; i += 100) pages.push(values.slice(i, i + 100));
+      return ok(JSON.stringify(pages.length ? pages : [[]]));
+    }
     const repo = flag(args, "--repo");
     if (cmd !== "issue" || !repo) return fail(`comando não suportado: ${args.join(" ")}`);
     if (sub === "list") {

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   actionsFor,
   describeEvent,
+  formatCommit,
   moveTask,
   proposalLabel,
+  refreshSelectedDetail,
   retroStageLabel,
   stageLabel,
   taskByRef,
@@ -47,6 +49,11 @@ describe("ações de cada tarefa na página", () => {
 });
 
 describe("textos da página", () => {
+  it("mostra números de ticket começando em 1, sem alterar os dados", () => {
+    const commit = { sha: "1234567890", ticket: 0, phase: "teste" };
+    expect(formatCommit(commit)).toBe("12345678 (ticket 1, teste) ");
+    expect(commit.ticket).toBe(0);
+  });
   it("etapa em pt-BR, e 'Não começou' sem etapa", () => {
     expect(stageLabel("implementacao")).toBe("Implementação");
     expect(stageLabel(null)).toBe("Não começou");
@@ -59,6 +66,42 @@ describe("textos da página", () => {
     expect(describeEvent({ type: "write", dryRun: true, action: "comment", target: "PROJ-1" })).toBe(
       "Registrada no dry-run: comment em PROJ-1",
     );
+  });
+});
+
+describe("seleção do detalhe", () => {
+  it("ignora resposta e erro de uma requisição cuja seleção mudou", async () => {
+    let selected: { project: string; key: string } | null = { project: "p", key: "1" };
+    let resolve!: (value: string) => void;
+    let reject!: (reason: Error) => void;
+    const success = new Promise<string>((r) => {
+      resolve = r;
+    });
+    const failure = new Promise<string>((_r, r) => {
+      reject = r;
+    });
+    const rendered: string[] = [];
+    const errors: unknown[] = [];
+    const a = refreshSelectedDetail(
+      selected,
+      () => selected,
+      () => success,
+      (v: string) => rendered.push(v),
+      (e: unknown) => errors.push(e),
+    );
+    const b = refreshSelectedDetail(
+      selected,
+      () => selected,
+      () => failure,
+      (v: string) => rendered.push(v),
+      (e: unknown) => errors.push(e),
+    );
+    selected = { project: "p", key: "2" };
+    resolve("antiga");
+    reject(new Error("antigo"));
+    await Promise.all([a, b]);
+    expect(rendered).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });
 

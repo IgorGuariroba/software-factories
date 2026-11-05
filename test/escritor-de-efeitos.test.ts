@@ -344,7 +344,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
   const REPO = "fabrica/fabrica-publica";
   /** O link local de uma Tarefa na página da fábrica: também não vai ao repositório público. */
   const LINK = "http://127.0.0.1:7420/#/retro/";
-  function retroSetup(opts: { dryRun?: boolean; repo?: string } = {}) {
+  function retroSetup(opts: { dryRun?: boolean; repo?: string; name?: string } = {}) {
     const source = new MemoryDemandSource([
       { key: "PROJ-1", title: "Conciliar pagamentos do mês", status: "A Fazer", assignee: USER },
     ]);
@@ -353,6 +353,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     const writer = createEffectWriter({
       config: testProjectConfig({
         dryRun: opts.dryRun ?? false,
+        ...(opts.name ? { name: opts.name } : {}),
         people: [{ id: PO, role: "po", name: "Fulana Ficticia" }],
         repositories: [
           {
@@ -430,6 +431,26 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
         "em [caminho removido], chave [segredo removido], [link removido], " +
         "[link removido] e [link removido].",
     );
+  });
+
+  it("remove URLs de outros esquemas e caminhos absolutos de um componente", async () => {
+    const { sink, writer } = retroSetup();
+    await writer.openRetroIssue("PROJ-1", REPO, {
+      title: "Proteção de dados",
+      body: "Conexão postgresql://app:senha@db.interno/folha e arquivo /folha-salarial.csv.",
+    });
+    expect(sink.issuesOf(REPO)[0]?.body).toBe(
+      "\u{1F916} [fábrica] Conexão [link removido] e arquivo [caminho removido].",
+    );
+  });
+
+  it("barra grafia sem acento de nome privado curto, sem bloquear palavras que o contenham", async () => {
+    const { sink, writer } = retroSetup({ name: "Ágil" });
+    await expect(writer.openRetroIssue("PROJ-1", REPO, { title: "Projeto Agil", body: "b" })).rejects.toThrow(
+      /guardrail/i,
+    );
+    await writer.openRetroIssue("PROJ-1", REPO, { title: "Fragilidade", body: "b" });
+    expect(sink.issuesOf(REPO)).toHaveLength(1);
   });
 
   it("barra a escrita, com evento, se sobrar um valor do projeto escrito de outro jeito", async () => {

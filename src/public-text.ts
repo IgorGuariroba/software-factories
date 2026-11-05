@@ -22,7 +22,7 @@ const asWord = (term: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(t
 
 /**
  * Valores do projeto que nunca saem para o repositório público da fábrica: nome do projeto, chave do projeto na Fonte,
- * usuário, pessoas (ids e nomes), repositórios mapeados (caminho, nome, prefixo, board) e o que vier em `extra` (ex.:
+ * usuário, pessoas (ids e nomes), repositórios mapeados (caminho, nome, prefixo) e o que vier em `extra` (ex.:
  * a chave e o título do card da Tarefa).
  */
 export function privateTerms(config: ProjectConfig, extra: string[] = []): string[] {
@@ -31,7 +31,7 @@ export function privateTerms(config: ProjectConfig, extra: string[] = []): strin
     config.source.project,
     config.source.assignee,
     ...config.people.flatMap((p) => [p.id, p.name ?? ""]),
-    ...(config.repositories ?? []).flatMap((r) => [r.path, basename(r.path), r.prefix ?? "", r.board ?? ""]),
+    ...(config.repositories ?? []).flatMap((r) => [r.path, basename(r.path), r.prefix]),
     ...extra,
   ];
   // Os mais longos primeiro: o caminho inteiro sai antes do nome do diretório que ele contém.
@@ -51,8 +51,8 @@ export function sanitizePublicText(
   let out = text
     // Todo link sai, inclusive os da própria fábrica: a Tarefa aparece só pelo id opaco. O link termina antes da
     // pontuação que o segue no texto.
-    .replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/gi, REMOVED_LINK)
-    .replace(/(?<![\p{L}\p{N}_.~-])(?:~|\.\.?)?\/[\w.-]+(?:\/[\w.-]+)+\/?/gu, REMOVED_PATH);
+    .replace(/\b[a-z][a-z\d+.-]*:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/gi, REMOVED_LINK)
+    .replace(/(?<![\p{L}\p{N}_.~-])(?:~|\.\.?)?\/[\w-]+(?:[.][\w-]+)*(?:\/[\w.-]+)*\/?/gu, REMOVED_PATH);
   const cardKey = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(opts.cardPrefix)}-\\d+(?![\\p{N}])`, "giu");
   out = out.replace(cardKey, REMOVED);
   const leftovers: string[] = [];
@@ -64,7 +64,10 @@ export function sanitizePublicText(
   const compactOut = compact(out);
   for (const term of opts.terms) {
     const c = compact(term);
-    if (c.length >= COMPACT_MIN && compactOut.includes(c)) leftovers.push(`"${term}"`);
+    const normalizedWords = out.normalize("NFD").replace(/\p{M}/gu, "");
+    const normalizedTerm = term.normalize("NFD").replace(/\p{M}/gu, "");
+    if ((c.length >= COMPACT_MIN && compactOut.includes(c)) || asWord(normalizedTerm).test(normalizedWords))
+      leftovers.push(`"${term}"`);
   }
   return { text: out, leftovers };
 }

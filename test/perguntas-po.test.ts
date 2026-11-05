@@ -66,6 +66,36 @@ describe("perguntas de negócio ao PO", () => {
     );
   });
 
+  it("falha ao conferir uma resposta não impede outras respostas nem a busca de novos cards", async () => {
+    const model = new FakeModel();
+    model.respond = (call) =>
+      call.input.includes("Resposta do PO") ? deliverSpec(DEFAULT_SPEC) : askPo("Qual o separador?");
+    factory = await startTestFactory({ cards: [card("PROJ-1"), card("PROJ-2")], model });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    await waitForStatus(factory, "PROJ-2", "aguardando-humano");
+    factory.source.humanComment("PROJ-2", PO, "Vírgula.");
+    factory.source.cards.push(card("PROJ-3"));
+    const listComments = factory.source.listComments.bind(factory.source);
+    factory.source.listComments = async (key) => {
+      if (key === "PROJ-1") throw new Error("fonte indisponível");
+      return listComments(key);
+    };
+
+    await poll(factory);
+
+    await waitForStatus(factory, "PROJ-2", "concluida");
+    await waitForStatus(factory, "PROJ-3", "aguardando-humano");
+    expect(await events(factory)).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        project: "exemplo",
+        target: "PROJ-1",
+        message: expect.stringContaining("fonte indisponível"),
+      }),
+    );
+  });
+
   it("a resposta do PO no card acorda a tarefa, e o grill especifica com ela", async () => {
     const model = new FakeModel();
     grillAsksAbout(model, "PROJ-1", "O CSV usa vírgula ou ponto e vírgula?");

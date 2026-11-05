@@ -267,6 +267,8 @@ describe("a página consome só a API", () => {
         "POST /tasks/{}/{}/pause",
         "POST /tasks/{}/{}/resume",
         "POST /tasks/{}/{}/cancel",
+        "GET /tasks/{}/{}/retros/{}/{}",
+        "POST /tasks/{}/{}/retros/{}/{}/approve",
         "POST /tasks/order",
       ]),
     );

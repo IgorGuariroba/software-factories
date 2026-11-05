@@ -1,5 +1,24 @@
 // Apresentação pura da página: rótulos, ações disponíveis e reordenação. Sem DOM e sem rede.
 
+/** @param {{sha: string, ticket: number, phase: string}} commit */
+export const formatCommit = (commit) => `${commit.sha.slice(0, 8)} (ticket ${commit.ticket + 1}, ${commit.phase}) `;
+
+/** @template T
+ * @param {{project: string, key: string}} selection
+ * @param {() => {project: string, key: string} | null} current
+ * @param {(project: string, key: string) => Promise<T>} get
+ * @param {(value: T) => void} render
+ * @param {(error: unknown) => void} onError
+ */
+export async function refreshSelectedDetail(selection, current, get, render, onError) {
+  try {
+    const value = await get(selection.project, selection.key);
+    if (current() === selection) render(value);
+  } catch (error) {
+    if (current() === selection) onError(error);
+  }
+}
+
 const STATUS = {
   enfileirada: "Na fila",
   ativa: "Ativa",

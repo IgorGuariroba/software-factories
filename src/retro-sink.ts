@@ -56,9 +56,6 @@ export const defaultGhRunner: GhRunner = async (args) => {
   }
 };
 
-/** Quantas issues abertas de retrô o dedupe considera. */
-const LIST_LIMIT = 200;
-
 /** Adaptador real do `RetroSink`: GitHub pelo `gh`. A label `retro` precisa existir no repositório. */
 export function createGhRetroSink(opts: { runner?: GhRunner } = {}): RetroSink {
   const runner = opts.runner ?? defaultGhRunner;
@@ -72,33 +69,45 @@ export function createGhRetroSink(opts: { runner?: GhRunner } = {}): RetroSink {
   return {
     async listOpen(repo) {
       const stdout = await gh([
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--label",
-        RETRO_LABEL,
-        "--state",
-        "open",
-        "--limit",
-        String(LIST_LIMIT),
-        "--json",
-        "number,title,body,url,comments",
+        "api",
+        "--paginate",
+        "--slurp",
+        `repos/${repo}/issues?state=open&labels=${RETRO_LABEL}&per_page=100`,
       ]);
-      const raw = JSON.parse(stdout || "[]") as {
+      const pages = JSON.parse(stdout || "[]") as {
         number: number;
         title: string;
         body?: string;
-        url: string;
-        comments?: { body?: string }[];
-      }[];
-      return raw.map((i) => ({
-        number: i.number,
-        title: i.title,
-        body: i.body ?? "",
-        url: i.url,
-        comments: (i.comments ?? []).map((c) => c.body ?? ""),
-      }));
+        html_url: string;
+        comments: number;
+        pull_request?: unknown;
+      }[][];
+      const issues: RetroIssue[] = [];
+      for (const issue of pages.flat()) {
+        if (issue.pull_request) continue;
+        const comments = issue.comments
+          ? (
+              JSON.parse(
+                await gh([
+                  "api",
+                  "--paginate",
+                  "--slurp",
+                  `repos/${repo}/issues/${issue.number}/comments?per_page=100`,
+                ]),
+              ) as { body?: string }[][]
+            )
+              .flat()
+              .map((c) => c.body ?? "")
+          : [];
+        issues.push({
+          number: issue.number,
+          title: issue.title,
+          body: issue.body ?? "",
+          url: issue.html_url,
+          comments,
+        });
+      }
+      return issues;
     },
     async create(repo, issue) {
       const stdout = await gh([

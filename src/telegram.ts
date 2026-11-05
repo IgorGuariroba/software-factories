@@ -47,6 +47,10 @@ export function createTelegramBot(opts: {
   apiBase?: string;
   /** Espera máxima de cada `getUpdates`, em segundos. Padrão: 25. */
   pollSeconds?: number;
+  /** Prazo de envio e resposta a botões, em milissegundos. Padrão: 30 segundos. */
+  requestTimeoutMs?: number;
+  /** Relógio para determinar quando a sequência do Telegram pode mudar. */
+  now?: () => number;
 }): ManagementInterface {
   const { token, chat } = opts;
   const fetchImpl = opts.fetch ?? fetch;
@@ -58,6 +62,8 @@ export function createTelegramBot(opts: {
    * sobre eles: quando um lote só tem desses, o próximo `getUpdates` os confirma por conta própria.
    */
   let skipTo = 0;
+  let skipAt = 0;
+  let previousOffset = 0;
 
   async function call<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     let res: Response;
@@ -69,7 +75,6 @@ export function createTelegramBot(opts: {
         signal,
       });
     } catch (err) {
-      if (signal?.aborted) throw err;
       const reason = err instanceof Error ? `${err.message}${err.cause ? ` (${String(err.cause)})` : ""}` : String(err);
       // Erro novo, sem `cause`: a pilha e a causa da falha de rede podem trazer a URL com o token.
       throw new TelegramError(`Telegram ${method}: falha de rede: ${hide(reason)}`);
@@ -82,28 +87,50 @@ export function createTelegramBot(opts: {
     return data.result as T;
   }
 
+  async function boundedCall<T>(
+    method: string,
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+    waitMs = 0,
+  ): Promise<T> {
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), waitMs + (opts.requestTimeoutMs ?? 30_000));
+    try {
+      return await call<T>(method, body, AbortSignal.any([...(signal ? [signal] : []), deadline.signal]));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   return {
     name: "telegram",
 
-    async send(message) {
+    async send(message, signal) {
       const buttons = (message.buttons ?? []).filter(
         (b) => b.command.length > 0 && Buffer.byteLength(b.command, "utf8") <= TELEGRAM_CALLBACK_DATA_LIMIT,
       );
-      await call("sendMessage", {
-        chat_id: chat,
-        text: truncate(message.text, TELEGRAM_TEXT_LIMIT),
-        link_preview_options: { is_disabled: true },
-        ...(buttons.length > 0
-          ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.label, callback_data: b.command }))] } }
-          : {}),
-      });
+      await boundedCall(
+        "sendMessage",
+        {
+          chat_id: chat,
+          text: truncate(message.text, TELEGRAM_TEXT_LIMIT),
+          link_preview_options: { is_disabled: true },
+          ...(buttons.length > 0
+            ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.label, callback_data: b.command }))] } }
+            : {}),
+        },
+        signal,
+      );
     },
 
     async receive(offset, signal) {
+      if (offset < previousOffset || (skipTo > 0 && (opts.now?.() ?? Date.now()) - skipAt >= 7 * 24 * 60 * 60 * 1000))
+        skipTo = 0;
+      previousOffset = offset;
       if (signal.aborted) return [];
       let updates: TelegramUpdate[];
       try {
-        updates = await call<TelegramUpdate[]>(
+        updates = await boundedCall<TelegramUpdate[]>(
           "getUpdates",
           {
             offset: Math.max(offset, skipTo),
@@ -111,6 +138,7 @@ export function createTelegramBot(opts: {
             allowed_updates: ["message", "callback_query"],
           },
           signal,
+          pollSeconds * 1000,
         );
       } catch (err) {
         if (signal.aborted) return [];
@@ -137,15 +165,22 @@ export function createTelegramBot(opts: {
         }
       }
       const last = updates.at(-1);
-      if (commands.length === 0 && last) skipTo = Math.max(skipTo, last.update_id + 1);
+      if (commands.length === 0 && last) {
+        skipTo = Math.max(skipTo, last.update_id + 1);
+        skipAt = opts.now?.() ?? Date.now();
+      }
       return commands;
     },
 
-    async answerButton(buttonId, text) {
-      await call("answerCallbackQuery", {
-        callback_query_id: buttonId,
-        text: truncate(text, CALLBACK_ANSWER_LIMIT),
-      });
+    async answerButton(buttonId, text, signal) {
+      await boundedCall(
+        "answerCallbackQuery",
+        {
+          callback_query_id: buttonId,
+          text: truncate(text, CALLBACK_ANSWER_LIMIT),
+        },
+        signal,
+      );
     },
   };
 }

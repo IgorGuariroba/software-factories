@@ -41,16 +41,15 @@ export const TestCommand = z.object({
 });
 export type TestCommand = z.infer<typeof TestCommand>;
 
-/** Cards cujo título começa com `prefix`, cuja chave começa com `prefix` ou que estão no `board` vão para `path`. */
+/** Cards cujo título ou chave começa com `prefix` vão para `path`. */
 export const RepoMapping = z
   .object({
     /** Cópia local do repositório. A fábrica só lê dela; trabalha num clone próprio. */
     path: z.string().min(1),
-    prefix: z.string().min(1).optional(),
-    board: z.string().min(1).optional(),
+    prefix: z.string().min(1),
     test: TestCommand,
   })
-  .refine((m) => m.prefix !== undefined || m.board !== undefined, { message: "informe prefix ou board" });
+  .strict();
 export type RepoMapping = z.infer<typeof RepoMapping>;
 
 /** Sobrescritas das convenções descobertas no histórico. Marcadores: `{key}`, `{slug}`, `{type}`, `{summary}`. */
@@ -143,7 +142,7 @@ export const ProjectConfig = z.object({
   vetoMinutes: z.number().int().positive().default(30),
   /** Nome do status na Fonte → estado que a fábrica entende. */
   statuses: z.record(z.string(), CardState),
-  /** Prefixo de título/chave ou board → repositório. Sem nenhum, a Tarefa termina depois dos Tickets. */
+  /** Prefixo de título/chave → repositório. Sem nenhum, a Tarefa termina depois dos Tickets. */
   repositories: z.array(RepoMapping).optional(),
   /** Sobrescritas de convenção de branch e commit. */
   conventions: ConventionsConfig.optional(),

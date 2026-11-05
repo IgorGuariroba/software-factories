@@ -81,6 +81,18 @@ describe("Fonte Jira: leituras", () => {
     );
   });
 
+  it("informa a causa quando o executável acli não existe", async () => {
+    const previous = process.env.ACLI_PATH;
+    process.env.ACLI_PATH = "/caminho-inexistente-fabrica/acli";
+    try {
+      const source = createJiraDemandSource({ project: "PROJ", assignee: me.accountId });
+      await expect(source.getCard("PROJ-1")).rejects.toThrow(/PROJ-1.*ENOENT/s);
+    } finally {
+      if (previous === undefined) delete process.env.ACLI_PATH;
+      else process.env.ACLI_PATH = previous;
+    }
+  });
+
   it("comentários truncados pelo Jira (total maior que os recebidos) lançam erro em vez de uma lista parcial", async () => {
     const partial = {
       key: "PROJ-1",
@@ -136,7 +148,7 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
   const creds = { ATLASSIAN_EMAIL: "eu@exemplo.invalid", ATLASSIAN_API_TOKEN: "token-super-secreto" };
   const basic = Buffer.from("eu@exemplo.invalid:token-super-secreto").toString("base64");
 
-  function withAttachments(fetchImpl: typeof fetch) {
+  function withAttachments(fetchImpl: typeof fetch, timeoutMs?: number) {
     const acli = new FakeAcli(me);
     acli.issues = [
       {
@@ -162,6 +174,7 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
       runner: acli.runner,
       env: creds,
       fetch: fetchImpl,
+      timeoutMs,
     });
   }
 
@@ -176,6 +189,17 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
       { name: "especificacao.md", content: "# Especificação" },
     ]);
     expect(requests).toEqual([{ url: "https://exemplo.invalid/a/1", auth: `Basic ${basic}` }]);
+  });
+
+  it("interrompe download de anexo que não responde e informa o anexo", async () => {
+    const source = withAttachments(
+      async (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("prazo excedido")), { once: true });
+        }),
+      20,
+    );
+    await expect(source.listTextAttachments("PROJ-1")).rejects.toThrow(/especificacao\.md.*prazo excedido/);
   });
 
   it("HTTP não-ok ou erro de rede falham a leitura, dizendo o anexo e sem expor o token", async () => {

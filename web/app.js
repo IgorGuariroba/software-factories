@@ -1,10 +1,12 @@
 // Página de gestão: lê e comanda a fábrica só pela API local, e se atualiza pelo stream de eventos (SSE).
 // O DOM é montado com createElement e textContent: conteúdo do card e do modelo nunca vira HTML.
 import {
+  approveRetro,
   cancelTask,
   eventStream,
   getDaemon,
   getQueue,
+  getRetroPreview,
   getTask,
   getTasks,
   pauseDaemon,
@@ -18,9 +20,11 @@ import {
 import {
   actionsFor,
   describeEvent,
+  formatCommit,
   isTerminal,
   moveTask,
   proposalLabel,
+  refreshSelectedDetail,
   retroStageLabel,
   retroStatusLabel,
   stageLabel,
@@ -75,6 +79,41 @@ async function run(command) {
     showError(err);
   }
   await refresh();
+}
+
+function reviewRetroButton(task, retro, proposal) {
+  const container = el("div");
+  const button = el("button", {
+    text: "Revisar publicação pública",
+    attrs: { type: "button" },
+    onClick: async () => {
+      button.disabled = true;
+      try {
+        const preview = await getRetroPreview(task.project, task.key, retro.stage, proposal.n);
+        if (!container.isConnected) return;
+        container.replaceChildren(
+          el("p", { text: `Destino público: ${preview.repo}${preview.dryRun ? " (dry-run)" : ""}` }),
+          el("p", { text: "Revise todo o texto. Se houver issue semelhante, a fábrica pode apenas comentar +1 nela." }),
+          el("strong", { text: preview.title }),
+          el("pre", { className: "texto", text: preview.body }),
+          preview.blocked
+            ? el("p", { text: "A publicação está bloqueada: o texto ainda pode conter valores privados." })
+            : el("button", {
+                text: "Aprovar publicação",
+                attrs: { type: "button" },
+                onClick: () =>
+                  run(() => approveRetro(task.project, task.key, retro.stage, proposal.n, preview.revision)),
+              }),
+        );
+        clearError();
+      } catch (err) {
+        button.disabled = false;
+        showError(err);
+      }
+    },
+  });
+  container.append(button);
+  return container;
 }
 
 const ACTIONS = {
@@ -216,7 +255,7 @@ function renderDetail(task) {
           "p",
           {},
           `Branch ${impl.branch}, ${impl.commits.length} commit(s), ${impl.pushed ? "com push" : "sem push"}. `,
-          ...impl.commits.map((c) => el("code", { text: `${c.sha.slice(0, 8)} (ticket ${c.ticket}, ${c.phase}) ` })),
+          ...impl.commits.map((c) => el("code", { text: formatCommit(c) })),
         )
       : el("p", { className: "vazio", text: "Ainda não começou." }),
   );
@@ -240,6 +279,9 @@ function renderDetail(task) {
                   el("strong", { text: p.title }),
                   ` (${proposalLabel(p)}${p.issue ? `, issue #${p.issue.number}` : ""}${p.reason ? `: ${p.reason}` : ""}): `,
                   p.description,
+                  ...(p.kind === "fabrica" && p.status === "pendente" && r.status === "concluida"
+                    ? [reviewRetroButton(task, r, p)]
+                    : []),
                 ),
               ),
             ),
@@ -287,12 +329,16 @@ async function refreshDetail() {
     $("detalhe").hidden = true;
     return;
   }
-  try {
-    renderDetail(await getTask(selected.project, selected.key));
-  } catch (err) {
-    $("detalhe").hidden = true;
-    showError(err);
-  }
+  await refreshSelectedDetail(
+    selected,
+    () => selected,
+    getTask,
+    renderDetail,
+    (err) => {
+      $("detalhe").hidden = true;
+      showError(err);
+    },
+  );
 }
 
 async function refresh() {

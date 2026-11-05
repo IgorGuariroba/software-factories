@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { configure, defineExtension, defineTool, type Harness } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import {
   StateDoc,
   type StepRuntime,
 } from "./durable.js";
-import { type EffectWriter, GuardrailViolation } from "./effect-writer.js";
+import { AUTOMATION_PREFIX, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
 import type { EventRecorder } from "./events.js";
 import type { RetroIssue, RetroSink } from "./retro-sink.js";
 
@@ -119,9 +119,9 @@ export const newTaskRef = () => randomBytes(6).toString("hex");
 const STAGE_LABEL: Record<RetroStage, string> = { spec: "SPEC", implementacao: "implementação", tarefa: "consolidada" };
 
 /**
- * A retrô de uma etapa (ou a consolidada). Pede a retrô ao modelo numa conversa da Tarefa, grava a entrega no estado e
- * só então publica cada proposta, registrando cada uma: uma nova tentativa não chama o modelo de novo nem duplica
- * issue, "+1" ou aviso. Uma falha conta uma tentativa e é relançada (a Tarefa tenta de novo); na
+ * A retrô de uma etapa (ou a consolidada). Pede a retrô ao modelo numa conversa da Tarefa e grava a entrega no estado.
+ * Propostas públicas ficam pendentes para revisão humana; avisos ao time são registrados. Uma falha conta uma tentativa
+ * e é relançada (a Tarefa tenta de novo); na
  * `MAX_RETRO_ATTEMPTS`ª, a retrô fica `falhou` e a Tarefa segue sem ela.
  */
 export async function runRetro(opts: {
@@ -138,19 +138,17 @@ export async function runRetro(opts: {
   /** O relato da etapa para o modelo; só montado se o modelo ainda não entregou. */
   input: () => Promise<string>;
   sink?: RetroSink;
-  /** Repositório (público) da fábrica; sem ele, as propostas da fábrica só ficam registradas. */
+  /** Repositório público da fábrica; a publicação é feita separadamente após revisão. */
   repo?: string;
 }): Promise<void> {
   const { runtime, stage, config, events } = opts;
   const { context } = runtime;
 
   let record: RetroRecord | undefined;
-  let ref = "";
   await runtime.commit(async (tx) => {
     const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
     if (!task) return;
     task.ref ??= newTaskRef();
-    ref = task.ref;
     let stored = task.retros?.find((r) => r.stage === stage);
     if (!stored) {
       stored = {
@@ -293,49 +291,89 @@ export async function runRetro(opts: {
       return;
     }
 
-    const { sink, repo } = opts;
-    if (!sink || !repo) {
-      proposal.status = "sem-repo";
-      return;
-    }
-    const taskMarker = `tarefa \`${ref}\``;
-    // A Tarefa aparece só pelo id opaco, sem URL (o texto público não leva link nenhum).
-    const origin = `Origem: ${taskMarker}, retrô ${stage}, proposta ${proposal.n}.`;
-    const mentions = (issue: RetroIssue, marker: string) =>
-      issue.body.includes(marker) || issue.comments.some((c) => c.includes(marker));
+    // A publicação externa exige revisão humana explícita, fora da execução da Tarefa.
+    proposal.status = "pendente";
+  }
+}
 
-    const open = await sink.listOpen(repo);
-    // Já publicada numa tentativa anterior (ex.: a fábrica caiu logo depois de escrever).
-    const published = open.find((i) => mentions(i, origin));
-    if (published) {
-      proposal.status = published.body.includes(origin) ? "issue-criada" : "mais-um";
-      proposal.issue = { number: published.number, url: published.url };
-      return;
+export type FactoryRetroPublication = {
+  writer: EffectWriter;
+  cardKey: string;
+  config: ProjectConfig;
+  sink?: RetroSink;
+  repo?: string;
+  stage: RetroStage;
+  ref: string;
+  proposal: RetroProposal;
+};
+
+/** Prepara exatamente o texto a ser revisado antes da escrita pública. */
+export async function previewFactoryRetro(opts: FactoryRetroPublication) {
+  const { writer, cardKey, stage, ref, proposal } = opts;
+  const taskMarker = `tarefa \`${ref}\``;
+  const origin = `Origem: ${taskMarker}, retrô ${stage}, proposta ${proposal.n}.`;
+  const [titleResult, bodyResult, safeOrigin, safeTaskMarker] = await Promise.all([
+    writer.publicRetroPreview(cardKey, proposal.title.slice(0, 200)),
+    writer.publicRetroPreview(cardKey, `${proposal.description}\n\n---\n${origin}`),
+    writer.publicRetroText(cardKey, origin),
+    writer.publicRetroText(cardKey, taskMarker),
+  ]);
+  const title = titleResult.text;
+  const issueBody = bodyResult.text;
+  const blocked = titleResult.leftovers.length > 0 || bodyResult.leftovers.length > 0;
+  const body = `${AUTOMATION_PREFIX} ${issueBody}`;
+  const revision = createHash("sha256")
+    .update(JSON.stringify([opts.repo, title, body, opts.config.dryRun, blocked]))
+    .digest("hex");
+  return { title, body, revision, issueBody, safeOrigin, safeTaskMarker, blocked };
+}
+
+/** Publica somente uma proposta já revisada; a seleção de issue semelhante não acrescenta texto privado. */
+export async function publishFactoryRetro(
+  opts: FactoryRetroPublication,
+  preview: Awaited<ReturnType<typeof previewFactoryRetro>>,
+): Promise<void> {
+  const { proposal } = opts;
+  const { sink, repo, config, writer, cardKey } = opts;
+  if (!sink || !repo) {
+    proposal.status = "sem-repo";
+    return;
+  }
+  const mentions = (issue: RetroIssue, marker: string) =>
+    issue.body.includes(marker) || issue.comments.some((c) => c.includes(marker));
+
+  const { safeOrigin, safeTaskMarker, title: safeTitle, issueBody } = preview;
+  const open = await sink.listOpen(repo);
+  // Já publicada numa tentativa anterior (ex.: a fábrica caiu logo depois de escrever).
+  const published = open.find((i) => mentions(i, safeOrigin));
+  if (published) {
+    proposal.status = published.body.includes(safeOrigin) ? "issue-criada" : "mais-um";
+    proposal.issue = { number: published.number, url: published.url };
+    return;
+  }
+  const similar = findSimilarIssue(open, safeTitle);
+  try {
+    // Uma Tarefa conta uma vez por issue: a consolidada que repete uma proposta da etapa não comenta de novo.
+    if (similar && mentions(similar, safeTaskMarker)) {
+      proposal.status = "ja-registrada";
+      proposal.issue = { number: similar.number, url: similar.url };
+    } else if (similar) {
+      await writer.commentRetroIssue(cardKey, repo, similar.number, `+1\n\n${safeOrigin}`);
+      proposal.status = config.dryRun ? "dry-run" : "mais-um";
+      proposal.issue = { number: similar.number, url: similar.url };
+    } else {
+      const created = await writer.openRetroIssue(cardKey, repo, {
+        // O GitHub aceita títulos de até 256 caracteres.
+        title: preview.title,
+        body: issueBody,
+      });
+      proposal.status = created ? "issue-criada" : "dry-run";
+      proposal.issue = created ?? null;
     }
-    const similar = findSimilarIssue(open, proposal.title);
-    try {
-      // Uma Tarefa conta uma vez por issue: a consolidada que repete uma proposta da etapa não comenta de novo.
-      if (similar && mentions(similar, taskMarker)) {
-        proposal.status = "ja-registrada";
-        proposal.issue = { number: similar.number, url: similar.url };
-      } else if (similar) {
-        await opts.writer.commentRetroIssue(opts.cardKey, repo, similar.number, `+1\n\n${origin}`);
-        proposal.status = config.dryRun ? "dry-run" : "mais-um";
-        proposal.issue = { number: similar.number, url: similar.url };
-      } else {
-        const created = await opts.writer.openRetroIssue(opts.cardKey, repo, {
-          // O GitHub aceita títulos de até 256 caracteres.
-          title: proposal.title.slice(0, 200),
-          body: `${proposal.description}\n\n---\n${origin}`,
-        });
-        proposal.status = created ? "issue-criada" : "dry-run";
-        proposal.issue = created ?? null;
-      }
-    } catch (err) {
-      // Barrada pelo guardrail (o evento já saiu): a proposta fica registrada e a retrô segue com as outras.
-      if (!(err instanceof GuardrailViolation)) throw err;
-      proposal.status = "bloqueada";
-      proposal.reason = err.message;
-    }
+  } catch (err) {
+    // Barrada pelo guardrail (o evento já saiu): a proposta fica registrada e a retrô segue com as outras.
+    if (!(err instanceof GuardrailViolation)) throw err;
+    proposal.status = "bloqueada";
+    proposal.reason = err.message;
   }
 }

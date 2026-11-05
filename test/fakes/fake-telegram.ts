@@ -60,6 +60,13 @@ export class FakeTelegram implements ManagementInterface {
     this.answers.push({ buttonId, text });
   }
 
+  /** Simula o Telegram escolhendo uma nova sequência após longa inatividade. */
+  resetSequence(nextId = 1): void {
+    this.updates = [];
+    this.nextId = nextId;
+    for (const wake of [...this.waiters]) wake();
+  }
+
   /** Alguém digita `text` no chat (por padrão, o usuário autorizado no chat autorizado). */
   say(text: string, from: { chat?: string; user?: string } = {}): void {
     this.push({ text, chat: from.chat ?? TELEGRAM_CHAT, user: from.user ?? TELEGRAM_USER });

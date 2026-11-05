@@ -9,6 +9,7 @@ import {
   events,
   eventually,
   FACTORY_REPO,
+  hold,
   PO,
   poll,
   startTestFactory,
@@ -49,6 +50,27 @@ type Retro = { stage: string; status: string; summary: string | null; attempts: 
 type Detail = { ref: string; status: string; retros: Retro[] };
 
 const detail = (f: TestFactory) => api<Detail>(f, "GET", "/tasks/exemplo/PROJ-1");
+
+async function approveAll(f: TestFactory, project = "exemplo") {
+  const result = await api<Detail>(f, "GET", `/tasks/${project}/PROJ-1`);
+  for (const retro of result.retros) {
+    for (const proposal of retro.proposals.filter((p) => p.kind === "fabrica" && p.status === "pendente")) {
+      const url = `/tasks/${project}/PROJ-1/retros/${retro.stage}/${proposal.n}`;
+      const preview = await api<{ revision: string; blocked: boolean }>(f, "GET", url);
+      if (preview.blocked) continue;
+      let response: Response | undefined;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        response = await fetch(`${f.url}${url}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ revision: preview.revision }),
+        });
+        if (response.ok) break;
+      }
+      expect(response?.status).toBe(200);
+    }
+  }
+}
 
 const fabrica = (
   titulo: string,
@@ -152,6 +174,7 @@ describe("propostas da fábrica viram issues retro", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     const [issue] = factory.retroSink.issues;
     expect(factory.retroSink.issues).toHaveLength(1);
@@ -189,6 +212,7 @@ describe("propostas da fábrica viram issues retro", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     const { ref, retros } = await detail(factory);
     expect(factory.retroSink.issues).toHaveLength(3);
@@ -211,6 +235,7 @@ describe("propostas da fábrica viram issues retro", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     const titles = factory.retroSink.issues.map((i) => i.title);
     expect(titles).toEqual([
@@ -245,6 +270,7 @@ describe("propostas da fábrica viram issues retro", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     expect(model.retroCalls).toHaveLength(2);
     expect(existing.comments).toHaveLength(1);
@@ -253,33 +279,104 @@ describe("propostas da fábrica viram issues retro", () => {
       "Registrar o custo de cada etapa",
     ]);
     const { retros } = await detail(factory);
-    expect(retros[0]).toMatchObject({ status: "concluida", attempts: 2 });
+    expect(retros[0]).toMatchObject({ status: "concluida", attempts: 0 });
     expect(retros[0]?.proposals.map((p) => p.status)).toEqual(["mais-um", "issue-criada"]);
   });
 
-  it("sobrevive a um reinício entre a entrega do modelo e a publicação", async () => {
+  it("não duplica issue quando o saneamento altera o marcador e o título", async () => {
+    const model = new FakeModel();
+    scriptRetros(model, [fabrica("Melhorar SPEC")]);
+    factory = await startTestFactory({ cards: [card()], model, config: { name: "SPEC" } });
+    const sink = factory.retroSink;
+    const create = sink.create.bind(sink);
+    let lost = true;
+    sink.create = async (repo, issue) => {
+      const result = await create(repo, issue);
+      if (lost) {
+        lost = false;
+        throw new Error("resposta perdida");
+      }
+      return result;
+    };
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory, "SPEC");
+    expect(sink.issues).toHaveLength(1);
+  });
+
+  it("aguarda revisão explícita do conteúdo público sem bloquear a tarefa", async () => {
+    const model = new FakeModel();
+    scriptRetros(model, [fabrica("Melhorar validação", "Validar antes de publicar.")]);
+    factory = await startTestFactory({ cards: [card()], model });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+    expect(factory.retroSink.issues).toHaveLength(0);
+    expect((await detail(factory)).retros[0]?.proposals[0]?.status).toBe("pendente");
+    const url = "/tasks/exemplo/PROJ-1/retros/spec/1";
+    const preview = await api<{ title: string; body: string; revision: string }>(factory, "GET", url);
+    expect(preview.title).toBe("Melhorar validação");
+    expect(preview.body).toContain("Validar antes de publicar.");
+    const stale = await fetch(`${factory.url}${url}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: "obsoleta" }),
+    });
+    expect(stale.status).toBe(409);
+    expect(factory.retroSink.issues).toHaveLength(0);
+    await api(factory, "POST", `${url}/approve`, { revision: preview.revision });
+    expect(factory.retroSink.issues).toHaveLength(1);
+    expect(factory.retroSink.issues[0]?.body).toBe(preview.body);
+    const repeated = await fetch(`${factory.url}${url}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: preview.revision }),
+    });
+    expect(repeated.status).toBe(409);
+    expect(factory.retroSink.issues).toHaveLength(1);
+  });
+
+  it("não publica propostas simultaneamente enquanto deduplica issues", async () => {
+    const model = new FakeModel();
+    scriptRetros(model, [fabrica("Validar critérios da SPEC"), fabrica("Validar os critérios da SPEC")]);
+    factory = await startTestFactory({ cards: [card()], model });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+    const firstUrl = "/tasks/exemplo/PROJ-1/retros/spec/1";
+    const secondUrl = "/tasks/exemplo/PROJ-1/retros/spec/2";
+    const first = await api<{ revision: string }>(factory, "GET", firstUrl);
+    const second = await api<{ revision: string }>(factory, "GET", secondUrl);
+    const gate = hold();
+    const reached = hold();
+    const list = factory.retroSink.listOpen.bind(factory.retroSink);
+    factory.retroSink.listOpen = async (repo) => {
+      reached.release();
+      await gate.promise;
+      return list(repo);
+    };
+    const post = (url: string, revision: string) =>
+      fetch(`${factory?.url}${url}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision }),
+      });
+    const publishing = post(firstUrl, first.revision);
+    await reached.promise;
+    expect((await post(secondUrl, second.revision)).status).toBe(409);
+    gate.release();
+    expect((await publishing).status).toBe(200);
+    expect((await post(secondUrl, second.revision)).status).toBe(200);
+    expect(factory.retroSink.issues).toHaveLength(1);
+  });
+
+  it("sobrevive a um reinício entre a entrega do modelo e a aprovação", async () => {
     const model = new FakeModel();
     scriptRetros(model, [fabrica("Validar a SPEC contra os critérios")]);
     factory = await startTestFactory({ cards: [card()], model });
-    const sink = factory.retroSink;
-    const listOpen = sink.listOpen.bind(sink);
-    let held = true;
-    const reached: (() => void)[] = [];
-    const reachedPublish = new Promise<void>((resolve) => reached.push(resolve));
-    sink.listOpen = async (repo) => {
-      if (held) {
-        reached[0]?.();
-        await new Promise(() => undefined);
-      }
-      return listOpen(repo);
-    };
-
     await poll(factory);
-    await reachedPublish;
-    held = false;
-    factory = await factory.restart();
     await waitForStatus(factory, "PROJ-1", "concluida");
-
+    factory = await factory.restart();
+    expect(factory.retroSink.issues).toHaveLength(0);
+    await approveAll(factory);
     expect(factory.model.retroCalls).toHaveLength(2);
     expect(factory.retroSink.issues).toHaveLength(1);
   });
@@ -344,6 +441,7 @@ describe("o repositório da fábrica é público", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     const [issue] = factory.retroSink.issues;
     const text = `${issue?.title}\n${issue?.body}`;
@@ -373,13 +471,23 @@ describe("o repositório da fábrica é público", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     expect(factory.retroSink.issues.map((i) => i.title)).toEqual(["Registrar o custo de cada etapa"]);
-    const blocked = (await events(factory)).filter((e) => e.type === "blocked" && e.action === "retro-issue");
-    expect(blocked).toHaveLength(2);
-    expect(String(blocked[0]?.reason)).toMatch(/valores do projeto/);
+    const first = await api<{ blocked: boolean; revision: string }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1/retros/spec/1",
+    );
+    expect(first.blocked).toBe(true);
+    const refused = await fetch(`${factory.url}/tasks/exemplo/PROJ-1/retros/spec/1/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: first.revision }),
+    });
+    expect(refused.status).toBe(409);
     const { retros } = await detail(factory);
-    expect(retros[0]?.proposals.map((p) => p.status)).toEqual(["bloqueada", "bloqueada", "issue-criada"]);
+    expect(retros[0]?.proposals.map((p) => p.status)).toEqual(["pendente", "pendente", "issue-criada"]);
   });
 
   it("o modelo da retrô recebe a regra de descrever só a fábrica", async () => {
@@ -393,23 +501,16 @@ describe("o repositório da fábrica é público", () => {
 });
 
 describe("a retrô não bloqueia a entrega", () => {
-  it("com o GitHub fora do ar, tenta de novo um número limitado de vezes e a tarefa termina sem a retrô", async () => {
+  it("com o GitHub fora do ar, a tarefa termina e a aprovação pode ser repetida", async () => {
     const model = new FakeModel();
-    scriptRetros(model, [fabrica("Validar a SPEC contra os critérios")], [fabrica("Registrar o custo de cada etapa")]);
+    scriptRetros(model, [fabrica("Validar a SPEC contra os critérios")]);
     factory = await startTestFactory({ cards: [card()], model });
-    factory.retroSink.failNext = 1_000;
-
+    factory.retroSink.failNext = 1;
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
-
-    const { retros } = await detail(factory);
-    expect(retros.map((r) => [r.stage, r.status, r.attempts])).toEqual([
-      ["spec", "falhou", 3],
-      ["tarefa", "falhou", 3],
-    ]);
-    const failed = (await events(factory)).filter((e) => e.type === "retro" && e.status === "falhou");
-    expect(failed.map((e) => e.stage)).toEqual(["spec", "tarefa"]);
-    // O modelo foi chamado uma vez por retrô: as tentativas só republicam.
+    expect((await detail(factory)).retros[0]?.proposals[0]?.status).toBe("pendente");
+    await approveAll(factory);
+    expect(factory.retroSink.issues).toHaveLength(1);
     expect(model.retroCalls).toHaveLength(2);
   });
 
@@ -436,7 +537,7 @@ describe("a retrô não bloqueia a entrega", () => {
     await waitForStatus(factory, "PROJ-1", "concluida");
 
     const { retros } = await detail(factory);
-    expect(retros[0]?.proposals).toMatchObject([{ status: "sem-repo", issue: null }]);
+    expect(retros[0]?.proposals).toMatchObject([{ status: "pendente", issue: null }]);
     expect(factory.retroSink.issues).toEqual([]);
   });
 
@@ -448,6 +549,7 @@ describe("a retrô não bloqueia a entrega", () => {
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
+    await approveAll(factory);
 
     expect(factory.retroSink.issues).toHaveLength(1);
     expect(existing.comments).toEqual([]);

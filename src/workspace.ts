@@ -1,4 +1,4 @@
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { git, gitMaybe } from "./git.js";
 
@@ -40,7 +40,15 @@ export async function confine(root: string, requested: string): Promise<string> 
     try {
       real = await realpath(probe);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT" && probe !== realRoot) continue;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT" && probe !== realRoot) {
+        try {
+          if ((await lstat(probe)).isSymbolicLink())
+            throw new PathRefused(`"${requested}" passa por um link simbólico sem destino`);
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
+        }
+        continue;
+      }
       throw err;
     }
     if (!inside(realRoot, real)) throw new PathRefused(`"${requested}" sai do repositório por um link simbólico`);

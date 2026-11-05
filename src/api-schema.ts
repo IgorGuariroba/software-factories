@@ -62,6 +62,47 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/retros/{stage}/{n}": {
+      get: {
+        summary: "Prévia do conteúdo público de uma proposta pendente",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        responses: {
+          "200": { description: "Prévia: title, body, repo, dryRun, blocked e revision" },
+          "404": { description: "Proposta inexistente" },
+          "409": { description: "Proposta indisponível ou sem repositório" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/retros/{stage}/{n}/approve": {
+      post: {
+        summary: "Aprova a revisão exata e publica ou registra +1 no repositório público",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", required: ["revision"], properties: { revision: { type: "string" } } },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "404": { description: "Proposta inexistente" },
+          "409": { description: "Prévia mudou, publicação bloqueada ou já processada" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
     "/tasks/{project}/{key}": {
       get: {
         summary:

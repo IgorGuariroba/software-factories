@@ -37,6 +37,19 @@ describe("config de projeto", () => {
     expect(queue.map((c) => c.key)).toEqual(["PROJ-7"]);
   });
 
+  it("recusa mapeamento por board, que a Fonte Jira não consegue determinar pelo card", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(join(dir, "board.yaml"), example.replace("prefix: PROJ", "prefix: PROJ\n    board: Mobile"));
+    await expect(
+      startDaemon({
+        configDir: dir,
+        sources,
+        statePath: join(dir, "estado", "fabrica.sqlite"),
+        models: createModels(),
+      }),
+    ).rejects.toThrow(/board/);
+  });
+
   it("recusa iniciar com config inválida, dizendo arquivo, campo e motivo", async () => {
     await writeFile(
       join(dir, "quebrado.yaml"),

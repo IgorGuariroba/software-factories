@@ -35,3 +35,7 @@ export const vetoTask = (project, key) => api("POST", `/tasks/${seg(project)}/${
 export const pauseTask = (project, key) => api("POST", `/tasks/${seg(project)}/${seg(key)}/pause`);
 export const resumeTask = (project, key) => api("POST", `/tasks/${seg(project)}/${seg(key)}/resume`);
 export const cancelTask = (project, key) => api("POST", `/tasks/${seg(project)}/${seg(key)}/cancel`);
+export const getRetroPreview = (project, key, stage, n) =>
+  api("GET", `/tasks/${seg(project)}/${seg(key)}/retros/${seg(stage)}/${n}`);
+export const approveRetro = (project, key, stage, n, revision) =>
+  api("POST", `/tasks/${seg(project)}/${seg(key)}/retros/${seg(stage)}/${n}/approve`, { revision });

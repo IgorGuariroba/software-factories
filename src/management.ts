@@ -42,14 +42,14 @@ export interface ManagementInterface {
    * Publica a mensagem na conversa configurada. Rejeita se a interface recusar ou estiver fora do ar; o erro nunca
    * contém credenciais. Texto acima do limite da interface chega truncado; botões que a interface não aceita somem.
    */
-  send(message: ManagementMessage): Promise<void>;
+  send(message: ManagementMessage, signal?: AbortSignal): Promise<void>;
   /**
    * Espera e devolve os comandos com `id >= offset`, em ordem. Pedir com um `offset` maior confirma os anteriores.
    * Devolve `[]` quando `signal` aborta (ou quando a espera da interface termina sem nada novo).
    */
   receive(offset: number, signal: AbortSignal): Promise<ManagementUpdate[]>;
   /** Responde ao toque num botão (no Telegram, o aviso curto que encerra o "carregando" do botão). */
-  answerButton(buttonId: string, text: string): Promise<void>;
+  answerButton(buttonId: string, text: string, signal?: AbortSignal): Promise<void>;
 }
 
 // --- Ponte entre a fábrica e uma interface de gestão ---------------------------------------------
@@ -108,6 +108,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
   const progress: ManagementProgress = {
     eventCursor: stored?.eventCursor ?? deps.initialEventCount,
     updateOffset: stored?.updateOffset ?? 0,
+    lastUpdateAt: stored?.lastUpdateAt ?? deps.now(),
   };
   const save = () => deps.progress.save({ ...progress });
   if (!stored) await save();
@@ -140,7 +141,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     for (let attempt = 1; ; attempt++) {
       if (stopped) return false;
       try {
-        await port.send(safe);
+        await port.send(safe, abort.signal);
         return true;
       } catch (err) {
         const error = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -296,7 +297,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     const reply = await execute(update.text);
     await events.append({ type: "command", ...origin, accepted: true, result: reply });
     if (update.buttonId !== undefined) {
-      await port.answerButton(update.buttonId, redactSecrets(reply)).catch((err) => {
+      await port.answerButton(update.buttonId, redactSecrets(reply), abort.signal).catch((err) => {
         console.error(`[fábrica] ${via}: falha ao responder ao botão:`, err instanceof Error ? err.message : err);
       });
     } else {
@@ -306,14 +307,28 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
 
   async function receiveLoop(): Promise<void> {
     while (!stopped) {
+      const resetAfter = 7 * 24 * 60 * 60 * 1000;
+      if (via === "telegram" && progress.updateOffset > 0 && deps.now() - (progress.lastUpdateAt ?? 0) >= resetAfter) {
+        progress.updateOffset = 0;
+        progress.lastUpdateAt = deps.now();
+        await save();
+      }
+      const wake = new AbortController();
+      const remaining = resetAfter - (deps.now() - (progress.lastUpdateAt ?? deps.now()));
+      const disarmReset =
+        via === "telegram" && progress.updateOffset > 0
+          ? deps.armTimer(() => wake.abort(), Math.max(0, remaining))
+          : () => {};
       let updates: ManagementUpdate[];
       try {
-        updates = await port.receive(progress.updateOffset, abort.signal);
+        updates = await port.receive(progress.updateOffset, AbortSignal.any([abort.signal, wake.signal]));
       } catch (err) {
         if (stopped) return;
         console.error(`[fábrica] ${via}: falha ao receber comandos:`, err instanceof Error ? err.message : err);
         await sleep(RECEIVE_RETRY_MS);
         continue;
+      } finally {
+        disarmReset();
       }
       for (const update of updates) {
         if (stopped) return;
@@ -326,6 +341,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
         if (stopped) return;
         // Confirma depois de executar: um reinício no meio repete o comando, e os comandos são idempotentes.
         progress.updateOffset = update.id + 1;
+        progress.lastUpdateAt = deps.now();
         await save();
       }
     }

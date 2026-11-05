@@ -42,6 +42,12 @@ export class FakeBotApi {
     });
   }
 
+  /** Simula uma nova sequência do Telegram após longa inatividade. */
+  resetSequence(nextId: number): void {
+    this.updates = [];
+    this.nextUpdate = nextId;
+  }
+
   /** Um update que não é comando (ex.: alguém entrou no grupo): o adaptador o confirma sem entregar. */
   otherUpdate(): void {
     this.push({ my_chat_member: { chat: { id: Number(this.chat) } } });
@@ -96,14 +102,21 @@ export class FakeBotApi {
     if (this.updates.length === 0) {
       const timeoutMs = Number(body.timeout ?? 0) * 1000;
       await new Promise<void>((resolve, reject) => {
-        const done = () => {
+        if (signal?.aborted) {
+          reject(new DOMException("This operation was aborted", "AbortError"));
+          return;
+        }
+        const cleanup = () => {
           clearTimeout(timer);
           this.waiters.delete(done);
           signal?.removeEventListener("abort", aborted);
+        };
+        const done = () => {
+          cleanup();
           resolve();
         };
         const aborted = () => {
-          done();
+          cleanup();
           reject(new DOMException("This operation was aborted", "AbortError"));
         };
         const timer = setTimeout(done, timeoutMs);

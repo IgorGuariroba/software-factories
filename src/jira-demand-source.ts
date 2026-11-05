@@ -38,6 +38,8 @@ export interface JiraDemandSourceOptions {
   env?: Record<string, string | undefined>;
   /** `fetch` usado para baixar o conteúdo dos anexos de texto. Padrão: o global. */
   fetch?: typeof fetch;
+  /** Prazo de download de anexos em milissegundos. Padrão: 60 segundos. */
+  timeoutMs?: number;
 }
 
 /**
@@ -53,6 +55,7 @@ const defaultAcliRunner: AcliRunner = async (args: string[]) => {
   try {
     const { stdout, stderr } = await execFileAsync(acliBin, args, {
       maxBuffer: 20 * 1024 * 1024,
+      timeout: 120_000,
       encoding: "utf8",
       env: {
         ...process.env,
@@ -64,7 +67,7 @@ const defaultAcliRunner: AcliRunner = async (args: string[]) => {
     const err = error as { stdout?: string; stderr?: string; code?: number; message?: string };
     return {
       stdout: err.stdout ?? "",
-      stderr: err.stderr ?? err.message ?? String(error),
+      stderr: err.stderr?.trim() || err.message || String(error),
       exitCode: typeof err.code === "number" ? err.code : 1,
     };
   }
@@ -78,7 +81,7 @@ const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_E
  * erro (a Tarefa é tentada de novo). O token nunca aparece na mensagem de erro.
  */
 function createHttpAttachmentReader(
-  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch } = {},
+  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch; timeoutMs?: number } = {},
 ): AttachmentReader {
   return async (attachment) => {
     const env = opts.env ?? process.env;
@@ -92,6 +95,7 @@ function createHttpAttachmentReader(
     try {
       res = await doFetch(attachment.contentUrl, {
         headers: { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}` },
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
       });
     } catch (error) {
       throw new Error(`Falha de rede ao baixar ${what}: ${error instanceof Error ? error.message : String(error)}`);
@@ -198,7 +202,7 @@ export class JiraDemandSource implements DemandSource {
     this.project = opts.project;
     this.assignee = opts.assignee;
     this.runner = opts.runner ?? defaultAcliRunner;
-    this.readAttachment = createHttpAttachmentReader({ env: opts.env, fetch: opts.fetch });
+    this.readAttachment = createHttpAttachmentReader({ env: opts.env, fetch: opts.fetch, timeoutMs: opts.timeoutMs });
   }
 
   private isKeyInProject(key: string): boolean {
