@@ -1,5 +1,14 @@
 import type { Context } from "@earendil-works/chord/context";
-import { defineDoc, defineEntry, defineTask, type JsonObject, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import {
+  type ConversationId,
+  defineDoc,
+  defineEntry,
+  defineTask,
+  type JsonObject,
+  type TaskId,
+  type Tx,
+} from "@earendil-works/pi-durable";
+import type { TestCommand } from "./config.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 
@@ -29,6 +38,37 @@ export type QueuedTask = {
    * a SPEC e os Tickets) republica a mesma entrega, sem chamar o modelo de novo nem trocar uma SPEC válida.
    */
   delivery?: SpecDelivery | null;
+  /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
+  implementation?: ImplementationProgress | null;
+};
+
+/** Uma fase do ciclo TDD de um ticket: o teste que falha, depois o código que o faz passar. */
+export type TddPhase = "teste" | "implementacao";
+
+export type ImplementationProgress = {
+  /** Cópia do usuário de onde o clone foi feito; a fábrica só lê dela. */
+  repoPath: string;
+  /** Clone próprio da fábrica, sob o diretório de estado. As ferramentas do modelo só enxergam este diretório. */
+  worktree: string;
+  /** A branch da fábrica nesta Tarefa: a única em que ela aceita force-push. */
+  branch: string;
+  /** Padrão de commit resolvido no início da etapa (descoberto no histórico ou da config). */
+  commitPattern: string;
+  /** Comando de teste do repositório, fixado no início da etapa. */
+  test: TestCommand;
+  /** Conversa do implementador; as ferramentas acham a Tarefa (e o clone) por ela. */
+  conversationId: ConversationId;
+  /** HEAD depois do último commit registrado. Um HEAD diferente na retomada é um commit que caiu antes do registro. */
+  head: string;
+  /** Commits feitos, na ordem: um por fase de cada ticket. */
+  commits: { ticket: number; phase: TddPhase; sha: string }[];
+  /** Pedidos feitos ao modelo; numera o próximo para que uma nova tentativa não reaproveite um pedido recusado. */
+  requests: number;
+  /** Recusas seguidas da fábrica na fase atual (ex.: o teste novo não falhou). */
+  rejections: number;
+  /** Por que a fábrica recusou a última tentativa; vai junto do próximo pedido. */
+  feedback: string | null;
+  pushed: boolean;
 };
 
 export type FactoryState = {
@@ -52,7 +92,11 @@ export const EventEntry = defineEntry<JsonObject>("fabrica.evento");
 export const eventToJson = (event: FactoryEvent): JsonObject => JSON.parse(JSON.stringify(event)) as JsonObject;
 
 /** Passos de uma Tarefa, na ordem em que acontecem. */
-export type TarefaCheckpoint = { phase: "comentar" } | { phase: "transicionar" } | { phase: "spec" };
+export type TarefaCheckpoint =
+  | { phase: "comentar" }
+  | { phase: "transicionar" }
+  | { phase: "spec" }
+  | { phase: "implementar" };
 
 export type TarefaInput = {
   id: string;
@@ -81,7 +125,8 @@ export interface TarefaSteps {
 const NEXT: Record<TarefaCheckpoint["phase"], TarefaCheckpoint | "fim"> = {
   comentar: { phase: "transicionar" },
   transicionar: { phase: "spec" },
-  spec: "fim",
+  spec: { phase: "implementar" },
+  implementar: "fim",
 };
 
 const TEN_YEARS_MS = 10 * 365 * 24 * 60 * 60 * 1000;
@@ -194,6 +239,7 @@ export function createTarefaTask(steps: TarefaSteps) {
       comentar: (task, runtime, context) => phase(task, "comentar", runtime, context),
       transicionar: (task, runtime, context) => phase(task, "transicionar", runtime, context),
       spec: (task, runtime, context) => phase(task, "spec", runtime, context),
+      implementar: (task, runtime, context) => phase(task, "implementar", runtime, context),
     },
     abort: (task, runtime, context) =>
       runtime.commit(async (tx) => {

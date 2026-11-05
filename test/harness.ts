@@ -5,6 +5,8 @@ import { expect } from "vitest";
 import type { ProjectConfig } from "../src/config.js";
 import type { Card } from "../src/demand-source.js";
 import { type RunningFactory, startFactory } from "../src/factory.js";
+import type { TestRunner } from "../src/test-runner.js";
+import { FakeCodeHost } from "./fakes/fake-code-host.js";
 import { FakeModel } from "./fakes/fake-model.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
 
@@ -32,6 +34,9 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
 export interface TestFactory extends RunningFactory {
   source: MemoryDemandSource;
   model: FakeModel;
+  codeHost: FakeCodeHost;
+  /** Diretório do estado durável (e dos clones da fábrica, em `worktrees/`). */
+  stateDir: string;
   /** Fecha a fábrica e sobe outra sobre o mesmo estado durável e a mesma Fonte: um reinício do daemon. */
   restart(): Promise<TestFactory>;
 }
@@ -42,6 +47,8 @@ interface TestFactoryOptions {
   dryRun?: boolean;
   pollIntervalMs?: number;
   model?: FakeModel;
+  codeHost?: FakeCodeHost;
+  testRunner?: TestRunner;
   /** Conteúdo de `knowledge.md` do projeto. */
   knowledge?: string;
   config?: Partial<ProjectConfig>;
@@ -52,6 +59,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
   const dir = stateDir ?? (await mkdtemp(join(tmpdir(), "fabrica-estado-")));
   const source = opts.source ?? new MemoryDemandSource(opts.cards);
   const model = opts.model ?? new FakeModel();
+  const codeHost = opts.codeHost ?? new FakeCodeHost();
   const knowledgeDir = join(dir, "conhecimento");
   await mkdir(knowledgeDir, { recursive: true });
   if (opts.knowledge !== undefined) await writeFile(join(knowledgeDir, "knowledge.md"), opts.knowledge);
@@ -60,19 +68,24 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     statePath: join(dir, "fabrica.sqlite"),
     retryDelayMs: 5,
     models: model.models(),
-    projects: [{ config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir }],
+    testRunner: opts.testRunner,
+    projects: [
+      { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
+    ],
   });
   return {
     ...factory,
     source,
     model,
+    codeHost,
+    stateDir: dir,
     close: async () => {
       await factory.close();
       await rm(dir, { recursive: true, force: true });
     },
     restart: async () => {
       await factory.close();
-      return startTestFactory({ ...opts, source, model, knowledge: undefined }, dir);
+      return startTestFactory({ ...opts, source, model, codeHost, knowledge: undefined }, dir);
     },
   };
 }
@@ -118,8 +131,8 @@ export async function statusOf(f: RunningFactory, key: string): Promise<string |
   return (await tasks(f)).find((t) => t.key === key)?.status;
 }
 
-export const waitForStatus = (f: RunningFactory, key: string, status: string) =>
-  eventually(async () => expect(await statusOf(f, key)).toBe(status));
+export const waitForStatus = (f: RunningFactory, key: string, status: string, timeoutMs?: number) =>
+  eventually(async () => expect(await statusOf(f, key)).toBe(status), timeoutMs);
 
 /** Uma promessa que o teste resolve quando quiser: segura uma operação da Fonte "no meio". */
 export function hold(): { promise: Promise<void>; release: () => void } {

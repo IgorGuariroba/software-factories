@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
+import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import {
@@ -26,13 +27,18 @@ import {
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
+import { gitCodeHost } from "./git-code-host.js";
+import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { renderTickets, requestSpec, type SpecDelivery, SpecExtension, specInput } from "./spec-stage.js";
+import { createHostTestRunner, type TestRunner } from "./test-runner.js";
 
 export interface FactoryProject {
   config: ProjectConfig;
   source: DemandSource;
   /** Diretório do conhecimento do projeto (`knowledge.md`), fora do repositório (ADR-0010). */
   knowledgeDir?: string;
+  /** Remoto de código (descoberta de convenções e push). Padrão: o adaptador git. */
+  codeHost?: CodeHost;
 }
 
 /** Lê o conhecimento do projeto a cada etapa; sem o arquivo, a etapa segue sem ele. */
@@ -116,22 +122,34 @@ export async function startFactory(opts: {
   retryDelayMs?: number;
   /** Provedores de modelos (nos testes, o provedor faux). */
   models: Models;
+  /** Quem roda o comando de teste dos repositórios. Padrão: direto no host, com ambiente mínimo. */
+  testRunner?: TestRunner;
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
   let events!: DurableEventLog;
+  const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
-    opts.projects.map((p) => [
-      p.config.name,
-      {
+    opts.projects.map((p) => {
+      const codeHost = p.codeHost ?? gitCodeHost;
+      const writer: EffectWriter = createEffectWriter({
         ...p,
-        writer: createEffectWriter({
-          ...p,
-          events: { append: (e) => events.append(e), list: () => events.list() },
-          transitionLimit: TRANSITION_LIMIT,
-        }) satisfies EffectWriter,
-      },
-    ]),
+        events: eventRecorder,
+        transitionLimit: TRANSITION_LIMIT,
+        codeHost,
+        // Branch da fábrica é a registrada no estado durável de uma Tarefa deste projeto, não um padrão de nome.
+        isFactoryBranch: async (branch) =>
+          (await readState()).tasks.some((t) => t.project === p.config.name && t.implementation?.branch === branch),
+      });
+      return [p.config.name, { ...p, codeHost, writer }] as const;
+    }),
   );
+  // Os clones da fábrica ficam ao lado do estado durável, nunca na cópia de trabalho do usuário.
+  const implementationDeps = {
+    worktreesRoot: join(dirname(resolvePath(opts.statePath)), "worktrees"),
+    testRunner: opts.testRunner ?? createHostTestRunner(),
+    events: eventRecorder,
+  };
+  const implementationTools = createImplementationExtension(implementationDeps);
   const projectOf = (name: string) => {
     const project = projects.get(name);
     if (!project) throw new Error(`Projeto ${name} não está configurado`);
@@ -153,6 +171,26 @@ export async function startFactory(opts: {
         // Cópia: o rascunho do commit não pode ser usado depois que o commit termina.
         delivery = stored ? (JSON.parse(JSON.stringify(stored)) as SpecDelivery) : undefined;
       });
+
+      if (step === "implementar") {
+        if (!delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        return runImplementation({
+          harness,
+          runtime,
+          taskId: input.id,
+          config: project.config,
+          codeHost: project.codeHost,
+          writer,
+          card,
+          delivery,
+          model: project.config.roles.implementer ?? project.config.roles.spec,
+          deps: implementationDeps,
+          tools: implementationTools,
+        });
+      }
+
       if (!delivery) delivery = await requestDelivery();
       await writer.upsertComment(input.key, "SPEC", delivery.spec);
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
@@ -181,7 +219,7 @@ export async function startFactory(opts: {
       }
     },
     classify: (err) =>
-      err instanceof GuardrailViolation
+      err instanceof GuardrailViolation || err instanceof StageBlocked
         ? { kind: "blocked", reason: err.message }
         : { kind: "error", message: err instanceof Error ? err.message : String(err) },
     onError: (input, message) => events.append({ type: "error", project: input.project, target: input.key, message }),
@@ -190,6 +228,7 @@ export async function startFactory(opts: {
   const registry = createRegistry();
   registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask] }));
   registry.install(SpecExtension);
+  registry.install(implementationTools.extension);
   await mkdir(dirname(opts.statePath), { recursive: true });
   const harness = await Harness.open(
     await openNodeSqliteStorage(opts.statePath),
@@ -243,6 +282,7 @@ export async function startFactory(opts: {
           attempts: 0,
           reason: null,
           delivery: null,
+          implementation: null,
         });
       }
     }, context);
