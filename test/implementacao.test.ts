@@ -249,6 +249,35 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
     expect(inputs).toContain("os testes passaram");
   });
 
+  it("recusa a fase de implementação que afrouxa ou apaga o teste, e só commita o código", async () => {
+    const repo = await createRemoteRepo(root, "app");
+    const model = new FakeModel();
+    const LOOSENED = `import { test } from "node:test";\ntest("gera CSV", () => {});\n`;
+    const clone = () => join(factory?.stateDir ?? "", "worktrees", "exemplo", "PROJ-1");
+    scriptImplementer(model, ONE_TICKET, [
+      write({ "test/csv.test.mjs": CSV_TEST }),
+      write({ "test/csv.test.mjs": LOOSENED, "src/csv.mjs": `export const gerarCsv = () => "";\n` }), // afrouxa o teste
+      async () => {
+        // Apaga o teste que falhava (o modelo não tem essa ferramenta; o teste simula a mudança no clone).
+        await rm(join(clone(), "test", "csv.test.mjs"));
+        return [];
+      },
+      write({ "src/csv.mjs": CSV_IMPL }),
+    ]);
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect(await repo.branchLog(BRANCH)).toEqual([
+      { subject: "test: adiciona teste para Gerar CSV", files: ["test/csv.test.mjs"] },
+      { subject: "feat: Gerar CSV", files: ["src/csv.mjs"] },
+    ]);
+    expect(await repo.show(BRANCH, "test/csv.test.mjs")).toBe(CSV_TEST.trim());
+    const inputs = model.calls.map((c) => c.input).join("\n");
+    expect(inputs).toContain("na fase de implementação os arquivos de teste não podem mudar nem ser apagados");
+  });
+
   it("com a suíte já vermelha na branch, a Tarefa bloqueia antes do primeiro teste: a falha não seria do teste novo", async () => {
     const repo = await createRemoteRepo(root, "app", {
       files: {

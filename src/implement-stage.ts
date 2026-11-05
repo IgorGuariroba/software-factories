@@ -50,7 +50,8 @@ const INSTRUCTIONS = `Você é o papel implementador de uma fábrica de software
 Você só tem as ferramentas ler_arquivo, escrever_arquivo e rodar_testes, sempre dentro do repositório.
 Não há shell nem git: a fábrica verifica cada fase, roda os testes e faz os commits.
 - Fase de teste: escreva só o teste do ticket. A fábrica exige que só arquivos de teste mudem e que os testes falhem.
-- Fase de implementação: escreva o código que faz os testes passarem. A fábrica exige que os testes passem.
+- Fase de implementação: escreva o código que faz os testes passarem, sem mexer nos testes. A fábrica exige que
+  nenhum arquivo de teste mude e que os testes passem.
 Quando terminar a fase, responda em texto, sem chamar ferramentas.`;
 
 export interface ImplementationDeps {
@@ -395,14 +396,16 @@ export async function runImplementation(opts: {
   async function verify(phase: TddPhase): Promise<string[] | string> {
     const paths = await changedPaths(worktree);
     if (paths.length === 0) return "nenhum arquivo mudou";
-    const outside = phase === "teste" ? paths.filter((p) => !isTestFile(p, progress.test.files)) : [];
+    // Cada fase só toca o seu lado: o teste não traz código, e o código não afrouxa nem apaga o teste que falhava.
+    const outside = paths.filter((p) => isTestFile(p, progress.test.files) !== (phase === "teste"));
     if (outside.length > 0) {
       // O que a fase não pode tocar volta ao último commit: o modelo não tem como apagar um arquivo novo.
       await discard(outside);
-      return (
-        `na fase de teste só arquivos de teste podem mudar (padrões: ${progress.test.files.join(", ")}); ` +
-        `a fábrica descartou as mudanças em: ${outside.join(", ")}`
-      );
+      const rule =
+        phase === "teste"
+          ? `na fase de teste só arquivos de teste podem mudar (padrões: ${progress.test.files.join(", ")})`
+          : "na fase de implementação os arquivos de teste não podem mudar nem ser apagados";
+      return `${rule}; a fábrica descartou as mudanças em: ${outside.join(", ")}`;
     }
     const run = await runSuite();
     if (run.timedOut) return `os testes estouraram ${progress.test.timeoutSeconds}s\n${run.output}`;
