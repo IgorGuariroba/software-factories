@@ -30,3 +30,11 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 
 - `npm run lint`: checa lint + formatação (o mesmo que a CI roda).
 - `npm run format`: corrige o que for automático.
+
+## Testes
+
+[Vitest](https://vitest.dev), em `test/`, rodando na CI:
+
+- `npm test`: roda a suíte.
+- Seam principal: a fábrica inteira montada com fakes em memória das portas (`test/fakes/`), exercitada pela API HTTP local (`test/harness.ts`). Teste só comportamento observável, nunca internals.
+- Rodar o daemon localmente: `npm start` (lê `~/.config/software-factory/projects/*.yaml`; `FACTORY_CONFIG_DIR` e `FACTORY_PORT` sobrescrevem). Exemplo de config em `projects/example.yaml`.
