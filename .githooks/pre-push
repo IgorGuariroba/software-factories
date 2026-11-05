@@ -4,7 +4,7 @@
 # Bypass: ALLOW_MAIN=1 git push ...  (or git push --no-verify)
 # stdin: <local ref> <local sha> <remote ref> <remote sha>
 
-# ALLOW_MAIN=1 skips only the branch guard; the secret scan and typecheck still run.
+# ALLOW_MAIN=1 skips only the branch guard; the secret scan, typecheck and tests still run.
 
 protected=$(git config --get hooks.protectedBranches | tr ',' ' ')
 [ -n "$protected" ] || protected="main master"
@@ -62,8 +62,14 @@ if [ -n "$tips" ] && [ -f tsconfig.json ] && [ -d node_modules ]; then
     git worktree add -q --detach "$wt" "$sha" 2>/dev/null || { rm -rf "$wt"; echo "✋ Could not check out $sha for typecheck." >&2; exit 1; }
     ln -s "$root/node_modules" "$wt/node_modules"
     ( cd "$wt" && npx --no-install tsc --noEmit ); rc=$?
+    step="Typecheck (tsc --noEmit)"
+    # hooks.quality: the same tests CI runs (npm test), on the pushed commit.
+    if [ $rc -eq 0 ] && git cat-file -e "$sha:package.json" 2>/dev/null; then
+      ( cd "$wt" && npm test --silent ); rc=$?
+      step="Tests (npm test)"
+    fi
     git worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$wt"
-    [ $rc -eq 0 ] || { echo "✋ Typecheck failed on pushed commit $sha (tsc --noEmit). Fix it or: git push --no-verify" >&2; exit 1; }
+    [ $rc -eq 0 ] || { echo "✋ $step failed on pushed commit $sha. Fix it or: git push --no-verify" >&2; exit 1; }
   done
 fi
 exit 0
