@@ -321,6 +321,7 @@ describe("schema da API", () => {
         "/queue",
         "/tasks",
         "/tasks/order",
+        "/tasks/{project}/{key}",
         "/tasks/{project}/{key}/cancel",
         "/tasks/{project}/{key}/pause",
         "/tasks/{project}/{key}/resume",

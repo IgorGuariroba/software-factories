@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["src/**", "test/**", "*.json", "!package-lock.json"]
+    "includes": ["src/**", "test/**", "web/**/*.js", "web/**/*.css", "*.json", "!package-lock.json"]
   },
   "formatter": {
     "enabled": true,

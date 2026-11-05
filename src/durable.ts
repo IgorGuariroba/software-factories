@@ -54,6 +54,9 @@ export type Question = {
   answer: string | null;
 };
 
+/** Etapa em que a Tarefa está (ou a última em que esteve), para as interfaces de gestão. */
+export type TaskStage = "assumir" | "veto" | "spec" | "implementacao";
+
 /** Uma Tarefa da fábrica, na ordem da fila. */
 export type QueuedTask = {
   /** `<projeto>/<card>`. */
@@ -74,6 +77,8 @@ export type QueuedTask = {
   reason: string | null;
   /** Estado do card quando a fábrica o enfileirou. Um card que já estava `in_progress` passa pelo prazo de veto. */
   startedIn?: CardState;
+  /** Etapa atual; sem ela, a Tarefa ainda não começou. */
+  stage?: TaskStage | null;
   /** Prazo de veto, aberto depois do comentário de assunção de um card que já estava em andamento. */
   veto?: VetoWindow | null;
   /**
@@ -210,6 +215,14 @@ const NEXT: Record<Step, TarefaCheckpoint | "fim"> = {
   implementar: "fim",
 };
 
+/** A etapa de cada passo comum. */
+const STAGE: Record<Step, TaskStage> = {
+  comentar: "assumir",
+  transicionar: "assumir",
+  spec: "spec",
+  implementar: "implementacao",
+};
+
 const TEN_YEARS_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 
 /** Task "portão": dorme até ser abortada. Uma Tarefa pausada espera por ela. */
@@ -328,7 +341,10 @@ export function createTarefaTask(steps: TarefaSteps) {
     await runtime.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
       const queued = findTask(state, task.input.id);
-      if (!state.daemonPaused && !queued.pauseRequested) return undefined;
+      if (!state.daemonPaused && !queued.pauseRequested) {
+        queued.stage = STAGE[step];
+        return undefined;
+      }
       const gate = await tx.createTask(GateTask, {}, { ownership: { kind: "task", taskId: task.id } });
       queued.status = "pausada";
       queued.gateId = gate;
@@ -419,6 +435,7 @@ export function createTarefaTask(steps: TarefaSteps) {
     await runtime.commit(async (tx) => {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
       if (queued.startedIn !== "in_progress") return { status: "running", checkpoint: { phase: "transicionar" } };
+      queued.stage = "veto";
       if (queued.status === "vetada") {
         queued.gateId = null;
         return { status: "terminal", outcome: { status: "completed", result: null } };

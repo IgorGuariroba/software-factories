@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Fábrica de Software</title>
+    <link rel="stylesheet" href="/web/style.css" />
+    <script type="module" src="/web/app.js"></script>
+  </head>
+  <body>
+    <header class="topo">
+      <h1>Fábrica de Software</h1>
+      <div class="controles">
+        <span id="conexao" class="selo" role="status">conectando…</span>
+        <span id="daemon" class="selo">daemon: …</span>
+        <button type="button" id="alternar-daemon" disabled>Pausar daemon</button>
+        <button type="button" id="buscar">Buscar na Fonte</button>
+      </div>
+    </header>
+
+    <p id="aviso" class="aviso" role="alert" hidden></p>
+
+    <main>
+      <section aria-labelledby="titulo-fila">
+        <h2 id="titulo-fila">Fila</h2>
+        <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa na fila.</p>
+        <table id="fila">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Card</th>
+              <th scope="col">Título</th>
+              <th scope="col">Status</th>
+              <th scope="col">Etapa</th>
+              <th scope="col">Ações</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="titulo-encerradas">
+        <h2 id="titulo-encerradas">Encerradas</h2>
+        <p id="encerradas-vazia" class="vazio" hidden>Nenhuma tarefa encerrada.</p>
+        <table id="encerradas">
+          <thead>
+            <tr>
+              <th scope="col">Card</th>
+              <th scope="col">Título</th>
+              <th scope="col">Status</th>
+              <th scope="col">Etapa</th>
+              <th scope="col">Motivo</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="titulo-elegiveis">
+        <h2 id="titulo-elegiveis">Cards elegíveis na Fonte</h2>
+        <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
+        <ul id="elegiveis" class="lista"></ul>
+      </section>
+
+      <section id="detalhe" aria-labelledby="titulo-detalhe" hidden>
+        <h2 id="titulo-detalhe">Tarefa</h2>
+        <button type="button" id="fechar-detalhe">Fechar</button>
+        <dl id="detalhe-estado" class="estado"></dl>
+        <div id="detalhe-acoes" class="acoes"></div>
+
+        <h3>Perguntas ao PO</h3>
+        <ul id="detalhe-perguntas" class="lista"></ul>
+
+        <h3>SPEC</h3>
+        <pre id="detalhe-spec" class="texto"></pre>
+        <ol id="detalhe-tickets" class="lista"></ol>
+
+        <h3>Implementação</h3>
+        <div id="detalhe-implementacao"></div>
+
+        <h3>Escritas registradas</h3>
+        <table id="detalhe-escritas">
+          <thead>
+            <tr>
+              <th scope="col">Quando</th>
+              <th scope="col">Situação</th>
+              <th scope="col">Ação</th>
+              <th scope="col">Alvo</th>
+              <th scope="col">Conteúdo</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <h3>Histórico de eventos</h3>
+        <ol id="detalhe-eventos" class="lista historico"></ol>
+      </section>
+    </main>
+  </body>
+</html>
