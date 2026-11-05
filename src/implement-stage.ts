@@ -171,8 +171,8 @@ function phasePrompt(delivery: SpecDelivery, ticket: number, phase: TddPhase, fe
     phase === "teste"
       ? "Fase de teste: escreva o teste que verifica este critério. Ele precisa falhar, porque o código ainda não existe."
       : "Fase de implementação: escreva o código que faz os testes passarem.";
-  const retry = feedback ? `\n\nA fábrica recusou a tentativa anterior desta fase: ${feedback}` : "";
-  return `${head}\n\n${task}${retry}`;
+  const refusal = feedback ? `\n\nA fábrica recusou a tentativa anterior desta fase: ${feedback}` : "";
+  return `${head}\n\n${task}${refusal}`;
 }
 
 /**
