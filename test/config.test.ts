@@ -49,7 +49,7 @@ describe("config de projeto", () => {
 
     const start = startDaemon({ configDir: dir, sources });
 
-    await expect(start).rejects.toThrow(/a-malformado\.yaml: .*line 1/);
+    await expect(start).rejects.toThrow(/a-malformado\.yaml: .*at line \d+, column \d+/);
     await expect(start).rejects.toThrow(/b-incompleto\.yaml: source/);
   });
 
