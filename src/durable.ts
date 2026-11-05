@@ -9,7 +9,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { QuestionRef } from "./channel.js";
-import type { TestCommand } from "./config.js";
+import type { CardState, TestCommand } from "./config.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 
@@ -18,10 +18,20 @@ export type TaskStatus =
   | "enfileirada"
   | "ativa"
   | "aguardando-humano"
+  | "aguardando-veto"
   | "pausada"
   | "concluida"
   | "cancelada"
-  | "bloqueada";
+  | "bloqueada"
+  | "vetada";
+
+/** Prazo de veto de uma Tarefa cujo card já estava em andamento quando a fábrica o assumiu. */
+export type VetoWindow = {
+  /** Fim do prazo (ms, no relógio da fábrica). Um veto a partir daqui não vale mais. */
+  until: number;
+  /** O prazo venceu sem veto: a Tarefa segue para as etapas. */
+  expired: boolean;
+};
 
 /** Uma pergunta de negócio da Tarefa ao PO, com os prazos de escalonamento já calculados em horas úteis. */
 export type Question = {
@@ -62,6 +72,10 @@ export type QueuedTask = {
   notBefore: number | null;
   attempts: number;
   reason: string | null;
+  /** Estado do card quando a fábrica o enfileirou. Um card que já estava `in_progress` passa pelo prazo de veto. */
+  startedIn?: CardState;
+  /** Prazo de veto, aberto depois do comentário de assunção de um card que já estava em andamento. */
+  veto?: VetoWindow | null;
   /**
    * Entrega do modelo na etapa SPEC, guardada antes de publicar. Uma nova tentativa da Tarefa (ex.: o Jira caiu entre
    * a SPEC e os Tickets) republica a mesma entrega, sem chamar o modelo de novo nem trocar uma SPEC válida.
@@ -125,6 +139,8 @@ export const eventToJson = (event: FactoryEvent): JsonObject => JSON.parse(JSON.
 /** Passos de uma Tarefa, na ordem em que acontecem. */
 export type TarefaCheckpoint =
   | { phase: "comentar" }
+  /** Card que já estava em andamento: aviso ao usuário e espera do prazo de veto. Os outros passam direto. */
+  | { phase: "veto" }
   | { phase: "transicionar" }
   | { phase: "spec" }
   /** Dormindo até a resposta de uma pessoa ou o próximo prazo de escalonamento. */
@@ -151,11 +167,11 @@ export interface StepRuntime {
 
 export interface TarefaSteps {
   /** Executa um passo. `"aguardar"`: a Tarefa fez uma pergunta e dorme até a resposta, sem ocupar a fila. */
-  run(
-    input: TarefaInput,
-    step: Exclude<TarefaCheckpoint["phase"], "aguardar">,
-    runtime: StepRuntime,
-  ): Promise<"aguardar" | undefined>;
+  run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | undefined>;
+  /** Duração do prazo de veto do projeto da Tarefa (ms). */
+  vetoMs(input: TarefaInput): number;
+  /** Avisa o usuário de que a Tarefa assumiu um card em andamento e espera um veto até `until` (ms). */
+  announceVeto(input: TarefaInput, until: number): Promise<void>;
   /**
    * Acordada por um prazo enquanto aguarda: confere se a resposta chegou (e a registra) e faz o escalonamento vencido.
    * Retorna quando acordar de novo (ms), ou `null` se não houver mais prazo.
@@ -167,8 +183,11 @@ export interface TarefaSteps {
   retryDelayMs: number;
 }
 
-const NEXT: Record<Exclude<TarefaCheckpoint["phase"], "aguardar">, TarefaCheckpoint | "fim"> = {
-  comentar: { phase: "transicionar" },
+/** Passos comuns, executados por `TarefaSteps.run`; as esperas (`aguardar`, `veto`) são tratadas pela própria task. */
+export type Step = Exclude<TarefaCheckpoint["phase"], "aguardar" | "veto">;
+
+const NEXT: Record<Step, TarefaCheckpoint | "fim"> = {
+  comentar: { phase: "veto" },
   transicionar: { phase: "spec" },
   spec: { phase: "implementar" },
   implementar: "fim",
@@ -286,12 +305,7 @@ export function createTarefaTask(steps: TarefaSteps) {
     }, context);
   }
 
-  async function phase(
-    task: TaskRef,
-    step: Exclude<TarefaCheckpoint["phase"], "aguardar">,
-    runtime: Runtime,
-    context: Context,
-  ): Promise<void> {
+  async function phase(task: TaskRef, step: Step, runtime: Runtime, context: Context): Promise<void> {
     // Pausa: se pedida (pelo usuário ou pelo daemon), espera num portão antes de começar o passo.
     let gated = false;
     await runtime.commit(async (tx) => {
@@ -365,12 +379,71 @@ export function createTarefaTask(steps: TarefaSteps) {
     }, context);
   }
 
+  /**
+   * Prazo de veto de um card que já estava em andamento. A Tarefa avisa o usuário, sai da fila (`aguardando-veto`) e
+   * dorme numa task "prazo" até o fim do prazo. Um veto nesse meio-tempo a deixa `vetada` e abre o prazo: ela acorda
+   * só para terminar, sem tocar no card. Sem veto, ela volta à fila e, na vez dela, segue para as etapas. Cards que
+   * estavam "a fazer" passam direto para a transição.
+   */
+  async function awaitVeto(task: TaskRef, runtime: Runtime, context: Context): Promise<void> {
+    /** A Task "prazo" em que a Tarefa espera, fora da fila, até `until`. */
+    const sleepUntil = async (tx: Tx, queued: QueuedTask, until: number) => {
+      const gate = await tx.createTask(DeadlineGateTask, { until }, { ownership: { kind: "task", taskId: task.id } });
+      queued.gateId = gate;
+      return {
+        status: "waiting" as const,
+        checkpoint: { phase: "veto" as const },
+        on: [gate],
+        policy: "allSettled" as const,
+      };
+    };
+
+    let announce: number | null = null;
+    await runtime.commit(async (tx) => {
+      const queued = findTask(await tx.doc(StateDoc), task.input.id);
+      if (queued.startedIn !== "in_progress") return { status: "running", checkpoint: { phase: "transicionar" } };
+      if (queued.status === "vetada") {
+        queued.gateId = null;
+        return { status: "terminal", outcome: { status: "completed", result: null } };
+      }
+      const now = runtime.now();
+      if (queued.status === "ativa") {
+        // Já estava em andamento: não há transição a fazer.
+        if (queued.veto?.expired) return { status: "running", checkpoint: { phase: "spec" } };
+        queued.veto ??= { until: now + steps.vetoMs(task.input), expired: false };
+        announce = queued.veto.until;
+        return undefined;
+      }
+      const veto = queued.veto;
+      if (queued.status === "aguardando-veto" && veto && now >= veto.until) {
+        // Sem veto no prazo: volta à fila e segue quando for a vez dela.
+        veto.expired = true;
+        queued.status = queued.pauseRequested ? "pausada" : "enfileirada";
+      }
+      return sleepUntil(tx, queued, queued.status === "aguardando-veto" && veto ? veto.until : now + TEN_YEARS_MS);
+    }, context);
+    if (announce === null) return;
+
+    const until: number = announce;
+    try {
+      await abortable(steps.announceVeto(task.input, until), runtime.signal);
+    } catch (err) {
+      return fail(task, err, runtime, context);
+    }
+    await runtime.commit(async (tx) => {
+      const queued = findTask(await tx.doc(StateDoc), task.input.id);
+      queued.status = "aguardando-veto";
+      return sleepUntil(tx, queued, until);
+    }, context);
+  }
+
   return defineTask<TarefaInput, TarefaCheckpoint, null>({
     name: "fabrica.tarefa",
     version: 1,
     initial: () => ({ phase: "comentar" }),
     phases: {
       comentar: (task, runtime, context) => phase(task, "comentar", runtime, context),
+      veto: (task, runtime, context) => awaitVeto(task, runtime, context),
       transicionar: (task, runtime, context) => phase(task, "transicionar", runtime, context),
       spec: (task, runtime, context) => phase(task, "spec", runtime, context),
       aguardar: (task, runtime, context) => awaitHuman(task, runtime, context),

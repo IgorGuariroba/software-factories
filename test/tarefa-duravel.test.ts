@@ -324,6 +324,7 @@ describe("schema da API", () => {
         "/tasks/{project}/{key}/cancel",
         "/tasks/{project}/{key}/pause",
         "/tasks/{project}/{key}/resume",
+        "/tasks/{project}/{key}/veto",
       ].sort(),
     );
   });

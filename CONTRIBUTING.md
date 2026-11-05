@@ -40,6 +40,15 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 - Implementação: git real contra um remoto bare temporário (`test/fakes/git-repos.ts`) e o modelo faux roteirizado (`scriptImplementer`); o comando de teste dos repositórios de teste é `node --test`.
 - Rodar o daemon localmente: `npm start` (lê `~/.config/software-factory/projects/*.yaml`; o conhecimento de cada projeto em `<configDir>/<projeto>/knowledge.md`; a etapa SPEC usa o modelo de `roles.spec` com a chave do provedor no ambiente, ex. `ANTHROPIC_API_KEY`; `FACTORY_CONFIG_DIR`, `FACTORY_PORT`, `FACTORY_POLL_SECONDS` e `FACTORY_STATE_PATH` (estado durável, padrão `~/.local/state/software-factory/fabrica.sqlite`) sobrescrevem). Exemplo de config em `projects/example.yaml`. A etapa de implementação clona o repositório mapeado para `<dir do estado>/worktrees/<projeto>/<card>` e nunca mexe na cópia de trabalho mapeada.
 
+### Assumir card "Em Andamento" e veto
+
+A busca enfileira os cards atribuídos ao usuário em "A Fazer" e em "Em Andamento". Os de "A Fazer" ganham o comentário de assunção e vão para "Em Andamento". Um card que já estava em andamento:
+
+- ganha o mesmo comentário de assunção e um evento `notify` ao usuário (`reason: "aguardando-veto"`, com o fim do prazo em `until`), que as interfaces de gestão encaminham;
+- vai para `aguardando-veto`, sai da fila (a próxima avança) e dorme numa task durável de prazo por `vetoMinutes` do projeto (padrão 30) no relógio da fábrica; a espera sobrevive a um reinício;
+- `POST /tasks/{projeto}/{card}/veto` (ou `commands.veto` do `RunningFactory`, o mesmo comando das interfaces de gestão) dentro do prazo deixa a Tarefa `vetada`: estado final, ela não escreve mais nada no card. Fora do prazo, ou numa Tarefa que não aguarda veto, a resposta é 409, sem efeito;
+- sem veto, a Tarefa volta à fila e, na vez dela, segue para as etapas, sem transição (o card já está em "Em Andamento"). Uma nova tentativa depois de uma falha não abre outro prazo.
+
 ### Perguntas ao PO e horas úteis
 
 Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta `perguntar_po`. A pergunta sai pela porta `Channel` (`src/channel.ts`); no M1, o único adaptador é um comentário no card que menciona o PO declarado em `people` (role `po`), sempre pelo escritor de efeitos (guardrail de destinatário só entre as pessoas do projeto, prefixo, filtro de segredos e dry-run). Sem PO declarado, a Tarefa fica `bloqueada`.

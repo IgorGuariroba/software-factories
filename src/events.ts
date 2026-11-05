@@ -44,15 +44,18 @@ export type FactoryEvent =
     }
   | {
       /**
-       * Aviso ao usuário, para as interfaces de gestão encaminharem (ex.: uma pergunta sem resposta há 1 dia útil).
+       * Aviso ao usuário, para as interfaces de gestão encaminharem (ex.: uma pergunta sem resposta há 1 dia útil ou
+       * o prazo de veto de um card que já estava em andamento).
        * Não vai para o card nem para as pessoas do projeto.
        */
       type: "notify";
       at: string;
       project: string;
       target: string;
-      reason: "pergunta-sem-resposta";
+      reason: "pergunta-sem-resposta" | "aguardando-veto";
       message: string;
+      /** Até quando o usuário pode agir (ex.: o fim do prazo de veto), em ISO 8601. */
+      until?: string;
     }
   | {
       /** Mudança de status de uma tarefa. */
