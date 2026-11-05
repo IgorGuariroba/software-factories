@@ -15,17 +15,23 @@ const SECRET_PATTERNS: RegExp[] = [
 
 const SECRET_KEY = String.raw`\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)`;
 const QUOTED = String.raw`"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'`;
+/**
+ * Uma palavra de valor YAML sem aspas. `)` e `]` podem aparecer no meio, mas não no fim: ali fecham o parêntese ou o
+ * colchete em volta da atribuição (`(api_key: x)`), e ficam fora do valor mascarado.
+ */
+const VALUE_WORD = String.raw`[^\s"',;}]*[^\s"',;})\]]`;
 /** Uma palavra que começa outra atribuição (`chave:` ou `chave=`) encerra o valor anterior. */
-const WORD = String.raw`(?![A-Za-z0-9_-]+["']?\s*[:=])[^\s"',;}]+`;
+const WORD = String.raw`(?![A-Za-z0-9_-]+["']?\s*[:=])${VALUE_WORD}`;
 
 /**
  * Atribuições em que o nome da chave indica um segredo:
- * - `chave: valor` (YAML): o valor sem aspas pode ter espaços e vai até o fim da linha ou até a próxima atribuição;
+ * - `chave: valor` (YAML): o valor sem aspas pode ter espaços e vai até o fim da linha, até a próxima atribuição ou
+ *   até a pontuação que fecha o trecho em volta (`)`, `]`, `}`, `,`);
  * - `CHAVE=valor` (env): o valor sem aspas vai até o próximo espaço;
  * - em ambos, e em JSON (`"chave": "valor"`), valores entre aspas podem ter espaços e aspas escapadas.
  */
 const SECRET_ASSIGNMENTS = [
-  new RegExp(String.raw`${SECRET_KEY}(["']?[ \t]*:[ \t]*)(?:${QUOTED}|[^\s"',;}]+(?:[ \t]+${WORD})*)`, "gi"),
+  new RegExp(String.raw`${SECRET_KEY}(["']?[ \t]*:[ \t]*)(?:${QUOTED}|${VALUE_WORD}(?:[ \t]+${WORD})*)`, "gi"),
   new RegExp(String.raw`${SECRET_KEY}(["']?\s*=\s*)(?:${QUOTED}|[^\s"']+)`, "gi"),
 ];
 
