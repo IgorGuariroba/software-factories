@@ -49,6 +49,38 @@ describe("escritor de efeitos", () => {
     ]);
   });
 
+  it("no dry-run, uma escrita idempotente já registrada no log não é registrada de novo, nem por um escritor novo", async () => {
+    const { events, writer } = setup({ dryRun: true });
+    // O escritor de depois de um reinício: outro objeto, sobre o mesmo log de eventos.
+    const again = createEffectWriter({
+      config: testProjectConfig({ dryRun: true }),
+      source: new MemoryDemandSource([{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }]),
+      events,
+      transitionLimit: "in_progress",
+    });
+
+    for (const w of [writer, again]) {
+      await w.commentOnce("PROJ-1", "Assumindo este card.");
+      await w.transition("PROJ-1", "in_progress");
+      await w.upsertComment("PROJ-1", "SPEC", "Entregar o CSV.");
+      await w.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
+    }
+    await writer.upsertComment("PROJ-1", "SPEC", "Entregar o CSV com cabeçalho.");
+    // `comment` não é idempotente: cada chamada é uma escrita.
+    await writer.comment("PROJ-1", "Oi.");
+    await again.comment("PROJ-1", "Oi.");
+
+    expect(events.list().map((e) => (e.type === "write" ? `${e.action}: ${e.content}` : e.type))).toEqual([
+      "comment: \u{1F916} [fábrica] Assumindo este card.",
+      "transition: Em Andamento",
+      "comment: \u{1F916} [fábrica] SPEC\n\nEntregar o CSV.",
+      "mention: \u{1F916} [fábrica] [~accountid:po-ficticio] Pergunta 1: qual o separador?",
+      "comment: \u{1F916} [fábrica] SPEC\n\nEntregar o CSV com cabeçalho.",
+      "comment: \u{1F916} [fábrica] Oi.",
+      "comment: \u{1F916} [fábrica] Oi.",
+    ]);
+  });
+
   describe("guardrails", () => {
     it("bloqueia escrita em card que não é do usuário e avisa por evento", async () => {
       const { source, events, writer } = setup();

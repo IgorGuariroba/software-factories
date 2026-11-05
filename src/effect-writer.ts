@@ -13,7 +13,13 @@ export class GuardrailViolation extends Error {
   override name = "GuardrailViolation";
 }
 
-/** Toda escrita externa da fábrica num projeto passa por aqui (ADR-0006). */
+/**
+ * Toda escrita externa da fábrica num projeto passa por aqui (ADR-0006).
+ *
+ * No dry-run, as escritas só são registradas (eventos `write` com `dryRun: true`). As idempotentes (todas menos
+ * `comment`) são registradas uma vez só por destino, ação e conteúdo, inclusive depois de um reinício: o registro fica
+ * no log de eventos durável.
+ */
 export interface EffectWriter {
   /** Cria um comentário próprio no card. Retorna o id (no dry-run, um id fictício). */
   comment(cardKey: string, body: string): Promise<{ id: string }>;
@@ -80,20 +86,62 @@ export function createEffectWriter(opts: {
   const user = config.source.assignee;
   const dryRunIds = new Set<string>();
 
-  /** Aplica os guardrails, registra e executa (ou só registra, no dry-run). */
+  /**
+   * Se o dry-run já registrou esta escrita (mesmo destino, ação e conteúdo). O log de eventos é durável, então a
+   * lembrança sobrevive a um reinício: no dry-run nada chega ao sistema, e é só por ela que uma escrita idempotente
+   * repetida (ex.: um passo refeito depois de um reinício) não aparece de novo.
+   */
+  const dryRunRegistered = (w: { target: string; action: string; content: string }) =>
+    events
+      .list()
+      .some(
+        (e) =>
+          e.type === "write" &&
+          e.dryRun &&
+          e.project === config.name &&
+          e.target === w.target &&
+          e.action === w.action &&
+          e.content === w.content,
+      );
+
+  /**
+   * Aplica os guardrails, registra e executa (ou só registra, no dry-run). Com `once` (escritas idempotentes: todas
+   * menos `comment`), o dry-run não registra de novo uma escrita que já registrou.
+   */
   async function write<T>(
     w: { target: string; action: string; content: string },
     check: () => Promise<string | undefined>,
     run: () => Promise<T>,
     dry: () => T,
+    once = true,
   ): Promise<T> {
     const reason = await check();
     if (reason) {
       await events.append({ type: "blocked", project: config.name, ...w, reason });
       throw new GuardrailViolation(`Guardrail: ${w.action} em ${w.target} bloqueado: ${reason}`);
     }
+    if (config.dryRun && once && dryRunRegistered(w)) return dry();
     await events.append({ type: "write", project: config.name, ...w, dryRun: config.dryRun });
     return config.dryRun ? dry() : run();
+  }
+
+  /** Id fictício de um comentário do dry-run, que `editComment` aceita sem procurar na Fonte. */
+  const dryRunComment = () => {
+    const id = `dry-run-${dryRunIds.size + 1}`;
+    dryRunIds.add(id);
+    return { id };
+  };
+
+  /** Cria um comentário próprio no card; `once` como em `write`. */
+  function addOwnComment(cardKey: string, body: string, once: boolean): Promise<{ id: string }> {
+    const content = outgoing(body);
+    return write(
+      { target: cardKey, action: "comment", content },
+      () => cardNotOwned(cardKey),
+      () => source.addComment(cardKey, content),
+      dryRunComment,
+      once,
+    );
   }
 
   async function cardNotOwned(key: string): Promise<string | undefined> {
@@ -133,17 +181,7 @@ export function createEffectWriter(opts: {
 
   return {
     comment(cardKey, body) {
-      const content = outgoing(body);
-      return write(
-        { target: cardKey, action: "comment", content },
-        () => cardNotOwned(cardKey),
-        () => source.addComment(cardKey, content),
-        () => {
-          const id = `dry-run-${dryRunIds.size + 1}`;
-          dryRunIds.add(id);
-          return { id };
-        },
-      );
+      return addOwnComment(cardKey, body, false);
     },
 
     async commentOnce(cardKey, body) {
@@ -152,7 +190,7 @@ export function createEffectWriter(opts: {
         const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
         if (existing) return { id: existing.id };
       }
-      return this.comment(cardKey, body);
+      return addOwnComment(cardKey, body, true);
     },
 
     async mention(cardKey, personId, body) {
@@ -169,11 +207,7 @@ export function createEffectWriter(opts: {
           return cardNotOwned(cardKey);
         },
         () => source.addComment(cardKey, content),
-        () => {
-          const id = `dry-run-${dryRunIds.size + 1}`;
-          dryRunIds.add(id);
-          return { id };
-        },
+        dryRunComment,
       );
     },
 
@@ -183,7 +217,7 @@ export function createEffectWriter(opts: {
       const existing = (await source.listComments(cardKey)).find(
         (c) => c.author === user && c.body.split("\n")[0] === header,
       );
-      if (!existing) return this.comment(cardKey, content);
+      if (!existing) return addOwnComment(cardKey, content, true);
       if (existing.body !== content) await this.editComment(cardKey, existing.id, content);
       return { id: existing.id };
     },

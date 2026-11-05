@@ -178,4 +178,4 @@ Para testar a fábrica lendo a fila e cards do Jira de verdade sem aplicar nenhu
    FACTORY_STATE_PATH=/tmp/fabrica-demo/demo.sqlite \
    npm start
    ```
-5. No log do console e no stream de eventos, o daemon listará a fila real de cards atribuídos a você e registrará no log cada escrita que faria (com prefixo de automação e dados higienizados), sem alterar nada no Jira.
+5. No log do console e no stream de eventos, o daemon listará a fila real de cards atribuídos a você e registrará no log cada escrita que faria (com prefixo de automação e dados higienizados), sem alterar nada no Jira. O dry-run lembra, no estado durável, as escritas que já registrou: um reinício no meio do ensaio não registra de novo a mesma escrita (mesmo destino, ação e conteúdo).
