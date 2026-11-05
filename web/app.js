@@ -53,7 +53,7 @@ let tasks = [];
 let daemonPaused = false;
 /** Tarefa aberta no detalhe, pelo hash `#/tarefa/<projeto>/<card>`. */
 let selected = null;
-/** Id opaco de um link público (`#/retro/<id>`), resolvido para a Tarefa quando a lista chega. */
+/** Id opaco de uma issue da fábrica colado na página (`#/retro/<id>`), resolvido para a Tarefa quando a lista chega. */
 let pendingRef = null;
 
 function showError(err) {

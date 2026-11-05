@@ -249,9 +249,6 @@ export async function startFactory(opts: {
     return () => clearTimeout(timer);
   };
   let events!: DurableEventLog;
-  // O link público de uma Tarefa leva só o id opaco; a página local resolve o id (`#/retro/<id>`).
-  let baseUrl = `http://127.0.0.1:${opts.port ?? 0}`;
-  const retroLinkPrefix = () => `${baseUrl}/#/retro/`;
   if (!opts.retro?.sink || !opts.retro.repo)
     console.warn(
       "[fábrica] retrô sem repositório da fábrica: defina FACTORY_RETRO_REPO=dono/nome para abrir issues; " +
@@ -275,7 +272,7 @@ export async function startFactory(opts: {
               t.implementation?.branch === branch &&
               t.implementation.branchOrigin === "criada",
           ),
-        retro: { ...opts.retro, linkPrefix: retroLinkPrefix },
+        retro: opts.retro,
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
       return [p.config.name, { ...p, codeHost, writer, channel }] as const;
@@ -434,7 +431,6 @@ export async function startFactory(opts: {
           },
           sink: opts.retro?.sink,
           repo: opts.retro?.repo,
-          linkFor: (ref) => `${retroLinkPrefix()}${ref}`,
         });
         return undefined;
       }
@@ -978,7 +974,6 @@ export async function startFactory(opts: {
 
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${port}`;
   return {
     url: `http://127.0.0.1:${port}`,
     commands,

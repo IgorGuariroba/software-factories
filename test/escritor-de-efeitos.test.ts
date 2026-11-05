@@ -49,6 +49,38 @@ describe("escritor de efeitos", () => {
     ]);
   });
 
+  it("no dry-run, uma escrita idempotente já registrada no log não é registrada de novo, nem por um escritor novo", async () => {
+    const { events, writer } = setup({ dryRun: true });
+    // O escritor de depois de um reinício: outro objeto, sobre o mesmo log de eventos.
+    const again = createEffectWriter({
+      config: testProjectConfig({ dryRun: true }),
+      source: new MemoryDemandSource([{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }]),
+      events,
+      transitionLimit: "in_progress",
+    });
+
+    for (const w of [writer, again]) {
+      await w.commentOnce("PROJ-1", "Assumindo este card.");
+      await w.transition("PROJ-1", "in_progress");
+      await w.upsertComment("PROJ-1", "SPEC", "Entregar o CSV.");
+      await w.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
+    }
+    await writer.upsertComment("PROJ-1", "SPEC", "Entregar o CSV com cabeçalho.");
+    // `comment` não é idempotente: cada chamada é uma escrita.
+    await writer.comment("PROJ-1", "Oi.");
+    await again.comment("PROJ-1", "Oi.");
+
+    expect(events.list().map((e) => (e.type === "write" ? `${e.action}: ${e.content}` : e.type))).toEqual([
+      "comment: \u{1F916} [fábrica] Assumindo este card.",
+      "transition: Em Andamento",
+      "comment: \u{1F916} [fábrica] SPEC\n\nEntregar o CSV.",
+      "mention: \u{1F916} [fábrica] [~accountid:po-ficticio] Pergunta 1: qual o separador?",
+      "comment: \u{1F916} [fábrica] SPEC\n\nEntregar o CSV com cabeçalho.",
+      "comment: \u{1F916} [fábrica] Oi.",
+      "comment: \u{1F916} [fábrica] Oi.",
+    ]);
+  });
+
   describe("guardrails", () => {
     it("bloqueia escrita em card que não é do usuário e avisa por evento", async () => {
       const { source, events, writer } = setup();
@@ -310,6 +342,7 @@ describe("menção a uma pessoa do projeto (mention)", () => {
 
 describe("escritor de efeitos: issues de retrô no repositório público da fábrica", () => {
   const REPO = "fabrica/fabrica-publica";
+  /** O link local de uma Tarefa na página da fábrica: também não vai ao repositório público. */
   const LINK = "http://127.0.0.1:7420/#/retro/";
   function retroSetup(opts: { dryRun?: boolean; repo?: string } = {}) {
     const source = new MemoryDemandSource([
@@ -332,7 +365,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
       source,
       events,
       transitionLimit: "in_progress",
-      retro: { sink, repo: "repo" in opts ? opts.repo : REPO, linkPrefix: () => LINK },
+      retro: { sink, repo: "repo" in opts ? opts.repo : REPO },
     });
     return { events, sink, writer };
   }
@@ -378,7 +411,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     expect(sink.issues).toEqual([]);
   });
 
-  it("saneia os valores do projeto e do card, links, caminhos e segredos; mantém só o link opaco da fábrica", async () => {
+  it("saneia os valores do projeto e do card, todos os links (inclusive os da fábrica), caminhos e segredos", async () => {
     const { sink, writer } = retroSetup();
     const token = `glpat-${"x".repeat(20)}`;
 
@@ -395,7 +428,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     expect(issue?.body).toBe(
       '\u{1F916} [fábrica] Projeto [removido], pessoa [removido] ([removido]), card "[removido]", repo [removido] ' +
         "em [caminho removido], chave [segredo removido], [link removido], " +
-        `[link removido] e ${LINK}0a1b2c3d4e5f.`,
+        "[link removido] e [link removido].",
     );
   });
 

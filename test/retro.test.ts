@@ -139,9 +139,15 @@ describe("retrô por etapa e consolidada", () => {
 });
 
 describe("propostas da fábrica viram issues retro", () => {
-  it("abre uma issue com a label retro no repositório da fábrica, com o id opaco e o link da tarefa", async () => {
+  it("abre uma issue com a label retro no repositório da fábrica, com o id opaco da tarefa e nenhuma URL", async () => {
     const model = new FakeModel();
-    scriptRetros(model, [fabrica("Validar a SPEC contra os critérios antes de publicar")]);
+    scriptRetros(model, [
+      fabrica(
+        "Validar a SPEC contra os critérios antes de publicar",
+        // O modelo cita um link da própria fábrica: ele também sai.
+        "A etapa poderia validar a entrega antes de publicar. Veja http://127.0.0.1:7420/#/retro/0a1b2c3d4e5f.",
+      ),
+    ]);
     factory = await startTestFactory({ cards: [card()], model });
 
     await poll(factory);
@@ -157,15 +163,17 @@ describe("propostas da fábrica viram issues retro", () => {
     const { ref, retros } = await detail(factory);
     expect(ref).toMatch(/^[0-9a-f]{12}$/);
     expect(issue?.body).toContain("A etapa poderia validar a entrega antes de publicar.");
-    expect(issue?.body).toContain(`${factory.url}/#/retro/${ref}`);
+    expect(issue?.body).toContain(`tarefa \`${ref}\``);
+    expect(issue?.body).not.toMatch(/https?:\/\//);
+    expect(issue?.body).not.toContain("#/retro/");
     expect(retros[0]?.proposals).toMatchObject([
       { n: 1, kind: "fabrica", status: "issue-criada", issue: { number: issue?.number, url: issue?.url } },
     ]);
-    // O link resolve só pelo id opaco: a API lista a Tarefa com ele.
+    // O id opaco resolve a Tarefa: a API lista a Tarefa com ele.
     expect((await tasks(factory)).find((t) => (t as { ref?: string }).ref === ref)?.key).toBe("PROJ-1");
   });
 
-  it("com uma issue parecida já aberta, comenta '+1' com o link da tarefa em vez de abrir outra", async () => {
+  it("com uma issue parecida já aberta, comenta '+1' com o id opaco da tarefa, sem URL, em vez de abrir outra", async () => {
     const model = new FakeModel();
     scriptRetros(model, [fabrica("Validar SPEC contra critérios antes da publicação")]);
     factory = await startTestFactory({ cards: [card()], model });
@@ -186,7 +194,8 @@ describe("propostas da fábrica viram issues retro", () => {
     expect(factory.retroSink.issues).toHaveLength(3);
     expect(existing.comments).toHaveLength(1);
     expect(existing.comments[0]).toMatch(/\+1/);
-    expect(existing.comments[0]).toContain(`${factory.url}/#/retro/${ref}`);
+    expect(existing.comments[0]).toContain(`tarefa \`${ref}\``);
+    expect(existing.comments[0]).not.toMatch(/https?:\/\//);
     expect(retros[0]?.proposals).toMatchObject([{ status: "mais-um", issue: { number: existing.number } }]);
   });
 

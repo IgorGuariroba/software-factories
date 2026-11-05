@@ -8,6 +8,8 @@ export class MemoryDemandSource implements DemandSource {
 
   /** Atraso artificial em toda operação, para simular a rede e expor corridas. */
   latencyMs = 0;
+  /** Se definido, toda operação falha com este erro (a Fonte fora do ar). */
+  unavailable: Error | undefined;
 
   constructor(
     public cards: Card[] = [],
@@ -17,6 +19,7 @@ export class MemoryDemandSource implements DemandSource {
 
   private async network(): Promise<void> {
     if (this.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
+    if (this.unavailable) throw this.unavailable;
   }
 
   async listAssignedCards(assignee: string): Promise<Card[]> {

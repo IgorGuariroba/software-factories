@@ -46,27 +46,12 @@ export function privateTerms(config: ProjectConfig, extra: string[] = []): strin
  */
 export function sanitizePublicText(
   text: string,
-  opts: {
-    terms: string[];
-    cardPrefix: string;
-    /**
-     * Links da própria fábrica que ficam: este prefixo seguido só de um id opaco em hexadecimal (o link da Tarefa).
-     * Qualquer outro link sai, inclusive um da fábrica com outra rota (ex.: a que leva a chave do card).
-     */
-    keepLinksTo?: string;
-  },
+  opts: { terms: string[]; cardPrefix: string },
 ): { text: string; leftovers: string[] } {
-  const kept: string[] = [];
-  // O marcador interno dos links mantidos não pode vir do texto de entrada.
   let out = text
-    .replace(/\uE000/g, "")
-    // O link termina antes da pontuação que o segue no texto.
-    .replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/gi, (url) => {
-      const prefix = opts.keepLinksTo;
-      if (!prefix || !url.startsWith(prefix) || !/^[0-9a-f]+$/.test(url.slice(prefix.length))) return REMOVED_LINK;
-      kept.push(url);
-      return `\uE000${kept.length - 1}\uE000`;
-    })
+    // Todo link sai, inclusive os da própria fábrica: a Tarefa aparece só pelo id opaco. O link termina antes da
+    // pontuação que o segue no texto.
+    .replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/gi, REMOVED_LINK)
     .replace(/(?<![\p{L}\p{N}_.~-])(?:~|\.\.?)?\/[\w.-]+(?:\/[\w.-]+)+\/?/gu, REMOVED_PATH);
   const cardKey = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(opts.cardPrefix)}-\\d+(?![\\p{N}])`, "giu");
   out = out.replace(cardKey, REMOVED);
@@ -81,6 +66,5 @@ export function sanitizePublicText(
     const c = compact(term);
     if (c.length >= COMPACT_MIN && compactOut.includes(c)) leftovers.push(`"${term}"`);
   }
-  out = out.replace(/\uE000(\d+)\uE000/g, (_, i: string) => kept[Number(i)] ?? REMOVED_LINK);
   return { text: out, leftovers };
 }

@@ -47,7 +47,7 @@ export const retroStatusLabel = (status) => RETRO_STATUS[status] ?? status;
 export const proposalLabel = (p) => `${PROPOSAL_KIND[p.kind] ?? p.kind}: ${PROPOSAL_STATUS[p.status] ?? p.status}`;
 
 /**
- * A Tarefa do link público de uma issue da fábrica (`#/retro/<id opaco>`).
+ * A Tarefa de um id opaco citado numa issue da fábrica, aberta pela página como `#/retro/<id opaco>`.
  * @template {{ ref?: string | null }} T
  * @param {T[]} tasks
  * @param {string} ref

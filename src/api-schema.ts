@@ -119,7 +119,7 @@ export const API_SCHEMA = {
             type: ["string", "null"],
             description:
               "Id opaco e estável da tarefa: a única referência a ela nas issues públicas da fábrica " +
-              "(o link é http://127.0.0.1:<porta>/#/retro/<ref>)",
+              "(sem URL; colado na página local como #/retro/<ref>, abre a tarefa)",
           },
           project: { type: "string" },
           key: { type: "string" },

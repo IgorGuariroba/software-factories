@@ -89,6 +89,40 @@ describe("reinício do daemon", () => {
     expect(writes).toContain("transition");
   });
 
+  it("no dry-run, um reinício no meio da tarefa não registra de novo as escritas já registradas", async () => {
+    factory = await startTestFactory({ cards: [card("PROJ-1")], dryRun: true });
+    const first = factory;
+    const source = factory.source;
+    const listComments = source.listComments.bind(source);
+    const specWritten = async () =>
+      (await events(first)).some((e) => e.type === "write" && String(e.content).includes("[fábrica] SPEC"));
+    let stuck = true;
+    let reached = false;
+    // Depois de registrar a SPEC, a leitura para registrar os Tickets nunca termina: o daemon cai no meio do passo.
+    source.listComments = async (key) => {
+      if (stuck && (await specWritten())) {
+        reached = true;
+        return new Promise(() => {});
+      }
+      return listComments(key);
+    };
+
+    await poll(factory);
+    await eventually(() => expect(reached).toBe(true));
+    stuck = false;
+    factory = await factory.restart();
+    await waitForStatus(factory, "PROJ-1", "concluida");
+
+    const writes = (await events(factory))
+      .filter((e) => e.type === "write" && String(e.target).startsWith("PROJ-1"))
+      .map((e) => `${e.action} ${e.target}: ${e.content}`);
+    expect(writes.filter((w) => w.includes("[fábrica] SPEC"))).toHaveLength(1);
+    expect(writes.filter((w) => w.includes("[fábrica] Tickets"))).toHaveLength(1);
+    expect(writes.filter((w) => w.endsWith("Assumindo este card."))).toHaveLength(1);
+    expect(new Set(writes).size).toBe(writes.length);
+    expect(source.commentsOf("PROJ-1")).toEqual([]);
+  });
+
   it("um reinício com o daemon pausado continua pausado", async () => {
     factory = await startTestFactory({ cards: [card("PROJ-1")] });
     await api(factory, "POST", "/daemon/pause");
