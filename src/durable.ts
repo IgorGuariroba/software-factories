@@ -227,6 +227,12 @@ export const ManagementDoc = defineDoc<Record<string, ManagementProgress>>({
 /** Um evento da fábrica, gravado no transcript da conversa raiz. */
 export const EventEntry = defineEntry<JsonObject>("fabrica.evento");
 
+/**
+ * Cópia solta de um valor do estado durável. O rascunho que `tx.doc` devolve num commit não pode ser usado depois
+ * dele: o que sai do commit (ou volta para outro lugar do documento) é sempre esta cópia, nunca o próprio rascunho.
+ */
+export const copyOutOfCommit = <T>(draft: T): T => JSON.parse(JSON.stringify(draft)) as T;
+
 /** Converte um evento para o JSON gravado no transcript (sem campos `undefined`). */
 export const eventToJson = (event: FactoryEvent): JsonObject => JSON.parse(JSON.stringify(event)) as JsonObject;
 
@@ -403,7 +409,7 @@ export function createTarefaTask(steps: TarefaSteps) {
       } else {
         // Volta para o fim da fila; a próxima tentativa recomeça do primeiro passo, que é idempotente.
         const retry: QueuedTask = {
-          ...(JSON.parse(JSON.stringify(queued)) as QueuedTask),
+          ...copyOutOfCommit(queued),
           status: "enfileirada",
           durableId: null,
           gateId: null,

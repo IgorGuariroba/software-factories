@@ -13,7 +13,14 @@ import type { CodeHost } from "./code-host.js";
 import type { ModelRef, ProjectConfig } from "./config.js";
 import { formatBranchName, formatCommitMessage, resolveConventions } from "./conventions.js";
 import type { Card } from "./demand-source.js";
-import { type ImplementationProgress, type QueuedTask, StateDoc, type StepRuntime, type TddPhase } from "./durable.js";
+import {
+  copyOutOfCommit,
+  type ImplementationProgress,
+  type QueuedTask,
+  StateDoc,
+  type StepRuntime,
+  type TddPhase,
+} from "./durable.js";
 import type { EffectWriter } from "./effect-writer.js";
 import type { EventRecorder } from "./events.js";
 import { git } from "./git.js";
@@ -153,9 +160,6 @@ export function createImplementationExtension(deps: ImplementationDeps) {
 
 type ImplementationExtension = ReturnType<typeof createImplementationExtension>;
 
-/** Cópia solta do progresso (o rascunho de um commit não pode escapar dele). */
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-
 /** Renderiza o checklist de Tickets marcando os tickets já implementados. */
 export const renderTicketsProgress = (tickets: SpecDelivery["tickets"], done: ReadonlySet<number>): string =>
   tickets.map((t, i) => `- [${done.has(i) ? "x" : " "}] **${i + 1}. ${t.titulo}**: ${t.aceite}`).join("\n");
@@ -204,7 +208,7 @@ export async function runImplementation(opts: {
     let progress: ImplementationProgress | undefined;
     await runtime.commit(async (tx) => {
       const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId)?.implementation;
-      progress = stored ? clone(stored) : undefined;
+      progress = stored ? copyOutOfCommit(stored) : undefined;
     });
     return progress;
   };
@@ -213,7 +217,7 @@ export async function runImplementation(opts: {
       // Depois do fechamento do daemon, o passo cancelado não grava mais nada: a retomada é de outro processo.
       runtime.signal.throwIfAborted();
       const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-      if (task) task.implementation = clone(progress);
+      if (task) task.implementation = copyOutOfCommit(progress);
     });
 
   const progress = (await readProgress()) ?? (await start());
@@ -324,7 +328,7 @@ export async function runImplementation(opts: {
         branch,
         branchOrigin: adopted ? "adotada" : "criada",
         commitPattern: conventions.commit,
-        test: clone(mapping.test),
+        test: copyOutOfCommit(mapping.test),
         conversationId: conversation.id,
         head,
         commits: [],
@@ -335,7 +339,7 @@ export async function runImplementation(opts: {
         pushed: false,
       };
       const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-      if (task) task.implementation = clone(created);
+      if (task) task.implementation = copyOutOfCommit(created);
     });
     if (!created) throw new Error("progresso da implementação não foi criado");
     return created;
