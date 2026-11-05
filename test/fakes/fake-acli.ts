@@ -54,10 +54,14 @@ export class FakeAcli {
 
   constructor(public me: FakeJiraPerson) {}
 
-  /** Para os testes: um comentário escrito por outra pessoa (ou por mim, por fora da fábrica). */
-  addHumanComment(key: string, author: FakeJiraPerson, text: string): string {
+  /**
+   * Para os testes: um comentário escrito por outra pessoa (ou por mim, por fora da fábrica). O corpo é texto (vira um
+   * parágrafo por linha) ou um documento ADF já montado.
+   */
+  addHumanComment(key: string, author: FakeJiraPerson, body: string | object): string {
     const id = String(this.nextCommentId++);
-    this.comments.set(key, [...(this.comments.get(key) ?? []), { id, author, body: toAdf(text) }]);
+    const adf = typeof body === "string" ? toAdf(body) : body;
+    this.comments.set(key, [...(this.comments.get(key) ?? []), { id, author, body: adf }]);
     return id;
   }
 

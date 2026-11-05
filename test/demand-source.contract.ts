@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { DemandSource } from "../src/demand-source.js";
+import type { DemandSource, TextAttachment } from "../src/demand-source.js";
 
 export interface DemandSourceContractFixture {
   source: DemandSource;
@@ -12,6 +12,17 @@ export interface DemandSourceContractFixture {
     toStatus: string;
   };
   cleanup?: () => Promise<void>;
+  /**
+   * Todos os cards atribuídos ao usuário no projeto, quando o ambiente os conhece. Os fakes têm mais cards do que cabem
+   * numa página da Fonte, para a busca provar que não para na primeira.
+   */
+  assignedKeys?: string[];
+  /** Um card com descrição e comentário ricos na Fonte (listas, citações, menção, linhas em branco) e o texto esperado. */
+  richText?: { key: string; description: string; comment: string };
+  /** Os anexos de texto esperados de um card, na ordem; os binários do card não aparecem. */
+  attachments?: { key: string; expected: TextAttachment[] };
+  /** A mesma Fonte com o sistema falhando de jeitos diferentes: toda leitura tem de lançar erro. */
+  failing?: { name: string; source: DemandSource }[];
 }
 
 /**
@@ -44,6 +55,48 @@ export function describeDemandSourceContract(
         expect(card.title.length).toBeGreaterThan(0);
         expect(typeof card.status).toBe("string");
         expect(card.status.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("a busca traz todos os cards atribuídos ao usuário no projeto, além da primeira página, e nenhum outro", async (ctx) => {
+      if (!fixture.assignedKeys) return ctx.skip();
+      const keys = (await fixture.source.listAssignedCards(fixture.assignee)).map((c) => c.key);
+      expect([...keys].sort()).toEqual([...fixture.assignedKeys].sort());
+    });
+
+    it("uma descrição e um comentário ricos chegam como texto", async (ctx) => {
+      if (!fixture.richText) return ctx.skip();
+      const { key, description, comment } = fixture.richText;
+      expect((await fixture.source.getCard(key))?.description).toBe(description);
+      expect((await fixture.source.listAssignedCards(fixture.assignee)).find((c) => c.key === key)?.description).toBe(
+        description,
+      );
+      expect((await fixture.source.listComments(key)).map((c) => c.body)).toContain(comment);
+    });
+
+    it("anexos de texto chegam com o conteúdo (ou com o aviso explícito de que não foi lido); binários ficam de fora", async (ctx) => {
+      if (!fixture.attachments) return ctx.skip();
+      const { key, expected } = fixture.attachments;
+      expect(await fixture.source.listTextAttachments(key)).toEqual(expected);
+    });
+
+    it("comentários e anexos de um card de outro projeto vêm vazios", async () => {
+      expect(await fixture.source.listComments("OUTROPROJ-1")).toEqual([]);
+      expect(await fixture.source.listTextAttachments("OUTROPROJ-1")).toEqual([]);
+    });
+
+    it("falha de leitura lança erro: não vira lista vazia nem card ausente", async (ctx) => {
+      if (!fixture.failing?.length) return ctx.skip();
+      for (const { name, source } of fixture.failing) {
+        const reads: [string, () => Promise<unknown>][] = [
+          ["listAssignedCards", () => source.listAssignedCards(fixture.assignee)],
+          ["getCard", () => source.getCard(fixture.existingCardKey)],
+          ["listComments", () => source.listComments(fixture.existingCardKey)],
+          ["listTextAttachments", () => source.listTextAttachments(fixture.existingCardKey)],
+        ];
+        for (const [read, call] of reads) {
+          await expect(call(), `${read} com ${name}`).rejects.toThrow();
+        }
       }
     });
 

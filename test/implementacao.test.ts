@@ -160,6 +160,42 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
     ]);
   });
 
+  it("histórico com a chave no início do commit e branches ticket/ gera a branch e os commits nesse padrão", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      commits: ["[ABC-1] feat: tela de login", "[ABC-2] fix: valida a senha"],
+      branches: ["ticket/ABC-1-tela-de-login", "ticket/ABC-2-senha"],
+    });
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect((await repo.branchLog("ticket/PROJ-1-exportar-relatorio-em-csv")).map((c) => c.subject)).toEqual([
+      "[PROJ-1] test: adiciona teste para Gerar CSV",
+      "[PROJ-1] feat: Gerar CSV",
+    ]);
+  });
+
+  it("histórico com a chave no escopo do commit gera os commits nesse padrão", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      commits: ["feat(ABC-1): tela de login", "fix(ABC-2): valida a senha"],
+    });
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    // Sem branches com padrão no remoto, a branch segue o padrão documentado.
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test(PROJ-1): adiciona teste para Gerar CSV",
+      "feat(PROJ-1): Gerar CSV",
+    ]);
+  });
+
   it("a config sobrescreve as convenções descobertas", async () => {
     const repo = await createRemoteRepo(root, "app", {
       commits: ["feat: tela de login (ABC-1)"],
@@ -183,6 +219,29 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
       "[PROJ-1] test: adiciona teste para Gerar CSV",
       "[PROJ-1] feat: Gerar CSV",
     ]);
+  });
+
+  it("resolve o repositório pelo prefixo no título do card", async () => {
+    const web = await createRemoteRepo(root, "web");
+    const mobile = await createRemoteRepo(root, "mobile");
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card({ title: "[web] Exportar relatório em CSV" })],
+      model,
+      config: {
+        repositories: [
+          { path: mobile.user, board: "Mobile", test: NODE_TEST },
+          { path: web.user, prefix: "[web]", test: NODE_TEST },
+        ],
+      },
+    });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect(await web.branches()).toEqual(["feature/PROJ-1-web-exportar-relatorio-em-csv", "main"]);
+    expect(await mobile.branches()).toEqual(["main"]);
   });
 
   it("resolve o repositório pelo board do card quando o prefixo não corresponde", async () => {

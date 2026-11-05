@@ -15,7 +15,7 @@ export interface AcliExecResult {
 /** Runner injetável para comandos do acli. Permite testes sem invocar o binário real. */
 export type AcliRunner = (args: string[]) => Promise<AcliExecResult>;
 
-export interface AttachmentInfo {
+interface AttachmentInfo {
   id: string;
   filename: string;
   mimeType?: string;
@@ -23,7 +23,7 @@ export interface AttachmentInfo {
   size?: number;
 }
 
-export type AttachmentReader = (attachment: AttachmentInfo) => Promise<string>;
+type AttachmentReader = (attachment: AttachmentInfo) => Promise<string>;
 
 export interface JiraDemandSourceOptions {
   /** Chave do projeto no Jira (ex.: "PROJ"). */
@@ -32,14 +32,18 @@ export interface JiraDemandSourceOptions {
   assignee: string;
   /** Runner customizado do acli (para testes ou customização de path). */
   runner?: AcliRunner;
-  /** Leitor de conteúdo de anexo de texto. */
-  readAttachment?: AttachmentReader;
+  /**
+   * Ambiente de onde vêm as credenciais dos anexos (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`). Padrão: `process.env`.
+   */
+  env?: Record<string, string | undefined>;
+  /** `fetch` usado para baixar o conteúdo dos anexos de texto. Padrão: o global. */
+  fetch?: typeof fetch;
 }
 
 /**
  * Runner padrão que localiza o acli (incluindo ~/.local/bin) e executa o binário.
  */
-export const defaultAcliRunner: AcliRunner = async (args: string[]) => {
+const defaultAcliRunner: AcliRunner = async (args: string[]) => {
   const customPath = process.env.ACLI_PATH;
   const acliBin = customPath || "acli";
   const userLocalBin = join(homedir(), ".local", "bin");
@@ -66,14 +70,14 @@ export const defaultAcliRunner: AcliRunner = async (args: string[]) => {
   }
 };
 
-export const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_EMAIL e ATLASSIAN_API_TOKEN]";
+const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_EMAIL e ATLASSIAN_API_TOKEN]";
 
 /**
  * Leitor de anexos por HTTP com autenticação básica (`ATLASSIAN_EMAIL` + `ATLASSIAN_API_TOKEN`), já que o `acli` não
  * baixa anexos. Sem credencial, devolve um conteúdo que diz isso explicitamente. Com credencial, qualquer falha lança
  * erro (a Tarefa é tentada de novo). O token nunca aparece na mensagem de erro.
  */
-export function createHttpAttachmentReader(
+function createHttpAttachmentReader(
   opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch } = {},
 ): AttachmentReader {
   return async (attachment) => {
@@ -97,15 +101,13 @@ export function createHttpAttachmentReader(
   };
 }
 
-export const defaultAttachmentReader: AttachmentReader = createHttpAttachmentReader();
-
 /** Nós ADF que terminam numa quebra de linha. */
 const BLOCK_TYPES = new Set(["paragraph", "heading", "codeBlock", "listItem", "blockquote"]);
 
 /**
  * Converte documento no formato Atlassian Document Format (ADF) ou string para texto plano legível.
  */
-export function adfToText(node: unknown): string {
+function adfToText(node: unknown): string {
   if (typeof node === "string") return node;
   if (!node || typeof node !== "object") return "";
 
@@ -126,7 +128,7 @@ export function adfToText(node: unknown): string {
 }
 
 /** Verifica se um anexo é de texto e não binário (imagem, pdf, zip, etc). */
-export function isTextAttachment(filename: string, mimeType?: string): boolean {
+function isTextAttachment(filename: string, mimeType?: string): boolean {
   const binaryExtRegex = /\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|tgz|7z|rar|bin|exe|jar|war|ear|iso|dmg)$/i;
   if (binaryExtRegex.test(filename)) return false;
 
@@ -196,7 +198,7 @@ export class JiraDemandSource implements DemandSource {
     this.project = opts.project;
     this.assignee = opts.assignee;
     this.runner = opts.runner ?? defaultAcliRunner;
-    this.readAttachment = opts.readAttachment ?? defaultAttachmentReader;
+    this.readAttachment = createHttpAttachmentReader({ env: opts.env, fetch: opts.fetch });
   }
 
   private isKeyInProject(key: string): boolean {

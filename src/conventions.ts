@@ -13,7 +13,7 @@ export interface ResolvedConventions {
 }
 
 /** Transforma um título em slug seguro para nome de branch. */
-export function slugify(text: string): string {
+function slugify(text: string): string {
   return text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
