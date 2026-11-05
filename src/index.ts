@@ -124,16 +124,12 @@ async function main() {
 
   // 8. Lê a resposta persistida no banco SQLite
   const page = await root.entries({ order: "ascending" }, 50, undefined, BACKGROUND_CONTEXT);
-  const assistantEntries = page.items.filter((e: any) => e.kind === "pi.assistant");
-  const lastReply = assistantEntries[assistantEntries.length - 1];
+  const assistantEntries = page.items.filter((e) => e.kind === "pi.assistant");
+  const reply = assistantEntries[assistantEntries.length - 1]?.model?.[0];
 
-  if (lastReply && (lastReply as any).model?.[0]?.content) {
-    const modelInfo = (lastReply as any).model[0];
-    const textParts = modelInfo.content
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => c.text)
-      .join("\n");
-    console.log(`\n--- Resposta de [${modelInfo.provider} / ${modelInfo.model}] ---`);
+  if (reply?.role === "assistant") {
+    const textParts = reply.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
+    console.log(`\n--- Resposta de [${reply.provider} / ${reply.model}] ---`);
     console.log(textParts);
     console.log("----------------------------------------------------------------\n");
   }
