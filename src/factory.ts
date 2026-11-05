@@ -41,8 +41,9 @@ export async function startFactory(opts: { projects: FactoryProject[]; port?: nu
   const server = createServer(async (req, res) => {
     try {
       if (req.method === "GET" && req.url === "/queue") {
+        const body = JSON.stringify(await queue(opts.projects));
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(await queue(opts.projects)));
+        res.end(body);
         return;
       }
       res.writeHead(404).end();

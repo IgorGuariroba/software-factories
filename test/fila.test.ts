@@ -42,4 +42,16 @@ describe("fila de cards elegíveis", () => {
 
     expect(new URL(factory.url).hostname).toBe("127.0.0.1");
   });
+
+  it("responde 500 com o erro quando a Fonte falha", async () => {
+    factory = await startTestFactory();
+    factory.source.listAssignedCards = async () => {
+      throw new Error("Jira fora do ar");
+    };
+
+    const res = await fetch(`${factory.url}/queue`);
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Error: Jira fora do ar" });
+  });
 });
