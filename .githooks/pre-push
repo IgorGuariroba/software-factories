@@ -54,17 +54,23 @@ fi
 # Quality (hooks.quality): typecheck each pushed commit (not the working tree), like 'npm run typecheck' in CI.
 # Each pushed tip is checked out in a temporary worktree that reuses this clone's node_modules.
 tips=$(printf '%s' "$ranges" | sed 's/ .*//; s/.*\.\.//' | sort -u)
-if [ -n "$tips" ] && [ -f tsconfig.json ] && [ -d node_modules ]; then
+if [ -n "$tips" ] && [ -d node_modules ]; then
   root=$(git rev-parse --show-toplevel)
   for sha in $tips; do
-    git cat-file -e "$sha:tsconfig.json" 2>/dev/null || continue
-    wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push-tsc.XXXXXX")
-    git worktree add -q --detach "$wt" "$sha" 2>/dev/null || { rm -rf "$wt"; echo "✋ Could not check out $sha for typecheck." >&2; exit 1; }
+    # Each check depends on the pushed commit's files, not on this working tree.
+    has_tsconfig=0; git cat-file -e "$sha:tsconfig.json" 2>/dev/null && has_tsconfig=1
+    has_package=0; git cat-file -e "$sha:package.json" 2>/dev/null && has_package=1
+    [ $has_tsconfig -eq 1 ] || [ $has_package -eq 1 ] || continue
+    wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push-check.XXXXXX")
+    git worktree add -q --detach "$wt" "$sha" 2>/dev/null || { rm -rf "$wt"; echo "✋ Could not check out $sha for typecheck/tests." >&2; exit 1; }
     ln -s "$root/node_modules" "$wt/node_modules"
-    ( cd "$wt" && npx --no-install tsc --noEmit ); rc=$?
-    step="Typecheck (tsc --noEmit)"
+    rc=0; step=""
+    if [ $has_tsconfig -eq 1 ]; then
+      ( cd "$wt" && npx --no-install tsc --noEmit ); rc=$?
+      step="Typecheck (tsc --noEmit)"
+    fi
     # hooks.quality: the same tests CI runs (npm test), on the pushed commit.
-    if [ $rc -eq 0 ] && git cat-file -e "$sha:package.json" 2>/dev/null; then
+    if [ $rc -eq 0 ] && [ $has_package -eq 1 ]; then
       ( cd "$wt" && npm test --silent ); rc=$?
       step="Tests (npm test)"
     fi
