@@ -1,3 +1,4 @@
+import { request } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   api,
@@ -175,6 +176,16 @@ describe("controle das tarefas", () => {
     expect(commented).toEqual(["PROJ-3", "PROJ-1", "PROJ-2"]);
   });
 
+  it("ids repetidos na reordenação não duplicam tarefas na fila", async () => {
+    factory = await startTestFactory({ cards: [card("PROJ-1"), card("PROJ-2")] });
+    await api(factory, "POST", "/daemon/pause");
+    await poll(factory);
+
+    await api(factory, "POST", "/tasks/order", { ids: ["exemplo/PROJ-2", "exemplo/PROJ-2", "exemplo/PROJ-1"] });
+
+    expect((await tasks(factory)).map((t) => t.key)).toEqual(["PROJ-2", "PROJ-1"]);
+  });
+
   it("responde 404 para tarefa inexistente", async () => {
     factory = await startTestFactory();
 
@@ -218,7 +229,75 @@ describe("stream de eventos", () => {
   });
 });
 
+/** Requisição crua, para controlar Host e Origin (que o fetch não deixa definir livremente). */
+function rawRequest(
+  f: TestFactory,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<number> {
+  const { port } = new URL(f.url);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+describe("API só para clientes locais", () => {
+  it("recusa Host que não seja localhost/127.0.0.1 na porta do servidor (DNS rebinding)", async () => {
+    factory = await startTestFactory();
+    const { port } = new URL(factory.url);
+
+    expect(await rawRequest(factory, "GET", "/tasks", { host: `evil.example:${port}` })).toBe(403);
+    expect(await rawRequest(factory, "GET", "/tasks", { host: "localhost:1" })).toBe(403);
+    expect(await rawRequest(factory, "GET", "/tasks", { host: `localhost:${port}` })).toBe(200);
+    expect(await rawRequest(factory, "GET", "/tasks", { host: `127.0.0.1:${port}` })).toBe(200);
+  });
+
+  it("recusa POST com Origin de outro site (CSRF), aceita sem Origin ou com origem local", async () => {
+    factory = await startTestFactory();
+    const host = new URL(factory.url).host;
+
+    expect(await rawRequest(factory, "POST", "/daemon/pause", { host, origin: "https://evil.example" })).toBe(403);
+    expect(await rawRequest(factory, "POST", "/daemon/pause", { host, origin: `http://${host}` })).toBe(200);
+    expect(await rawRequest(factory, "POST", "/daemon/pause", { host })).toBe(200);
+  });
+
+  it("POST /tasks/order exige Content-Type application/json", async () => {
+    factory = await startTestFactory();
+    const host = new URL(factory.url).host;
+    const body = JSON.stringify({ ids: [] });
+
+    expect(await rawRequest(factory, "POST", "/tasks/order", { host, "content-type": "text/plain" }, body)).toBe(415);
+    expect(
+      await rawRequest(
+        factory,
+        "POST",
+        "/tasks/order",
+        { host, "content-type": "application/json; charset=utf-8" },
+        body,
+      ),
+    ).toBe(200);
+  });
+});
+
 describe("schema da API", () => {
+  it("POST /tasks/order declara corpo e ids obrigatórios e a resposta 400", async () => {
+    factory = await startTestFactory();
+
+    const schema = await api<{ paths: Record<string, { post: unknown }> }>(factory, "GET", "/openapi.json");
+
+    expect(schema.paths["/tasks/order"]?.post).toMatchObject({
+      requestBody: { required: true, content: { "application/json": { schema: { required: ["ids"] } } } },
+      responses: { "400": expect.anything() },
+    });
+  });
+
   it("GET /openapi.json descreve todas as rotas", async () => {
     factory = await startTestFactory();
 

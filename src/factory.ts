@@ -323,7 +323,9 @@ export async function startFactory(opts: {
     reorder: (ids: string[]) =>
       harness.commit(async (tx) => {
         const state = await tx.doc(StateDoc);
-        const first = ids.map((id) => state.tasks.find((t) => t.id === id)).filter((t) => t !== undefined);
+        const first = [...new Set(ids)]
+          .map((id) => state.tasks.find((t) => t.id === id))
+          .filter((t) => t !== undefined);
         state.tasks = [...first, ...state.tasks.filter((t) => !first.includes(t))];
       }, context),
   };
@@ -342,8 +344,27 @@ export async function startFactory(opts: {
   };
   const streams = new Set<ServerResponse>();
 
+  /**
+   * Só clientes locais: Host precisa ser localhost/127.0.0.1 na porta do servidor (barra DNS rebinding) e um POST com
+   * Origin precisa vir dessas mesmas origens (barra CSRF de páginas abertas no navegador).
+   */
+  const localHosts = () => {
+    const { port } = server.address() as AddressInfo;
+    return new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+  };
+  const isLocalRequest = (req: IncomingMessage): boolean => {
+    const hosts = localHosts();
+    if (!hosts.has((req.headers.host ?? "").toLowerCase())) return false;
+    const origin = req.headers.origin;
+    if (req.method !== "POST" || origin === undefined) return true;
+    return [...hosts].some((h) => origin.toLowerCase() === `http://${h}`);
+  };
+  const isJson = (req: IncomingMessage) =>
+    (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase() === "application/json";
+
   const server = createServer(async (req, res) => {
     try {
+      if (!isLocalRequest(req)) return json(res, 403, { error: "a API aceita só clientes locais" });
       const url = new URL(req.url ?? "/", "http://localhost");
       const route = `${req.method} ${url.pathname}`;
       const taskCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/(pause|resume|cancel)$/);
@@ -370,6 +391,7 @@ export async function startFactory(opts: {
         return json(res, 200, { ok: true });
       }
       if (route === "POST /tasks/order") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { ids?: unknown };
         if (!Array.isArray(body?.ids)) return json(res, 400, { error: "envie { ids: string[] }" });
         await commands.reorder(body.ids.map(String));

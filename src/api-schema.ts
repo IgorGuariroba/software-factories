@@ -16,6 +16,7 @@ export const API_SCHEMA = {
   openapi: "3.1.0",
   info: { title: "Fábrica de Software: API local", version: "1" },
   servers: [{ url: "http://127.0.0.1:7420" }],
+  // Toda rota responde 403 a Host não local e a POST com Origin de outro site.
   paths: {
     "/queue": {
       get: { summary: "Cards elegíveis na Fonte (A Fazer e Em Andamento atribuídos ao usuário)", responses: ok },
@@ -38,13 +39,22 @@ export const API_SCHEMA = {
       post: {
         summary: "Reordena a fila: os ids enviados vão para a frente, nessa ordem",
         requestBody: {
+          required: true,
           content: {
             "application/json": {
-              schema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } } },
+              schema: {
+                type: "object",
+                required: ["ids"],
+                properties: { ids: { type: "array", items: { type: "string" } } },
+              },
             },
           },
         },
-        responses: ok,
+        responses: {
+          ...ok,
+          "400": { description: "Corpo sem { ids: string[] }" },
+          "415": { description: "Content-Type diferente de application/json" },
+        },
       },
     },
     "/tasks/{project}/{key}/pause": taskPath("Pausa a tarefa (a ativa para no próximo passo)"),
