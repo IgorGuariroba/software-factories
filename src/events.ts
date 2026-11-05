@@ -58,6 +58,39 @@ export type FactoryEvent =
       until?: string;
     }
   | {
+      /** A fábrica assumiu o card (comentário de assunção feito ou, no dry-run, registrado). Uma vez por Tarefa. */
+      type: "assumed";
+      at: string;
+      project: string;
+      target: string;
+      title: string;
+      /** O card já estava em andamento: o aviso de prazo de veto (`notify`) vem logo depois. */
+      waitsVeto: boolean;
+    }
+  | {
+      /** Um comando recebido por uma interface de gestão: executado, ou ignorado por vir de origem não autorizada. */
+      type: "command";
+      at: string;
+      /** Interface de gestão (ex.: `telegram`). */
+      via: string;
+      chat: string;
+      user: string;
+      text: string;
+      accepted: boolean;
+      /** O que a fábrica fez (a resposta ao usuário) ou por que ignorou. */
+      result: string;
+    }
+  | {
+      /** Uma mensagem a uma interface de gestão que não saiu depois de todas as tentativas e foi descartada. */
+      type: "delivery";
+      at: string;
+      via: string;
+      status: "descartada";
+      attempts: number;
+      text: string;
+      error: string;
+    }
+  | {
       /** Mudança de status de uma tarefa. */
       type: "task";
       at: string;
