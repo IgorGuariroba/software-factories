@@ -1,18 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
-import { startTestFactory, type TestFactory, USER } from "./harness.js";
+import { events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
 
 let factory: TestFactory | undefined;
 afterEach(async () => {
   await factory?.close();
   factory = undefined;
 });
-
-const poll = async (f: TestFactory) => {
-  const res = await fetch(`${f.url}/poll`, { method: "POST" });
-  expect(res.status).toBe(200);
-};
-const events = async (f: TestFactory) => (await (await fetch(`${f.url}/events`)).json()) as Record<string, unknown>[];
 
 describe("assumir card 'A Fazer'", () => {
   it("comenta que está assumindo e move o card para 'Em Andamento'", async () => {
@@ -21,10 +15,11 @@ describe("assumir card 'A Fazer'", () => {
     });
 
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
 
     expect(factory.source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [fábrica] Assumindo este card."]);
     expect(factory.source.cards[0]?.status).toBe("Em Andamento");
-    expect(await events(factory)).toMatchObject([
+    expect((await events(factory)).filter((e) => e.type === "write")).toMatchObject([
       { type: "write", target: "PROJ-1", action: "comment" },
       { type: "write", target: "PROJ-1", action: "transition", content: "Em Andamento" },
     ]);
@@ -36,7 +31,11 @@ describe("assumir card 'A Fazer'", () => {
     });
 
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+    const returned = factory.source.cards[0];
+    if (returned) returned.status = "A Fazer"; // alguém devolve o card
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
 
     expect(factory.source.commentsOf("PROJ-1")).toHaveLength(1);
   });
@@ -58,17 +57,18 @@ describe("assumir card 'A Fazer'", () => {
     });
 
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
     await poll(factory);
 
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
     expect(factory.source.cards[0]?.status).toBe("A Fazer");
-    expect(await events(factory)).toMatchObject([
+    expect((await events(factory)).filter((e) => e.type === "write")).toMatchObject([
       { type: "write", action: "comment", content: "🤖 [fábrica] Assumindo este card.", dryRun: true },
       { type: "write", action: "transition", content: "Em Andamento", dryRun: true },
     ]);
   });
 
-  it("não assume um card reatribuído a outra pessoa entre a leitura e a escrita, e registra o bloqueio", async () => {
+  it("um card reatribuído a outra pessoa entre a leitura e a escrita fica bloqueado, sem nova tentativa", async () => {
     factory = await startTestFactory({
       cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
     });
@@ -80,14 +80,18 @@ describe("assumir card 'A Fazer'", () => {
     };
 
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada");
+    await poll(factory);
 
     expect(source.commentsOf("PROJ-1")).toEqual([]);
-    expect(await events(factory)).toMatchObject([{ type: "blocked", target: "PROJ-1", action: "comment" }]);
+    expect((await events(factory)).filter((e) => e.type === "blocked")).toMatchObject([
+      { type: "blocked", target: "PROJ-1", action: "comment" },
+    ]);
   });
 });
 
 describe("falhas ao assumir", () => {
-  it("se a transição falha, o próximo poll não comenta 'Assumindo' de novo e completa a transição", async () => {
+  it("se a transição falha, a tarefa é tentada de novo sem comentar 'Assumindo' outra vez", async () => {
     factory = await startTestFactory({
       cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
     });
@@ -99,15 +103,17 @@ describe("falhas ao assumir", () => {
       return transition(key, status);
     };
 
-    const first = await fetch(`${factory.url}/poll`, { method: "POST" });
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
 
-    expect(first.status).toBe(500);
     expect(source.commentsOf("PROJ-1")).toHaveLength(1);
     expect(source.cards[0]?.status).toBe("Em Andamento");
+    expect(await events(factory)).toContainEqual(
+      expect.objectContaining({ type: "error", target: "PROJ-1", message: expect.stringMatching(/Jira fora do ar/) }),
+    );
   });
 
-  it("um erro num card não impede que os outros sejam assumidos no mesmo poll", async () => {
+  it("um card com erro volta para o fim da fila e não impede os outros", async () => {
     factory = await startTestFactory({
       cards: [
         { key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER },
@@ -121,21 +127,23 @@ describe("falhas ao assumir", () => {
       return addComment(key, body);
     };
 
-    await fetch(`${factory.url}/poll`, { method: "POST" });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-2", "concluida");
 
     expect(source.commentsOf("PROJ-2")).toHaveLength(1);
     expect(source.cards[1]?.status).toBe("Em Andamento");
   });
 });
 
-describe("buscas simultâneas", () => {
-  it("dois POST /poll ao mesmo tempo assumem o card uma única vez", async () => {
+describe("buscas", () => {
+  it("dois POST /poll ao mesmo tempo enfileiram o card uma única vez", async () => {
     factory = await startTestFactory({
       cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
     });
     factory.source.latencyMs = 10;
 
     await Promise.all([poll(factory), poll(factory)]);
+    await waitForStatus(factory, "PROJ-1", "concluida");
 
     expect(factory.source.commentsOf("PROJ-1")).toHaveLength(1);
   });
@@ -157,5 +165,14 @@ describe("buscas simultâneas", () => {
 
     // ~150 ms / 40 ms por busca: sem acumular, no máximo uma busca por janela de 40 ms.
     expect(polls).toBeLessThanOrEqual(5);
+  });
+
+  it("a busca automática assume cards sem POST /poll", async () => {
+    factory = await startTestFactory({
+      pollIntervalMs: 10,
+      cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
+    });
+
+    await eventually(() => expect(factory?.source.cards[0]?.status).toBe("Em Andamento"));
   });
 });

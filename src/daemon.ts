@@ -38,12 +38,15 @@ export async function loadProjects(dir: string): Promise<ProjectConfig[]> {
 export async function startDaemon(opts: {
   configDir: string;
   sources: SourceFactories;
+  /** Arquivo SQLite do estado durável. */
+  statePath: string;
   port?: number;
   pollIntervalMs?: number;
 }): Promise<RunningFactory> {
   const configs = await loadProjects(opts.configDir);
   return startFactory({
     port: opts.port,
+    statePath: opts.statePath,
     pollIntervalMs: opts.pollIntervalMs,
     projects: configs.map((config) => ({ config, source: opts.sources[config.source.type](config) })),
   });

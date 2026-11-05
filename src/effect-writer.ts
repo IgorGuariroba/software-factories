@@ -1,6 +1,6 @@
 import { type CardState, type ProjectConfig, STATE_ORDER } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
-import type { EventLog } from "./events.js";
+import type { EventRecorder } from "./events.js";
 import { redactSecrets } from "./secrets.js";
 
 export const AUTOMATION_PREFIX = "🤖 [fábrica]";
@@ -14,6 +14,11 @@ export class GuardrailViolation extends Error {
 export interface EffectWriter {
   /** Cria um comentário próprio no card. Retorna o id (no dry-run, um id fictício). */
   comment(cardKey: string, body: string): Promise<{ id: string }>;
+  /**
+   * Como `comment`, mas idempotente: se a fábrica já escreveu um comentário com o mesmo conteúdo no card,
+   * devolve esse comentário em vez de criar outro (ex.: ao repetir um passo depois de um reinício).
+   */
+  commentOnce(cardKey: string, body: string): Promise<{ id: string }>;
   /** Edita um comentário criado pela própria fábrica. */
   editComment(cardKey: string, commentId: string, body: string): Promise<void>;
   /**
@@ -26,7 +31,7 @@ export interface EffectWriter {
 export function createEffectWriter(opts: {
   config: ProjectConfig;
   source: DemandSource;
-  events: EventLog;
+  events: EventRecorder;
   /** Estado mais avançado para onde a fábrica pode mover um card neste marco. */
   transitionLimit: CardState;
 }): EffectWriter {
@@ -43,10 +48,10 @@ export function createEffectWriter(opts: {
   ): Promise<T> {
     const reason = await check();
     if (reason) {
-      events.append({ type: "blocked", project: config.name, ...w, reason });
+      await events.append({ type: "blocked", project: config.name, ...w, reason });
       throw new GuardrailViolation(`Guardrail: ${w.action} em ${w.target} bloqueado: ${reason}`);
     }
-    events.append({ type: "write", project: config.name, ...w, dryRun: config.dryRun });
+    await events.append({ type: "write", project: config.name, ...w, dryRun: config.dryRun });
     return config.dryRun ? dry() : run();
   }
 
@@ -79,6 +84,15 @@ export function createEffectWriter(opts: {
       );
     },
 
+    async commentOnce(cardKey, body) {
+      if (!config.dryRun) {
+        const content = outgoing(body);
+        const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
+        if (existing) return { id: existing.id };
+      }
+      return this.comment(cardKey, body);
+    },
+
     editComment(cardKey, commentId, body) {
       const content = outgoing(body);
       return write(
@@ -97,8 +111,11 @@ export function createEffectWriter(opts: {
       );
     },
 
-    transition(cardKey, state, transitionOpts) {
+    async transition(cardKey, state, transitionOpts) {
       const status = statusFor(state) ?? "";
+      // Já está no destino (ex.: o passo é repetido depois de um reinício): nada a escrever.
+      const before = config.dryRun ? undefined : await source.getCard(cardKey);
+      if (before && before.assignee === user && config.statuses[before.status] === state) return;
       return write(
         { target: cardKey, action: "transition", content: status || state },
         async () => {
