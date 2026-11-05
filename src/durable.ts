@@ -162,8 +162,13 @@ export type ImplementationProgress = {
   repoPath: string;
   /** Clone próprio da fábrica, sob o diretório de estado. As ferramentas do modelo só enxergam este diretório. */
   worktree: string;
-  /** A branch da fábrica nesta Tarefa: a única em que ela aceita force-push. */
+  /** A branch desta Tarefa. A fábrica só aceita force-push nela se a criou (`branchOrigin: "criada"`). */
   branch: string;
+  /**
+   * Se a fábrica criou a branch ou adotou uma que já existia no remoto com o nome da convenção (que pode ser de uma
+   * pessoa). Sem o campo (progresso antigo), a branch não conta como da fábrica.
+   */
+  branchOrigin?: "criada" | "adotada";
   /** Padrão de commit resolvido no início da etapa (descoberto no histórico ou da config). */
   commitPattern: string;
   /** Comando de teste do repositório, fixado no início da etapa. */

@@ -306,7 +306,7 @@ export async function runImplementation(opts: {
     const branch = formatBranchName(conventions, card);
     if (!(await isValidBranchName(worktree, branch)))
       throw new StageBlocked(`a convenção de branch gerou um nome inválido: "${branch}"`);
-    const head = await checkoutFactoryBranch(worktree, branch, defaultBranch);
+    const { head, adopted } = await checkoutFactoryBranch(worktree, branch, defaultBranch);
 
     let created: ImplementationProgress | undefined;
     await runtime.commit(async (tx) => {
@@ -322,6 +322,7 @@ export async function runImplementation(opts: {
         repoPath,
         worktree,
         branch,
+        branchOrigin: adopted ? "adotada" : "criada",
         commitPattern: conventions.commit,
         test: clone(mapping.test),
         conversationId: conversation.id,

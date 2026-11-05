@@ -6,7 +6,7 @@ import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
 import { AUTOMATION_PREFIX } from "../src/effect-writer.js";
 import { FakeModel, type SpecDelivery, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
-import { events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
+import { api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
 
 const SLOW = 60_000;
 const DONE_WITHIN = 45_000;
@@ -108,6 +108,9 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
     expect(await repo.branches()).toEqual([BRANCH, "main"]);
     expect(await git(repo.bare, "rev-parse", "main")).toBe(mainBefore);
     expect(factory.codeHost.pushed.map((p) => p.branch)).toEqual([BRANCH]);
+    // A fábrica criou a branch: é a única em que ela aceitaria force-push.
+    const detail = await api<{ implementation: { branchOrigin: string } }>(factory, "GET", "/tasks/exemplo/PROJ-1");
+    expect(detail.implementation.branchOrigin).toBe("criada");
 
     // Um único comentário Tickets, editado à medida que cada ticket ficou pronto.
     expect(ticketsComments(factory)).toHaveLength(1);
@@ -377,6 +380,31 @@ describe("guardrails da implementação", { timeout: SLOW }, () => {
     expect(results.find((r) => r.name === "executar_comando")?.isError).toBe(true);
     const implementerTools = model.calls.find((c) => !c.tools.includes("entregar_spec"))?.tools;
     expect([...(implementerTools ?? [])].sort()).toEqual(["escrever_arquivo", "ler_arquivo", "rodar_testes"]);
+  });
+
+  it("branch de uma pessoa com o nome da convenção é adotada, não criada: só a criada conta como da fábrica", async () => {
+    const repo = await createRemoteRepo(root, "app", { branches: [BRANCH] });
+    await git(repo.user, "fetch", "--quiet", "origin");
+    await git(repo.user, "checkout", "--quiet", "-b", BRANCH, `origin/${BRANCH}`);
+    await git(repo.user, "commit", "--quiet", "--allow-empty", "-m", "wip: começo da pessoa");
+    await git(repo.user, "push", "--quiet", "origin", BRANCH);
+    await git(repo.user, "checkout", "--quiet", "main");
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    // O push normal continua na branch adotada, sobre o commit da pessoa.
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "wip: começo da pessoa",
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
+    expect(factory.codeHost.pushed).toEqual([expect.objectContaining({ branch: BRANCH, force: false })]);
+    const detail = await api<{ implementation: { branchOrigin: string } }>(factory, "GET", "/tasks/exemplo/PROJ-1");
+    expect(detail.implementation.branchOrigin).toBe("adotada");
   });
 
   it("push numa branch protegida é bloqueado e avisado, mesmo vindo da convenção", async () => {

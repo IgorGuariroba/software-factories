@@ -265,9 +265,15 @@ export async function startFactory(opts: {
         events: eventRecorder,
         transitionLimit: TRANSITION_LIMIT,
         codeHost,
-        // Branch da fábrica é a registrada no estado durável de uma Tarefa deste projeto, não um padrão de nome.
+        // Branch da fábrica é a que ela criou, registrada no estado durável de uma Tarefa deste projeto; não um padrão
+        // de nome, nem uma branch adotada do remoto (que pode ser de uma pessoa).
         isFactoryBranch: async (branch) =>
-          (await readState()).tasks.some((t) => t.project === p.config.name && t.implementation?.branch === branch),
+          (await readState()).tasks.some(
+            (t) =>
+              t.project === p.config.name &&
+              t.implementation?.branch === branch &&
+              t.implementation.branchOrigin === "criada",
+          ),
         retro: { ...opts.retro, linkPrefix: retroLinkPrefix },
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });

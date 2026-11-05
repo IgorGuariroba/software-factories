@@ -94,13 +94,20 @@ export async function cloneForFactory(repoPath: string, worktree: string): Promi
   return { defaultBranch };
 }
 
-/** Cria e entra na branch da fábrica: continua a mesma branch do remoto se ela já existir, senão parte da padrão. */
-export async function checkoutFactoryBranch(worktree: string, branch: string, defaultBranch: string): Promise<string> {
+/**
+ * Cria e entra na branch da fábrica: continua a mesma branch do remoto se ela já existir (adotada: pode ser de uma
+ * pessoa), senão parte da padrão (criada pela fábrica). Devolve o HEAD e se a branch foi adotada.
+ */
+export async function checkoutFactoryBranch(
+  worktree: string,
+  branch: string,
+  defaultBranch: string,
+): Promise<{ head: string; adopted: boolean }> {
   const remoteRef = `refs/remotes/origin/${branch}`;
-  const exists = await gitMaybe(worktree, ["rev-parse", "--verify", "--quiet", remoteRef]);
-  const start = exists ? remoteRef : `refs/remotes/origin/${defaultBranch}`;
+  const adopted = (await gitMaybe(worktree, ["rev-parse", "--verify", "--quiet", remoteRef])) !== undefined;
+  const start = adopted ? remoteRef : `refs/remotes/origin/${defaultBranch}`;
   await git(worktree, ["checkout", "--quiet", "--no-track", "-b", branch, start]);
-  return (await git(worktree, ["rev-parse", "HEAD"])).trim();
+  return { head: (await git(worktree, ["rev-parse", "HEAD"])).trim(), adopted };
 }
 
 /** Se `branch` é um nome de branch válido para o git. */

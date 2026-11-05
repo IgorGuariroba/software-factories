@@ -48,7 +48,12 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
     spec: task.delivery?.spec ?? null,
     tickets: task.delivery?.tickets ?? [],
     implementation: implementation
-      ? { branch: implementation.branch, commits: implementation.commits, pushed: implementation.pushed }
+      ? {
+          branch: implementation.branch,
+          branchOrigin: implementation.branchOrigin ?? null,
+          commits: implementation.commits,
+          pushed: implementation.pushed,
+        }
       : null,
     /** Retrôs das etapas e a consolidada, com as propostas classificadas e o que virou cada uma. */
     retros: (task.retros ?? []).map(({ stage, status, attempts, error, summary, proposals }) => ({

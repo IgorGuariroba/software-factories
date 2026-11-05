@@ -42,7 +42,8 @@ export interface EffectWriter {
   transition(cardKey: string, state: CardState, opts?: { from?: CardState }): Promise<void>;
   /**
    * Envia `branch` do clone em `repoPath` para o remoto, pelo CodeHost. Nunca em `main`/`master`/`develop`;
-   * force-push só numa branch da fábrica (registrada no estado durável de uma Tarefa).
+   * force-push só numa branch da fábrica (criada por ela e registrada no estado durável de uma Tarefa;
+   * uma branch adotada do remoto não conta).
    */
   pushBranch(repoPath: string, branch: string, opts?: { force?: boolean }): Promise<void>;
   /**
@@ -70,7 +71,7 @@ export function createEffectWriter(opts: {
   transitionLimit: CardState;
   /** Porta do remoto de código. Sem ela, todo push é recusado. */
   codeHost?: CodeHost;
-  /** Se `branch` é uma branch da fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
+  /** Se `branch` foi criada pela fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
   isFactoryBranch?: (branch: string) => boolean | Promise<boolean>;
   /** Issues da fábrica: a porta, o único repositório em que ela escreve e o prefixo do link público da Tarefa. */
   retro?: { sink?: RetroSink; repo?: string; linkPrefix?: () => string };
