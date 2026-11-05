@@ -69,6 +69,28 @@ describe("config de projeto", () => {
     await expect(start).rejects.toThrow(/b-incompleto\.yaml: source/);
   });
 
+  it("recusa um calendário de horas úteis inválido, dizendo o campo", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(
+      join(dir, "calendario.yaml"),
+      example
+        .replace(/timezone: .*/, "timezone: Lugar/Nenhum")
+        .replace(/start: "09:00"/, 'start: "19:00"')
+        .replace(/role: po/, "role: chefe"),
+    );
+
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
+
+    await expect(start).rejects.toThrow(/calendar\.timezone: fuso horário IANA desconhecido/);
+    await expect(start).rejects.toThrow(/calendar\.end: start precisa ser antes de end/);
+    await expect(start).rejects.toThrow(/people\.0\.role/);
+  });
+
   it("recusa iniciar sem nenhum projeto configurado", async () => {
     await expect(
       startDaemon({

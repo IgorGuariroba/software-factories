@@ -29,6 +29,32 @@ export type FactoryEvent =
       message: string;
     }
   | {
+      /** Uma pergunta a uma pessoa do projeto: enviada, lembrada ou respondida. */
+      type: "question";
+      at: string;
+      project: string;
+      /** Card da Tarefa. */
+      target: string;
+      /** Número da pergunta na Tarefa (1, 2, …). */
+      n: number;
+      /** Pessoa do projeto a quem a pergunta foi feita. */
+      to: string;
+      text: string;
+      status: "enviada" | "lembrete" | "respondida";
+    }
+  | {
+      /**
+       * Aviso ao usuário, para as interfaces de gestão encaminharem (ex.: uma pergunta sem resposta há 1 dia útil).
+       * Não vai para o card nem para as pessoas do projeto.
+       */
+      type: "notify";
+      at: string;
+      project: string;
+      target: string;
+      reason: "pergunta-sem-resposta";
+      message: string;
+    }
+  | {
       /** Mudança de status de uma tarefa. */
       type: "task";
       at: string;

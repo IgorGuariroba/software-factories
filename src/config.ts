@@ -60,6 +60,44 @@ export const ConventionsConfig = z.object({
 });
 export type ConventionsConfig = z.infer<typeof ConventionsConfig>;
 
+/** Uma das pessoas do projeto: as únicas com quem a fábrica conversa neste projeto. */
+export const Person = z.object({
+  /** Identificador da pessoa na Fonte (no Jira, o accountId), usado na menção e para reconhecer as respostas. */
+  id: z.string().min(1),
+  role: z.enum(["po", "tech_lead"]),
+  /** Nome para exibição, opcional. */
+  name: z.string().min(1).optional(),
+});
+export type Person = z.infer<typeof Person>;
+
+const isTimeZone = (tz: string) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+};
+const HourMinute = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "use HH:MM, de 00:00 a 23:59");
+
+/** Dias da semana, na ordem de `Date.getUTCDay()`. */
+export const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+
+/** Expediente do projeto: os prazos das perguntas (lembrete, aviso) contam só horas dentro dele. */
+export const BusinessCalendar = z
+  .object({
+    /** Fuso IANA do expediente (ex.: America/Sao_Paulo). */
+    timezone: z.string().refine(isTimeZone, { message: "fuso horário IANA desconhecido" }).default("UTC"),
+    workdays: z.array(z.enum(WEEKDAYS)).min(1).default(["mon", "tue", "wed", "thu", "fri"]),
+    /** Início e fim do expediente, no fuso do calendário. */
+    start: HourMinute.default("09:00"),
+    end: HourMinute.default("18:00"),
+    /** Datas sem expediente (feriados), como AAAA-MM-DD no fuso do calendário. */
+    holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "use AAAA-MM-DD")).default([]),
+  })
+  .refine((c) => c.start < c.end, { message: "start precisa ser antes de end", path: ["end"] });
+export type BusinessCalendar = z.infer<typeof BusinessCalendar>;
+
 export const ProjectConfig = z.object({
   name: z.string().min(1),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
@@ -77,6 +115,16 @@ export const ProjectConfig = z.object({
     spec: ModelRef,
     /** Implementação com TDD. Sem ele, usa o modelo de `spec`. */
     implementer: ModelRef.optional(),
+  }),
+  /** Pessoas do projeto. A fábrica só menciona e pergunta a quem está aqui; perguntas de negócio vão ao `po`. */
+  people: z.array(Person).default([]),
+  /** Calendário de horas úteis dos prazos das perguntas. Padrão: segunda a sexta, 09:00–18:00, UTC. */
+  calendar: BusinessCalendar.default({
+    timezone: "UTC",
+    workdays: ["mon", "tue", "wed", "thu", "fri"],
+    start: "09:00",
+    end: "18:00",
+    holidays: [],
   }),
   /** Nome do status na Fonte → estado que a fábrica entende. */
   statuses: z.record(z.string(), CardState),

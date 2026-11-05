@@ -64,7 +64,11 @@ export const API_SCHEMA = {
     "/daemon/pause": { post: { summary: "Pausa o daemon: nenhuma tarefa nova começa", responses: ok } },
     "/daemon/resume": { post: { summary: "Retoma o daemon", responses: ok } },
     "/events": {
-      get: { summary: "Histórico de eventos (escritas, bloqueios, erros, status de tarefas)", responses: ok },
+      get: {
+        summary:
+          "Histórico de eventos (escritas, bloqueios, erros, status de tarefas, perguntas e avisos ao usuário do tipo notify)",
+        responses: ok,
+      },
     },
     "/events/stream": { get: { summary: "Eventos novos em tempo real (Server-Sent Events)", responses: ok } },
     "/openapi.json": { get: { summary: "Este schema", responses: ok } },
@@ -78,7 +82,9 @@ export const API_SCHEMA = {
           project: { type: "string" },
           key: { type: "string" },
           title: { type: "string" },
-          status: { enum: ["enfileirada", "ativa", "pausada", "concluida", "cancelada", "bloqueada"] },
+          status: {
+            enum: ["enfileirada", "ativa", "aguardando-humano", "pausada", "concluida", "cancelada", "bloqueada"],
+          },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
         },

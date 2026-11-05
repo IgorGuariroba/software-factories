@@ -6,11 +6,17 @@ import type { ProjectConfig } from "../src/config.js";
 import type { Card } from "../src/demand-source.js";
 import { type RunningFactory, startFactory } from "../src/factory.js";
 import type { TestRunner } from "../src/test-runner.js";
+import type { FakeClock } from "./fakes/fake-clock.js";
 import { FakeCodeHost } from "./fakes/fake-code-host.js";
 import { FakeModel } from "./fakes/fake-model.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
 
 export const USER = "igor";
+/** O PO declarado nas pessoas do projeto de teste. */
+export const PO = "po-ficticio";
+/** Descrição que os cards dos testes recebem quando o teste não diz outra: o bastante para a SPEC não exigir o PO. */
+export const DEFAULT_DESCRIPTION =
+  "Descrição de teste com detalhe suficiente: o objetivo, as regras de negócio e os critérios de aceite estão aqui.";
 
 export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
   return {
@@ -18,6 +24,14 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
     dryRun: false,
     source: { type: "jira", project: "PROJ", assignee: USER },
     roles: { spec: { provider: FakeModel.PROVIDER, model: "spec-a" } },
+    people: [{ id: PO, role: "po" }],
+    calendar: {
+      timezone: "UTC",
+      workdays: ["mon", "tue", "wed", "thu", "fri"],
+      start: "09:00",
+      end: "18:00",
+      holidays: [],
+    },
     statuses: {
       Backlog: "backlog",
       "A Fazer": "todo",
@@ -52,12 +66,16 @@ interface TestFactoryOptions {
   /** Conteúdo de `knowledge.md` do projeto. */
   knowledge?: string;
   config?: Partial<ProjectConfig>;
+  /** Relógio falso da fábrica; sem ele, o relógio do sistema. O mesmo relógio continua depois de `restart()`. */
+  clock?: FakeClock;
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória e estado durável num diretório temporário. */
 export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?: string): Promise<TestFactory> {
   const dir = stateDir ?? (await mkdtemp(join(tmpdir(), "fabrica-estado-")));
-  const source = opts.source ?? new MemoryDemandSource(opts.cards);
+  // Um card sem `description` no teste recebe a padrão; `description: undefined` explícito o deixa vazio.
+  const source =
+    opts.source ?? new MemoryDemandSource(opts.cards?.map((c) => ({ description: DEFAULT_DESCRIPTION, ...c })));
   const model = opts.model ?? new FakeModel();
   const codeHost = opts.codeHost ?? new FakeCodeHost();
   const knowledgeDir = join(dir, "conhecimento");
@@ -69,6 +87,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     retryDelayMs: 5,
     models: model.models(),
     testRunner: opts.testRunner,
+    clock: opts.clock,
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
     ],

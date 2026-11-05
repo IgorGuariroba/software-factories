@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createEffectWriter } from "../src/effect-writer.js";
 import { EventLog } from "../src/events.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
-import { testProjectConfig, USER } from "./harness.js";
+import { PO, testProjectConfig, USER } from "./harness.js";
 
 function setup(opts: { dryRun?: boolean } = {}) {
   const source = new MemoryDemandSource([{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }]);
@@ -256,5 +256,43 @@ describe("comentário com título, editado no lugar (upsertComment)", () => {
     await writer.upsertComment("PROJ-1", "SPEC", "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789");
 
     expect(source.commentsOf("PROJ-1")[0]?.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+  });
+});
+
+describe("menção a uma pessoa do projeto (mention)", () => {
+  it("comenta mencionando a pessoa, com o prefixo, e não duplica ao repetir", async () => {
+    const { source, writer } = setup();
+
+    await writer.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
+    await writer.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
+
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual([
+      `\u{1F916} [fábrica] [~accountid:${PO}] Pergunta 1: qual o separador?`,
+    ]);
+  });
+
+  it("bloqueia o destinatário fora das pessoas do projeto e avisa por evento", async () => {
+    const { source, events, writer } = setup();
+
+    await expect(writer.mention("PROJ-1", "pessoa-de-fora", "oi")).rejects.toThrow(/guardrail/i);
+
+    expect(source.commentsOf("PROJ-1")).toEqual([]);
+    expect(events.list()).toMatchObject([
+      {
+        type: "blocked",
+        target: "PROJ-1",
+        action: "mention",
+        reason: expect.stringContaining("pessoa-de-fora não está entre as pessoas do projeto"),
+      },
+    ]);
+  });
+
+  it("no dry-run só registra a menção", async () => {
+    const { source, events, writer } = setup({ dryRun: true });
+
+    await writer.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
+
+    expect(source.commentsOf("PROJ-1")).toEqual([]);
+    expect(events.list()).toMatchObject([{ type: "write", action: "mention", dryRun: true }]);
   });
 });
