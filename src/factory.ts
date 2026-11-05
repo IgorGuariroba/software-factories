@@ -20,6 +20,7 @@ import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import {
+  copyOutOfCommit,
   createTarefaTask,
   DeadlineGateTask,
   EventEntry,
@@ -265,9 +266,15 @@ export async function startFactory(opts: {
         events: eventRecorder,
         transitionLimit: TRANSITION_LIMIT,
         codeHost,
-        // Branch da fábrica é a registrada no estado durável de uma Tarefa deste projeto, não um padrão de nome.
+        // Branch da fábrica é a que ela criou, registrada no estado durável de uma Tarefa deste projeto; não um padrão
+        // de nome, nem uma branch adotada do remoto (que pode ser de uma pessoa).
         isFactoryBranch: async (branch) =>
-          (await readState()).tasks.some((t) => t.project === p.config.name && t.implementation?.branch === branch),
+          (await readState()).tasks.some(
+            (t) =>
+              t.project === p.config.name &&
+              t.implementation?.branch === branch &&
+              t.implementation.branchOrigin === "criada",
+          ),
         retro: { ...opts.retro, linkPrefix: retroLinkPrefix },
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
@@ -302,7 +309,7 @@ export async function startFactory(opts: {
           let task: QueuedTask | undefined;
           await runtime.commit(async (tx) => {
             const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-            task = stored && (JSON.parse(JSON.stringify(stored)) as QueuedTask);
+            task = stored && copyOutOfCommit(stored);
           });
           await events.append({
             type: "assumed",
@@ -326,8 +333,7 @@ export async function startFactory(opts: {
       let delivery: SpecDelivery | undefined;
       await runtime.commit(async (tx) => {
         const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.delivery;
-        // Cópia: o rascunho do commit não pode ser usado depois que o commit termina.
-        delivery = stored ? (JSON.parse(JSON.stringify(stored)) as SpecDelivery) : undefined;
+        delivery = stored ? copyOutOfCommit(stored) : undefined;
       });
 
       if (step === "implementar") {
@@ -364,7 +370,7 @@ export async function startFactory(opts: {
         let questions: Question[] = [];
         await runtime.commit(async (tx) => {
           const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.questions;
-          questions = stored ? (JSON.parse(JSON.stringify(stored)) as Question[]) : [];
+          questions = stored ? copyOutOfCommit(stored) : [];
         });
         // Uma pergunta já registrada e sem resposta (ex.: reinício logo depois de perguntar): só volta a esperar.
         if (questions.some((q) => q.answer === null)) return "aguardar";
@@ -480,7 +486,7 @@ export async function startFactory(opts: {
       await runtime.commit(async (tx) => {
         const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
         const pending = task && pendingQuestion(task);
-        question = pending ? (JSON.parse(JSON.stringify(pending)) as Question) : undefined;
+        question = pending ? copyOutOfCommit(pending) : undefined;
       });
       if (!question) return null;
       const q = question;

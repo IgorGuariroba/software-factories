@@ -162,8 +162,13 @@ export type ImplementationProgress = {
   repoPath: string;
   /** Clone próprio da fábrica, sob o diretório de estado. As ferramentas do modelo só enxergam este diretório. */
   worktree: string;
-  /** A branch da fábrica nesta Tarefa: a única em que ela aceita force-push. */
+  /** A branch desta Tarefa. A fábrica só aceita force-push nela se a criou (`branchOrigin: "criada"`). */
   branch: string;
+  /**
+   * Se a fábrica criou a branch ou adotou uma que já existia no remoto com o nome da convenção (que pode ser de uma
+   * pessoa). Sem o campo (progresso antigo), a branch não conta como da fábrica.
+   */
+  branchOrigin?: "criada" | "adotada";
   /** Padrão de commit resolvido no início da etapa (descoberto no histórico ou da config). */
   commitPattern: string;
   /** Comando de teste do repositório, fixado no início da etapa. */
@@ -176,6 +181,11 @@ export type ImplementationProgress = {
   commits: { ticket: number; phase: TddPhase; sha: string }[];
   /** Pedidos feitos ao modelo; numera o próximo para que uma nova tentativa não reaproveite um pedido recusado. */
   requests: number;
+  /**
+   * Resultado da linha de base: a suíte rodada uma vez, antes do primeiro teste novo. Registrado para a retomada não
+   * rodá-la de novo (com o teste novo já no clone, ela falharia). `null`: ainda não rodou.
+   */
+  baseline?: "verde" | "vermelha" | null;
   /** Recusas seguidas da fábrica na fase atual (ex.: o teste novo não falhou). */
   rejections: number;
   /** Por que a fábrica recusou a última tentativa; vai junto do próximo pedido. */
@@ -216,6 +226,12 @@ export const ManagementDoc = defineDoc<Record<string, ManagementProgress>>({
 
 /** Um evento da fábrica, gravado no transcript da conversa raiz. */
 export const EventEntry = defineEntry<JsonObject>("fabrica.evento");
+
+/**
+ * Cópia solta de um valor do estado durável. O rascunho que `tx.doc` devolve num commit não pode ser usado depois
+ * dele: o que sai do commit (ou volta para outro lugar do documento) é sempre esta cópia, nunca o próprio rascunho.
+ */
+export const copyOutOfCommit = <T>(draft: T): T => JSON.parse(JSON.stringify(draft)) as T;
 
 /** Converte um evento para o JSON gravado no transcript (sem campos `undefined`). */
 export const eventToJson = (event: FactoryEvent): JsonObject => JSON.parse(JSON.stringify(event)) as JsonObject;
@@ -393,7 +409,7 @@ export function createTarefaTask(steps: TarefaSteps) {
       } else {
         // Volta para o fim da fila; a próxima tentativa recomeça do primeiro passo, que é idempotente.
         const retry: QueuedTask = {
-          ...(JSON.parse(JSON.stringify(queued)) as QueuedTask),
+          ...copyOutOfCommit(queued),
           status: "enfileirada",
           durableId: null,
           gateId: null,

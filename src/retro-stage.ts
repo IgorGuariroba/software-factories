@@ -4,6 +4,7 @@ import { arr, obj, oneOf, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
 import type { ModelRef, ProjectConfig } from "./config.js";
 import {
+  copyOutOfCommit,
   type RetroKind,
   type RetroProposal,
   type RetroRecord,
@@ -117,8 +118,6 @@ export const newTaskRef = () => randomBytes(6).toString("hex");
 
 const STAGE_LABEL: Record<RetroStage, string> = { spec: "SPEC", implementacao: "implementação", tarefa: "consolidada" };
 
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-
 /**
  * A retrô de uma etapa (ou a consolidada). Pede a retrô ao modelo numa conversa da Tarefa, grava a entrega no estado e
  * só então publica cada proposta, registrando cada uma: uma nova tentativa não chama o modelo de novo nem duplica
@@ -167,7 +166,7 @@ export async function runRetro(opts: {
       };
       task.retros = [...(task.retros ?? []), stored];
     }
-    record = clone(stored);
+    record = copyOutOfCommit(stored);
   });
   if (record?.status !== "em-andamento") return;
   const retro: RetroRecord = record;
@@ -175,7 +174,7 @@ export async function runRetro(opts: {
     runtime.commit(async (tx) => {
       runtime.signal.throwIfAborted();
       const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-      if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? clone(retro) : r));
+      if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? copyOutOfCommit(retro) : r));
     });
 
   try {
@@ -244,7 +243,7 @@ export async function runRetro(opts: {
         });
         retro.conversationId = conversation.id;
         const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-        if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? clone(retro) : r));
+        if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? copyOutOfCommit(retro) : r));
       });
     }
     const conversation = retro.conversationId && (await opts.harness.conversation(retro.conversationId, context));

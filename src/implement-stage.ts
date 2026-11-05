@@ -1,5 +1,5 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import {
   configure,
@@ -13,7 +13,14 @@ import type { CodeHost } from "./code-host.js";
 import type { ModelRef, ProjectConfig } from "./config.js";
 import { formatBranchName, formatCommitMessage, resolveConventions } from "./conventions.js";
 import type { Card } from "./demand-source.js";
-import { type ImplementationProgress, type QueuedTask, StateDoc, type StepRuntime, type TddPhase } from "./durable.js";
+import {
+  copyOutOfCommit,
+  type ImplementationProgress,
+  type QueuedTask,
+  StateDoc,
+  type StepRuntime,
+  type TddPhase,
+} from "./durable.js";
 import type { EffectWriter } from "./effect-writer.js";
 import type { EventRecorder } from "./events.js";
 import { git } from "./git.js";
@@ -49,8 +56,9 @@ const MAX_READ_CHARS = 100_000;
 const INSTRUCTIONS = `Você é o papel implementador de uma fábrica de software autônoma e trabalha com TDD, ticket a ticket.
 Você só tem as ferramentas ler_arquivo, escrever_arquivo e rodar_testes, sempre dentro do repositório.
 Não há shell nem git: a fábrica verifica cada fase, roda os testes e faz os commits.
-- Fase de teste: escreva só o teste do ticket. A fábrica exige que um arquivo de teste mude e que os testes falhem.
-- Fase de implementação: escreva o código que faz os testes passarem. A fábrica exige que os testes passem.
+- Fase de teste: escreva só o teste do ticket. A fábrica exige que só arquivos de teste mudem e que os testes falhem.
+- Fase de implementação: escreva o código que faz os testes passarem, sem mexer nos testes. A fábrica exige que
+  nenhum arquivo de teste mude e que os testes passem.
 Quando terminar a fase, responda em texto, sem chamar ferramentas.`;
 
 export interface ImplementationDeps {
@@ -152,9 +160,6 @@ export function createImplementationExtension(deps: ImplementationDeps) {
 
 type ImplementationExtension = ReturnType<typeof createImplementationExtension>;
 
-/** Cópia solta do progresso (o rascunho de um commit não pode escapar dele). */
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-
 /** Renderiza o checklist de Tickets marcando os tickets já implementados. */
 export const renderTicketsProgress = (tickets: SpecDelivery["tickets"], done: ReadonlySet<number>): string =>
   tickets.map((t, i) => `- [${done.has(i) ? "x" : " "}] **${i + 1}. ${t.titulo}**: ${t.aceite}`).join("\n");
@@ -170,8 +175,8 @@ function phasePrompt(delivery: SpecDelivery, ticket: number, phase: TddPhase, fe
     phase === "teste"
       ? "Fase de teste: escreva o teste que verifica este critério. Ele precisa falhar, porque o código ainda não existe."
       : "Fase de implementação: escreva o código que faz os testes passarem.";
-  const retry = feedback ? `\n\nA fábrica recusou a tentativa anterior desta fase: ${feedback}` : "";
-  return `${head}\n\n${task}${retry}`;
+  const refusal = feedback ? `\n\nA fábrica recusou a tentativa anterior desta fase: ${feedback}` : "";
+  return `${head}\n\n${task}${refusal}`;
 }
 
 /**
@@ -203,7 +208,7 @@ export async function runImplementation(opts: {
     let progress: ImplementationProgress | undefined;
     await runtime.commit(async (tx) => {
       const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId)?.implementation;
-      progress = stored ? clone(stored) : undefined;
+      progress = stored ? copyOutOfCommit(stored) : undefined;
     });
     return progress;
   };
@@ -212,7 +217,7 @@ export async function runImplementation(opts: {
       // Depois do fechamento do daemon, o passo cancelado não grava mais nada: a retomada é de outro processo.
       runtime.signal.throwIfAborted();
       const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-      if (task) task.implementation = clone(progress);
+      if (task) task.implementation = copyOutOfCommit(progress);
     });
 
   const progress = (await readProgress()) ?? (await start());
@@ -225,6 +230,8 @@ export async function runImplementation(opts: {
   await reconcile();
   const done = () => new Set(progress.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket));
   await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
+
+  await checkBaseline();
 
   const conversation = await harness.conversation(progress.conversationId, context);
   if (!conversation) throw new Error("conversa da etapa de implementação não encontrada");
@@ -303,7 +310,7 @@ export async function runImplementation(opts: {
     const branch = formatBranchName(conventions, card);
     if (!(await isValidBranchName(worktree, branch)))
       throw new StageBlocked(`a convenção de branch gerou um nome inválido: "${branch}"`);
-    const head = await checkoutFactoryBranch(worktree, branch, defaultBranch);
+    const { head, adopted } = await checkoutFactoryBranch(worktree, branch, defaultBranch);
 
     let created: ImplementationProgress | undefined;
     await runtime.commit(async (tx) => {
@@ -319,18 +326,20 @@ export async function runImplementation(opts: {
         repoPath,
         worktree,
         branch,
+        branchOrigin: adopted ? "adotada" : "criada",
         commitPattern: conventions.commit,
-        test: clone(mapping.test),
+        test: copyOutOfCommit(mapping.test),
         conversationId: conversation.id,
         head,
         commits: [],
+        baseline: null,
         requests: 0,
         rejections: 0,
         feedback: null,
         pushed: false,
       };
       const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-      if (task) task.implementation = clone(created);
+      if (task) task.implementation = copyOutOfCommit(created);
     });
     if (!created) throw new Error("progresso da implementação não foi criado");
     return created;
@@ -357,12 +366,8 @@ export async function runImplementation(opts: {
     await save(progress);
   }
 
-  /** Confere a fase: devolve os caminhos a commitar, ou por que recusou. */
-  async function verify(phase: TddPhase): Promise<string[] | string> {
-    const paths = await changedPaths(worktree);
-    if (paths.length === 0) return "nenhum arquivo mudou";
-    if (phase === "teste" && !paths.some((p) => isTestFile(p, progress.test.files)))
-      return `nenhum arquivo de teste mudou (padrões: ${progress.test.files.join(", ")})`;
+  /** Roda a suíte configurada no clone. Um comando que nem executa bloqueia a Tarefa. */
+  async function runSuite(): Promise<TestRun> {
     const run = await deps.testRunner.run({
       cwd: worktree,
       command: progress.test.command,
@@ -370,12 +375,61 @@ export async function runImplementation(opts: {
       signal: runtime.signal,
     });
     if (run.spawnError) throw new StageBlocked(`o comando de teste não executa: ${run.spawnError}`);
+    return run;
+  }
+
+  /**
+   * Linha de base: antes do primeiro teste novo, a suíte precisa passar no estado da branch. Se ela já falha, a falha
+   * da fase de teste não provaria nada sobre o teste novo, e a Tarefa bloqueia para uma pessoa decidir.
+   */
+  async function checkBaseline(): Promise<void> {
+    if (!progress.baseline) {
+      // Progresso anterior à linha de base, já com commits: a fase de teste dele já foi aceita.
+      if (progress.commits.length > 0) return;
+      const run = await runSuite();
+      progress.baseline = run.exitCode === 0 ? "verde" : "vermelha";
+      await save(progress);
+    }
+    if (progress.baseline === "vermelha")
+      throw new StageBlocked(
+        `a suíte de testes já falha na branch ${progress.branch} antes do primeiro teste novo (linha de base ` +
+          "vermelha); a fábrica não tem como verificar o TDD até a suíte voltar a passar",
+      );
+  }
+
+  /** Confere a fase: devolve os caminhos a commitar, ou por que recusou. */
+  async function verify(phase: TddPhase): Promise<string[] | string> {
+    const paths = await changedPaths(worktree);
+    if (paths.length === 0) return "nenhum arquivo mudou";
+    // Cada fase só toca o seu lado: o teste não traz código, e o código não afrouxa nem apaga o teste que falhava.
+    const outside = paths.filter((p) => isTestFile(p, progress.test.files) !== (phase === "teste"));
+    if (outside.length > 0) {
+      // O que a fase não pode tocar volta ao último commit: o modelo não tem como apagar um arquivo novo.
+      await discard(outside);
+      const rule =
+        phase === "teste"
+          ? `na fase de teste só arquivos de teste podem mudar (padrões: ${progress.test.files.join(", ")})`
+          : "na fase de implementação os arquivos de teste não podem mudar nem ser apagados";
+      return `${rule}; a fábrica descartou as mudanças em: ${outside.join(", ")}`;
+    }
+    const run = await runSuite();
     if (run.timedOut) return `os testes estouraram ${progress.test.timeoutSeconds}s\n${run.output}`;
     if (run.exitCode === null) return `os testes foram interrompidos por um sinal\n${run.output}`;
     if (phase === "teste" && run.exitCode === 0)
       return `os testes passaram; o teste novo precisa falhar antes da implementação\n${run.output}`;
     if (phase === "implementacao" && run.exitCode !== 0) return `os testes falharam\n${describeRun(run)}`;
     return paths;
+  }
+
+  /** Devolve os caminhos ao estado do último commit: os que existem nele são restaurados, os novos são apagados. */
+  async function discard(paths: string[]): Promise<void> {
+    const tracked = (
+      await git(worktree, ["--literal-pathspecs", "ls-tree", "-z", "--name-only", "HEAD", "--", ...paths])
+    )
+      .split("\0")
+      .filter(Boolean);
+    if (tracked.length > 0) await git(worktree, ["--literal-pathspecs", "checkout", "HEAD", "--", ...tracked]);
+    for (const path of paths.filter((p) => !tracked.includes(p))) await rm(join(worktree, path), { force: true });
   }
 
   /** Commita exatamente os caminhos verificados, na convenção do repositório. Nunca um commit vazio. */

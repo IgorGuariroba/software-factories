@@ -219,6 +219,11 @@ export const API_SCHEMA = {
                 type: ["object", "null"],
                 properties: {
                   branch: { type: "string" },
+                  branchOrigin: {
+                    type: ["string", "null"],
+                    enum: ["criada", "adotada", null],
+                    description: "criada pela fábrica (aceita force-push) ou adotada do remoto (só push normal)",
+                  },
                   commits: { type: "array", items: { type: "object" } },
                   pushed: { type: "boolean" },
                 },
