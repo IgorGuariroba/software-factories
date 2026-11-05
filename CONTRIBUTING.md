@@ -14,7 +14,7 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 
 | Hook | Checks |
 |---|---|
-| `pre-commit` | bloqueia commit direto em `main`/`master`; conflict markers; arquivos novos > 500 KB; **gitleaks** nas mudanças staged |
+| `pre-commit` | bloqueia commit direto em `main`/`master`; conflict markers; arquivos novos > 500 KB; **gitleaks** e **Biome** (lint + format) nas mudanças staged |
 | `pre-push` | bloqueia push para `main`/`master`; **gitleaks** nos commits enviados; `tsc --noEmit` sobre cada commit enviado (worktree temporário) |
 
 - Falso positivo do gitleaks: comentário `gitleaks:allow` na linha, ou fingerprint em `.gitleaksignore`.
@@ -23,3 +23,10 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 - Limite de arquivo: `git config hooks.maxFileKB 1000`.
 - Bypass pontual de tudo: `git commit --no-verify` / `git push --no-verify`.
 - Desativar: `git config --unset core.hooksPath`.
+
+## Lint e formatação
+
+[Biome](https://biomejs.dev) (`biome.json`), aplicado a `src/**` e aos JSON da raiz:
+
+- `npm run lint`: checa lint + formatação (o mesmo que a CI roda).
+- `npm run format`: corrige o que for automático.
