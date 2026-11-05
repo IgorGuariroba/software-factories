@@ -19,6 +19,12 @@ export interface EffectWriter {
    * devolve esse comentário em vez de criar outro (ex.: ao repetir um passo depois de um reinício).
    */
   commentOnce(cardKey: string, body: string): Promise<{ id: string }>;
+  /**
+   * Comentário próprio identificado por título (ex.: "SPEC"), editado no lugar: a primeira linha é o prefixo de
+   * automação seguido do título. Cria na primeira vez, edita nas seguintes e não escreve nada se o conteúdo não mudou.
+   * Só considera comentários escritos pelo usuário da fábrica; um de outra pessoa com o mesmo título é ignorado.
+   */
+  upsertComment(cardKey: string, title: string, body: string): Promise<{ id: string }>;
   /** Edita um comentário criado pela própria fábrica. */
   editComment(cardKey: string, commentId: string, body: string): Promise<void>;
   /**
@@ -91,6 +97,17 @@ export function createEffectWriter(opts: {
         if (existing) return { id: existing.id };
       }
       return this.comment(cardKey, body);
+    },
+
+    async upsertComment(cardKey, title, body) {
+      const content = outgoing(`${title}\n\n${body}`);
+      const header = content.split("\n")[0];
+      const existing = (await source.listComments(cardKey)).find(
+        (c) => c.author === user && c.body.split("\n")[0] === header,
+      );
+      if (!existing) return this.comment(cardKey, content);
+      if (existing.body !== content) await this.editComment(cardKey, existing.id, content);
+      return { id: existing.id };
     },
 
     editComment(cardKey, commentId, body) {

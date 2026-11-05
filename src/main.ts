@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { ConfigError, startDaemon } from "./daemon.js";
 import type { DemandSource } from "./demand-source.js";
 
@@ -29,6 +30,7 @@ const pendingJira: DemandSource = {
   },
   getCard: async () => undefined,
   listComments: notYet,
+  listTextAttachments: notYet,
   addComment: notYet,
   editComment: notYet,
   transition: notYet,
@@ -41,6 +43,8 @@ try {
     statePath,
     pollIntervalMs,
     sources: { jira: () => pendingJira },
+    // Provedores com as chaves do ambiente; a seleção por regras e a allowlist vêm na M1-16.
+    models: builtinModels(),
   });
   console.log(`[fábrica] API local em ${daemon.url}`);
   const stop = () => void daemon.close().then(() => process.exit(0));

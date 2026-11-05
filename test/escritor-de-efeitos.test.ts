@@ -196,3 +196,65 @@ describe("escritor de efeitos", () => {
     });
   });
 });
+
+describe("comentário com título, editado no lugar (upsertComment)", () => {
+  const header = (body: string) => body.split("\n")[0];
+
+  it("cria o comentário na primeira vez, com o título na primeira linha depois do prefixo", async () => {
+    const { source, writer } = setup();
+
+    await writer.upsertComment("PROJ-1", "SPEC", "conteúdo");
+
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [fábrica] SPEC\n\nconteúdo"]);
+  });
+
+  it("na segunda vez edita o mesmo comentário", async () => {
+    const { source, events, writer } = setup();
+
+    const first = await writer.upsertComment("PROJ-1", "SPEC", "v1");
+    const second = await writer.upsertComment("PROJ-1", "SPEC", "v2");
+
+    expect(second.id).toBe(first.id);
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [fábrica] SPEC\n\nv2"]);
+    expect(events.list().map((e) => (e.type === "write" ? e.action : e.type))).toEqual(["comment", "edit-comment"]);
+  });
+
+  it("sem mudança no conteúdo, não escreve nada", async () => {
+    const { events, writer } = setup();
+
+    await writer.upsertComment("PROJ-1", "SPEC", "igual");
+    await writer.upsertComment("PROJ-1", "SPEC", "igual");
+
+    expect(events.list()).toHaveLength(1);
+  });
+
+  it("títulos diferentes são comentários diferentes", async () => {
+    const { source, writer } = setup();
+
+    await writer.upsertComment("PROJ-1", "SPEC", "s");
+    await writer.upsertComment("PROJ-1", "Tickets", "t");
+
+    expect(source.commentsOf("PROJ-1").map((c) => header(c.body))).toEqual([
+      "🤖 [fábrica] SPEC",
+      "🤖 [fábrica] Tickets",
+    ]);
+  });
+
+  it("nunca edita um comentário de outra pessoa com o mesmo título", async () => {
+    const { source, writer } = setup();
+    const human = source.humanComment("PROJ-1", "po", "🤖 [fábrica] SPEC\n\nà mão");
+
+    await writer.upsertComment("PROJ-1", "SPEC", "da fábrica");
+
+    expect(source.commentsOf("PROJ-1").find((c) => c.id === human.id)?.body).toBe("🤖 [fábrica] SPEC\n\nà mão");
+    expect(source.commentsOf("PROJ-1")).toHaveLength(2);
+  });
+
+  it("passa pelo filtro de segredos", async () => {
+    const { source, writer } = setup();
+
+    await writer.upsertComment("PROJ-1", "SPEC", "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+
+    expect(source.commentsOf("PROJ-1")[0]?.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+  });
+});

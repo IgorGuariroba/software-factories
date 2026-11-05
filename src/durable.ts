@@ -1,5 +1,5 @@
 import type { Context } from "@earendil-works/chord/context";
-import { defineDoc, defineEntry, defineTask, type JsonObject, type TaskId } from "@earendil-works/pi-durable";
+import { defineDoc, defineEntry, defineTask, type JsonObject, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import type { FactoryEvent } from "./events.js";
 
 /** Status de uma Tarefa na fila. */
@@ -46,7 +46,7 @@ export const EventEntry = defineEntry<JsonObject>("fabrica.evento");
 export const eventToJson = (event: FactoryEvent): JsonObject => JSON.parse(JSON.stringify(event)) as JsonObject;
 
 /** Passos de uma Tarefa, na ordem em que acontecem. */
-export type TarefaCheckpoint = { phase: "comentar" } | { phase: "transicionar" };
+export type TarefaCheckpoint = { phase: "comentar" } | { phase: "transicionar" } | { phase: "spec" };
 
 export type TarefaInput = {
   id: string;
@@ -55,8 +55,17 @@ export type TarefaInput = {
 };
 
 /** O que cada passo faz e o que vem depois dele. */
+/** O que um passo pode usar da task durável que o executa. */
+export interface StepRuntime {
+  taskId: TaskId;
+  signal: AbortSignal;
+  context: Context;
+  /** Commit da task durável, sem mudar o estado dela (ex.: criar a conversa de uma etapa). */
+  commit(change: (tx: Tx) => Promise<void>): Promise<void>;
+}
+
 export interface TarefaSteps {
-  run(input: TarefaInput, step: TarefaCheckpoint["phase"], signal: AbortSignal): Promise<void>;
+  run(input: TarefaInput, step: TarefaCheckpoint["phase"], runtime: StepRuntime): Promise<void>;
   /** Classifica uma falha do passo: bloqueio de guardrail (definitivo) ou erro (tentar de novo). */
   classify(err: unknown): { kind: "blocked"; reason: string } | { kind: "error"; message: string };
   onError(input: TarefaInput, message: string): Promise<void>;
@@ -65,7 +74,8 @@ export interface TarefaSteps {
 
 const NEXT: Record<TarefaCheckpoint["phase"], TarefaCheckpoint | "fim"> = {
   comentar: { phase: "transicionar" },
-  transicionar: "fim",
+  transicionar: { phase: "spec" },
+  spec: "fim",
 };
 
 const TEN_YEARS_MS = 10 * 365 * 24 * 60 * 60 * 1000;
@@ -124,7 +134,17 @@ export function createTarefaTask(steps: TarefaSteps) {
     if (gated) return;
 
     try {
-      await abortable(steps.run(task.input, step, runtime.signal), runtime.signal);
+      const stepRuntime: StepRuntime = {
+        taskId: task.id,
+        signal: runtime.signal,
+        context,
+        commit: (change) =>
+          runtime.commit(async (tx) => {
+            await change(tx);
+            return undefined;
+          }, context),
+      };
+      await abortable(steps.run(task.input, step, stepRuntime), runtime.signal);
     } catch (err) {
       if (runtime.signal.aborted) throw err;
       const failure = steps.classify(err);
@@ -167,6 +187,7 @@ export function createTarefaTask(steps: TarefaSteps) {
     phases: {
       comentar: (task, runtime, context) => phase(task, "comentar", runtime, context),
       transicionar: (task, runtime, context) => phase(task, "transicionar", runtime, context),
+      spec: (task, runtime, context) => phase(task, "spec", runtime, context),
     },
     abort: (task, runtime, context) =>
       runtime.commit(async (tx) => {

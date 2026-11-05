@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createModels } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startDaemon } from "../src/daemon.js";
 import type { RunningFactory } from "../src/factory.js";
@@ -24,7 +25,12 @@ describe("config de projeto", () => {
   it("o exemplo do repositório é válido e o daemon sobe com ele", async () => {
     await writeFile(join(dir, "exemplo.yaml"), await readFile("projects/example.yaml", "utf8"));
 
-    daemon = await startDaemon({ configDir: dir, sources, statePath: join(dir, "estado", "fabrica.sqlite") });
+    daemon = await startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
     const queue = (await (await fetch(`${daemon.url}/queue`)).json()) as { key: string }[];
 
     expect(queue.map((c) => c.key)).toEqual(["PROJ-7"]);
@@ -36,7 +42,12 @@ describe("config de projeto", () => {
       "name: quebrado\nsource:\n  type: jira\n  project: PROJ\nstatuses:\n  A Fazer: fazendo\n",
     );
 
-    const start = startDaemon({ configDir: dir, sources, statePath: join(dir, "estado", "fabrica.sqlite") });
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
 
     await expect(start).rejects.toThrow(/quebrado\.yaml/);
     await expect(start).rejects.toThrow(/source\.assignee/);
@@ -47,7 +58,12 @@ describe("config de projeto", () => {
     await writeFile(join(dir, "a-malformado.yaml"), "name: [sem fechar\n");
     await writeFile(join(dir, "b-incompleto.yaml"), "name: b\n");
 
-    const start = startDaemon({ configDir: dir, sources, statePath: join(dir, "estado", "fabrica.sqlite") });
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
 
     await expect(start).rejects.toThrow(/a-malformado\.yaml: .*at line \d+, column \d+/);
     await expect(start).rejects.toThrow(/b-incompleto\.yaml: source/);
@@ -55,7 +71,12 @@ describe("config de projeto", () => {
 
   it("recusa iniciar sem nenhum projeto configurado", async () => {
     await expect(
-      startDaemon({ configDir: dir, sources, statePath: join(dir, "estado", "fabrica.sqlite") }),
+      startDaemon({
+        configDir: dir,
+        sources,
+        statePath: join(dir, "estado", "fabrica.sqlite"),
+        models: createModels(),
+      }),
     ).rejects.toThrow(/nenhum projeto/i);
   });
 });
