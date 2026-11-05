@@ -19,12 +19,36 @@ export type FactoryEvent =
       content: string;
       /** Por que o guardrail bloqueou a escrita. */
       reason: string;
+    }
+  | {
+      /** Falha inesperada (ex.: Fonte fora do ar); a tarefa volta para a fila. */
+      type: "error";
+      at: string;
+      project: string;
+      target: string;
+      message: string;
+    }
+  | {
+      /** Mudança de status de uma tarefa. */
+      type: "task";
+      at: string;
+      project: string;
+      id: string;
+      key: string;
+      status: string;
+      reason?: string;
     };
 
 export type NewEvent = FactoryEvent extends infer E ? (E extends FactoryEvent ? Omit<E, "at"> : never) : never;
 
-/** Log de eventos em memória. A persistência chega com a tarefa durável (M1-04). */
-export class EventLog {
+/** Onde os eventos são registrados. */
+export interface EventRecorder {
+  append(event: NewEvent): void | Promise<void>;
+  list(): FactoryEvent[];
+}
+
+/** Log de eventos só em memória (usado em testes de módulos isolados). */
+export class EventLog implements EventRecorder {
   private events: FactoryEvent[] = [];
 
   constructor(private now: () => Date = () => new Date()) {}
