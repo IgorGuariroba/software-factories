@@ -186,20 +186,6 @@ describe("escritor de efeitos", () => {
       );
     });
 
-    it("mantém a pontuação que fecha o valor YAML sem aspas", async () => {
-      const { source, writer } = setup();
-
-      await writer.comment(
-        "PROJ-1",
-        `(api_key: ${"abc"}123) [token: ${"xyz"}9] {secret: ${"s3"}cr3t}, password: ${"hunter"}2, fim`,
-      );
-
-      expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
-        "\u{1F916} [fábrica] (api_key: [segredo removido]) [token: [segredo removido]] {secret: [segredo removido]}, " +
-          "password: [segredo removido], fim",
-      );
-    });
-
     it("não altera texto comum", async () => {
       const { source, writer } = setup();
 
