@@ -20,7 +20,14 @@ export async function loadProjects(dir: string): Promise<ProjectConfig[]> {
   const configs: ProjectConfig[] = [];
   const errors: string[] = [];
   for (const file of files) {
-    const result = ProjectConfig.safeParse(parse(await readFile(join(dir, file), "utf8")));
+    let raw: unknown;
+    try {
+      raw = parse(await readFile(join(dir, file), "utf8"));
+    } catch (err) {
+      errors.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    const result = ProjectConfig.safeParse(raw);
     if (result.success) configs.push(result.data);
     else for (const issue of result.error.issues) errors.push(`${file}: ${issue.path.join(".")}: ${issue.message}`);
   }

@@ -43,6 +43,16 @@ describe("config de projeto", () => {
     await expect(start).rejects.toThrow(/statuses\.A Fazer/);
   });
 
+  it("aponta o arquivo com YAML malformado e continua validando os demais", async () => {
+    await writeFile(join(dir, "a-malformado.yaml"), "name: [sem fechar\n");
+    await writeFile(join(dir, "b-incompleto.yaml"), "name: b\n");
+
+    const start = startDaemon({ configDir: dir, sources });
+
+    await expect(start).rejects.toThrow(/a-malformado\.yaml: .*line 1/);
+    await expect(start).rejects.toThrow(/b-incompleto\.yaml: source/);
+  });
+
   it("recusa iniciar sem nenhum projeto configurado", async () => {
     await expect(startDaemon({ configDir: dir, sources })).rejects.toThrow(/nenhum projeto/i);
   });
