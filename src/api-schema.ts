@@ -21,7 +21,12 @@ export const API_SCHEMA = {
     "/queue": {
       get: { summary: "Cards elegíveis na Fonte (A Fazer e Em Andamento atribuídos ao usuário)", responses: ok },
     },
-    "/poll": { post: { summary: "Busca agora na Fonte e enfileira os cards 'A Fazer' novos", responses: ok } },
+    "/poll": {
+      post: {
+        summary: "Busca agora na Fonte e enfileira os cards elegíveis (A Fazer e Em Andamento) novos",
+        responses: ok,
+      },
+    },
     "/tasks": {
       get: {
         summary: "Tarefas na ordem da fila, com status",
@@ -60,6 +65,20 @@ export const API_SCHEMA = {
     "/tasks/{project}/{key}/pause": taskPath("Pausa a tarefa (a ativa para no próximo passo)"),
     "/tasks/{project}/{key}/resume": taskPath("Retoma a tarefa pausada"),
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
+    "/tasks/{project}/{key}/veto": {
+      post: {
+        summary:
+          "Veta a tarefa de um card que já estava em andamento, dentro do prazo de veto: ela fica vetada e não age mais no card",
+        parameters: taskPath("").post.parameters,
+        responses: {
+          "200": { description: "Tarefa vetada" },
+          "404": { description: "Tarefa inexistente" },
+          "409": {
+            description: "A tarefa não está aguardando veto (o prazo já passou ou ela não passa por veto); sem efeito",
+          },
+        },
+      },
+    },
     "/daemon": { get: { summary: "Estado do daemon ({ paused })", responses: ok } },
     "/daemon/pause": { post: { summary: "Pausa o daemon: nenhuma tarefa nova começa", responses: ok } },
     "/daemon/resume": { post: { summary: "Retoma o daemon", responses: ok } },
@@ -83,7 +102,17 @@ export const API_SCHEMA = {
           key: { type: "string" },
           title: { type: "string" },
           status: {
-            enum: ["enfileirada", "ativa", "aguardando-humano", "pausada", "concluida", "cancelada", "bloqueada"],
+            enum: [
+              "enfileirada",
+              "ativa",
+              "aguardando-humano",
+              "aguardando-veto",
+              "pausada",
+              "concluida",
+              "cancelada",
+              "bloqueada",
+              "vetada",
+            ],
           },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },

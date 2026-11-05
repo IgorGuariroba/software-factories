@@ -49,14 +49,16 @@ describe("assumir card 'A Fazer'", () => {
     expect(assumeComments(factory.source, "PROJ-1")).toHaveLength(1);
   });
 
-  it("ainda não assume cards que já estavam 'Em Andamento' (veto chega na M1-05)", async () => {
+  it("um card 'A Fazer' não espera veto nem gera aviso ao usuário", async () => {
     factory = await startTestFactory({
-      cards: [{ key: "PROJ-1", title: "t", status: "Em Andamento", assignee: USER }],
+      cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
     });
 
     await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
 
-    expect(assumeComments(factory.source, "PROJ-1")).toEqual([]);
+    expect((await events(factory)).filter((e) => e.type === "notify")).toEqual([]);
+    expect(await events(factory)).not.toContainEqual(expect.objectContaining({ status: "aguardando-veto" }));
   });
 
   it("no dry-run não escreve no card, mas mostra as escritas na API", async () => {

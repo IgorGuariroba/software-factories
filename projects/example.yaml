@@ -47,6 +47,10 @@ calendar:
   end: "18:00"
   holidays: ["2026-12-25"]
 
+# Prazo de veto, em minutos: um card seu que já estava "Em Andamento" é assumido com comentário e aviso a você, e a
+# fábrica só continua depois desse prazo se você não vetar (POST /tasks/<projeto>/<card>/veto). Padrão: 30.
+vetoMinutes: 30
+
 # Prefixo do título/chave ou board do card -> repositório (o primeiro que corresponder vale).
 # path é a sua cópia local: a fábrica só lê dela e trabalha num clone próprio ao lado do estado durável
 # (<dir do FACTORY_STATE_PATH>/worktrees/<projeto>/<card>), com push para o mesmo remoto origin.

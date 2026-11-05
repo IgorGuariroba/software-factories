@@ -76,8 +76,25 @@ export interface QueueItem {
   state: CardState;
 }
 
+/** Resultado de um veto: aplicado, Tarefa inexistente ou Tarefa que não está (mais) no prazo de veto. */
+export type VetoResult = "vetada" | "inexistente" | "fora-do-prazo";
+
+/** Comandos do usuário sobre a fábrica; a API e as interfaces de gestão (Telegram, web) chamam os mesmos. */
+export interface FactoryCommands {
+  /** Retornam `false` se a Tarefa não existe. */
+  pause(id: string): Promise<boolean>;
+  resume(id: string): Promise<boolean>;
+  cancel(id: string): Promise<boolean>;
+  /** Veta, dentro do prazo, a Tarefa de um card que já estava em andamento: ela fica `vetada` e não age mais no card. */
+  veto(id: string): Promise<VetoResult>;
+  setDaemonPaused(paused: boolean): Promise<void>;
+  reorder(ids: string[]): Promise<void>;
+}
+
 export interface RunningFactory {
   url: string;
+  /** Os mesmos comandos da API, para as interfaces de gestão no processo do daemon. */
+  commands: FactoryCommands;
   close(): Promise<void>;
 }
 
@@ -388,6 +405,20 @@ export async function startFactory(opts: {
       const next = [!q.reminded ? q.remindAt : null, !q.notified ? q.notifyAt : null].filter((t) => t !== null);
       return next.length > 0 ? Math.min(...next) : null;
     },
+    vetoMs: (input) => projectOf(input.project).config.vetoMinutes * 60_000,
+    async announceVeto(input, until) {
+      const { vetoMinutes } = projectOf(input.project).config;
+      await events.append({
+        type: "notify",
+        project: input.project,
+        target: input.key,
+        reason: "aguardando-veto",
+        until: new Date(until).toISOString(),
+        message:
+          `A fábrica assumiu o card ${input.key}, que já estava em andamento, e continua o trabalho nele em ` +
+          `${vetoMinutes} min (${new Date(until).toISOString()}) se você não vetar.`,
+      });
+    },
     classify: (err) =>
       err instanceof GuardrailViolation || err instanceof StageBlocked
         ? { kind: "blocked", reason: err.message }
@@ -472,13 +503,13 @@ export async function startFactory(opts: {
     return items;
   }
 
-  /** Busca na Fonte: enfileira os cards "A Fazer" que ainda não viraram Tarefa e confere as respostas esperadas. */
+  /** Busca na Fonte: enfileira os cards elegíveis que ainda não viraram Tarefa e confere as respostas esperadas. */
   async function poll(): Promise<void> {
     await checkAnswers();
-    const todo = (await queue()).filter((item) => item.state === "todo");
+    const eligible = await queue();
     await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
-      for (const item of todo) {
+      for (const item of eligible) {
         const id = `${item.project}/${item.key}`;
         if (state.tasks.some((t) => t.id === id)) continue;
         state.tasks.push({
@@ -493,6 +524,8 @@ export async function startFactory(opts: {
           notBefore: null,
           attempts: 0,
           reason: null,
+          startedIn: item.state,
+          veto: null,
           delivery: null,
           implementation: null,
         });
@@ -555,7 +588,9 @@ export async function startFactory(opts: {
         id: t.id,
         key: t.key,
         status: t.status,
-        ...(t.reason && (t.status === "bloqueada" || t.status === "enfileirada") ? { reason: t.reason } : {}),
+        ...(t.reason && (t.status === "bloqueada" || t.status === "enfileirada" || t.status === "vetada")
+          ? { reason: t.reason }
+          : {}),
       });
     }
   }
@@ -594,8 +629,8 @@ export async function startFactory(opts: {
     }, context);
   }
 
-  const TERMINAL = new Set(["concluida", "cancelada", "bloqueada"]);
-  const commands = {
+  const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada"]);
+  const commands: FactoryCommands = {
     pause: (id: string) =>
       updateTask(id, (task) => {
         if (TERMINAL.has(task.status)) return;
@@ -616,6 +651,27 @@ export async function startFactory(opts: {
       });
       if (durableId !== null) await harness.abortTask(durableId as TaskId, context);
       return found;
+    },
+    async veto(id: string) {
+      let result: VetoResult = "inexistente";
+      let gate: number | null = null;
+      await harness.commit(async (tx) => {
+        const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+        if (!task) return;
+        // Só vale dentro do prazo: depois dele (mesmo antes de a Tarefa acordar), ela já segue para as etapas.
+        if (task.status !== "aguardando-veto" || !task.veto || clock.now() >= task.veto.until) {
+          result = "fora-do-prazo";
+          return;
+        }
+        task.status = "vetada";
+        task.reason = "vetada pelo usuário";
+        gate = task.gateId;
+        task.gateId = null;
+        result = "vetada";
+      }, context);
+      // Acorda a Tarefa só para ela terminar, sem tocar no card.
+      if (gate !== null) await harness.abortTask(gate as TaskId, context);
+      return result;
     },
     setDaemonPaused: (paused: boolean) =>
       harness.commit(async (tx) => {
@@ -702,10 +758,25 @@ export async function startFactory(opts: {
         await commands.reorder(body.ids.map(String));
         return json(res, 200, { ok: true });
       }
-      if (req.method === "POST" && taskCommand) {
-        const [, project, key, command] = taskCommand as unknown as [string, string, string, keyof typeof commands];
+      const vetoCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/veto$/);
+      if (req.method === "POST" && vetoCommand) {
+        const [, project, key] = vetoCommand as unknown as [string, string, string];
         const id = `${decodeURIComponent(project)}/${decodeURIComponent(key)}`;
-        const found = await (commands[command] as (id: string) => Promise<boolean>)(id);
+        const result = await commands.veto(id);
+        if (result === "inexistente") return json(res, 404, { error: `Tarefa ${id} não existe` });
+        if (result === "fora-do-prazo")
+          return json(res, 409, { error: `Tarefa ${id} não está aguardando veto (o prazo já passou ou não houve)` });
+        return json(res, 200, { ok: true, status: "vetada" });
+      }
+      if (req.method === "POST" && taskCommand) {
+        const [, project, key, command] = taskCommand as unknown as [
+          string,
+          string,
+          string,
+          "pause" | "resume" | "cancel",
+        ];
+        const id = `${decodeURIComponent(project)}/${decodeURIComponent(key)}`;
+        const found = await commands[command](id);
         return found ? json(res, 200, { ok: true }) : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
       if (route === "GET /daemon") return json(res, 200, { paused: (await readState()).daemonPaused });
@@ -757,6 +828,7 @@ export async function startFactory(opts: {
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
+    commands,
     close: async () => {
       closing = true;
       if (pollTimer) clearInterval(pollTimer);

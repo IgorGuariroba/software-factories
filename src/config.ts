@@ -126,6 +126,11 @@ export const ProjectConfig = z.object({
     end: "18:00",
     holidays: [],
   }),
+  /**
+   * Prazo, em minutos no relógio da fábrica, para o usuário vetar a Tarefa de um card que já estava em andamento antes
+   * de a fábrica continuá-lo.
+   */
+  vetoMinutes: z.number().int().positive().default(30),
   /** Nome do status na Fonte → estado que a fábrica entende. */
   statuses: z.record(z.string(), CardState),
   /** Prefixo de título/chave ou board → repositório. Sem nenhum, a Tarefa termina depois dos Tickets. */
