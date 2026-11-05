@@ -51,6 +51,12 @@ calendar:
 # fábrica só continua depois desse prazo se você não vetar (POST /tasks/<projeto>/<card>/veto). Padrão: 30.
 vetoMinutes: 30
 
+# Mensagens deste projeto no Telegram (a interface de gestão; ver CONTRIBUTING.md). Toda mensagem passa pelo filtro
+# de segredos. O nível full (padrão) manda o texto completo: títulos de card, avisos e motivos de bloqueio;
+# o minimal manda só o tipo do evento, o card, o projeto e prazos, sem nada escrito por pessoas ou modelos.
+telegram:
+  content: full
+
 # Prefixo do título/chave ou board do card -> repositório (o primeiro que corresponder vale).
 # path é a sua cópia local: a fábrica só lê dela e trabalha num clone próprio ao lado do estado durável
 # (<dir do FACTORY_STATE_PATH>/worktrees/<projeto>/<card>), com push para o mesmo remoto origin.

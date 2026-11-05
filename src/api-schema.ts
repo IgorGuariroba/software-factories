@@ -85,7 +85,8 @@ export const API_SCHEMA = {
     "/events": {
       get: {
         summary:
-          "Histórico de eventos (escritas, bloqueios, erros, status de tarefas, perguntas e avisos ao usuário do tipo notify)",
+          "Histórico de eventos (escritas, bloqueios, erros, status de tarefas, assunções, perguntas, avisos ao usuário do " +
+          "tipo notify, comandos recebidos pelas interfaces de gestão e mensagens descartadas)",
         responses: ok,
       },
     },

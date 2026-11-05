@@ -9,6 +9,7 @@ import type { TestRunner } from "../src/test-runner.js";
 import type { FakeClock } from "./fakes/fake-clock.js";
 import { FakeCodeHost } from "./fakes/fake-code-host.js";
 import { FakeModel } from "./fakes/fake-model.js";
+import { type FakeTelegram, TELEGRAM_CHAT, TELEGRAM_USER } from "./fakes/fake-telegram.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
 
 export const USER = "igor";
@@ -69,6 +70,8 @@ interface TestFactoryOptions {
   config?: Partial<ProjectConfig>;
   /** Relógio falso da fábrica; sem ele, o relógio do sistema. O mesmo relógio continua depois de `restart()`. */
   clock?: FakeClock;
+  /** Telegram fake como interface de gestão, com o chat e o usuário autorizados de `fake-telegram.ts`. */
+  telegram?: FakeTelegram;
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória e estado durável num diretório temporário. */
@@ -89,6 +92,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     models: model.models(),
     testRunner: opts.testRunner,
     clock: opts.clock,
+    management: opts.telegram && { port: opts.telegram, chat: TELEGRAM_CHAT, user: TELEGRAM_USER },
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
     ],

@@ -2,9 +2,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startDaemon } from "../src/daemon.js";
 import type { RunningFactory } from "../src/factory.js";
+import { FakeTelegram, TELEGRAM_CHAT } from "./fakes/fake-telegram.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
 
 let dir: string;
@@ -89,6 +90,38 @@ describe("config de projeto", () => {
     await expect(start).rejects.toThrow(/calendar\.timezone: fuso horário IANA desconhecido/);
     await expect(start).rejects.toThrow(/calendar\.end: start precisa ser antes de end/);
     await expect(start).rejects.toThrow(/people\.0\.role/);
+  });
+
+  it("recusa um nível de conteúdo do Telegram desconhecido", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(join(dir, "telegram.yaml"), example.replace(/content: full/, "content: tudo"));
+
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
+
+    await expect(start).rejects.toThrow(/telegram\.content/);
+  });
+
+  it("com uma interface de gestão, o daemon publica nela no nível do projeto", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    expect(example).toMatch(/content: full/);
+    await writeFile(join(dir, "exemplo.yaml"), example.replace(/content: full/, "content: minimal"));
+    const telegram = new FakeTelegram();
+
+    daemon = await startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+      management: { port: telegram, chat: TELEGRAM_CHAT },
+    });
+    await fetch(`${daemon.url}/poll`, { method: "POST" });
+
+    await vi.waitFor(() => expect(telegram.texts()).toContain("Assumi o card PROJ-7 (exemplo)."));
   });
 
   it("recusa iniciar sem nenhum projeto configurado", async () => {

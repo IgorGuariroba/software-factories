@@ -26,6 +26,7 @@ import {
   eventToJson,
   type FactoryState,
   GateTask,
+  ManagementDoc,
   pendingQuestion,
   type Question,
   type QueuedTask,
@@ -36,6 +37,7 @@ import { createEffectWriter, type EffectWriter, GuardrailViolation } from "./eff
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
+import { type ManagementInterface, startManagementBridge } from "./management.js";
 import {
   answerFollowUp,
   isShallowCard,
@@ -175,6 +177,8 @@ export async function startFactory(opts: {
   testRunner?: TestRunner;
   /** Relógio da fábrica. Padrão: o relógio do sistema. */
   clock?: FactoryClock;
+  /** Interface de gestão (Telegram) e a conversa/usuário de onde ela aceita comandos. Sem ela, a fábrica só tem a API. */
+  management?: { port: ManagementInterface; chat: string; user?: string };
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
   const clock: FactoryClock = opts.clock ?? { now: Date.now };
@@ -223,6 +227,24 @@ export async function startFactory(opts: {
       const { writer, source } = project;
       if (step === "comentar") {
         await writer.commentOnce(input.key, "Assumindo este card.");
+        // Uma nova tentativa recomeça deste passo; o aviso de que assumiu sai uma vez só.
+        const announced = events
+          .list()
+          .some((e) => e.type === "assumed" && e.project === input.project && e.target === input.key);
+        if (!announced) {
+          let task: QueuedTask | undefined;
+          await runtime.commit(async (tx) => {
+            const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+            task = stored && (JSON.parse(JSON.stringify(stored)) as QueuedTask);
+          });
+          await events.append({
+            type: "assumed",
+            project: input.project,
+            target: input.key,
+            title: task?.title ?? "",
+            waitsVeto: task?.startedIn === "in_progress",
+          });
+        }
         return undefined;
       }
       if (step === "transicionar") {
@@ -445,6 +467,7 @@ export async function startFactory(opts: {
   await harness.root(context);
   events = new DurableEventLog(harness, clock.now);
   await events.load();
+  const initialEventCount = events.list().length;
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
@@ -824,6 +847,32 @@ export async function startFactory(opts: {
       serializedPoll().catch((err) => console.error("[fábrica] erro na busca:", err));
     }, opts.pollIntervalMs);
 
+  // --- Interface de gestão ------------------------------------------------------------------------
+
+  const management = opts.management;
+  const bridge =
+    management &&
+    (await startManagementBridge({
+      ...management,
+      events,
+      initialEventCount,
+      progress: {
+        load: async () => {
+          const stored = (await harness.snapshot(ManagementDoc, context))?.[management.port.name];
+          return stored && { ...stored };
+        },
+        save: (progress) =>
+          harness.commit(async (tx) => {
+            (await tx.doc(ManagementDoc))[management.port.name] = progress;
+          }, context),
+      },
+      tasks: async () => (await readState()).tasks,
+      commands,
+      content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
+      now: clock.now,
+      armTimer,
+    }));
+
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
@@ -831,6 +880,7 @@ export async function startFactory(opts: {
     commands,
     close: async () => {
       closing = true;
+      await bridge?.stop();
       if (pollTimer) clearInterval(pollTimer);
       disarmRetry?.();
       for (const stream of streams) stream.end();

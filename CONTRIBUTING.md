@@ -61,6 +61,31 @@ Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta
 - Dry-run: pergunta e lembrete viram só eventos `write` (`action: "mention"`); a leitura das respostas continua real.
 - Nos testes, a fábrica roda num relógio falso (`test/fakes/fake-clock.ts`, opção `clock` de `startTestFactory`), que move o relógio do motor durável e do agendador.
 
+### Telegram (interface de gestão)
+
+O Telegram é a interface de gestão do celular (porta `ManagementInterface`, `src/management.ts`; adaptador `src/telegram.ts`, Bot API por HTTP com long polling em `getUpdates`, sem webhook). Ele é **global ao daemon** (um bot e uma conversa para todos os projetos); só o nível de conteúdo é por projeto.
+
+- Ambiente (nunca na config, em log ou em erro): `TELEGRAM_BOT_TOKEN` (token do bot, do @BotFather), `TELEGRAM_CHAT_ID` (a conversa onde a fábrica publica e a única de onde aceita comandos) e, opcional, `TELEGRAM_USER_ID` (se definido, só comandos desse usuário naquela conversa valem; recomendado em grupos). Sem token ou sem chat, o daemon sobe sem Telegram, com um aviso no log. O daemon apaga o token do próprio ambiente ao ler, para ele não chegar aos processos filhos.
+- Conteúdo, por projeto (`telegram.content` no YAML, ADR-0009): `full` (padrão) manda o texto completo (título do card, avisos, motivos de bloqueio); `minimal` manda só o tipo do evento, o card, o projeto e prazos. Toda mensagem de saída, nos dois níveis, passa pelo filtro de segredos (`src/secrets.ts`).
+- Publicado: assunção de um card (com botões Pausar e Cancelar), avisos `notify` (prazo de veto, com botão Vetar enquanto o prazo vale; pergunta sem resposta), bloqueio de guardrail (`blocked`), Tarefa `bloqueada` e Tarefa concluída. Um card que já estava em andamento recebe só o aviso de veto, que já diz que a fábrica o assumiu.
+- Comandos (os mesmos de `RunningFactory.commands`, que a API usa): `/vetar <card>`, `/pausar [card]`, `/retomar [card]`, `/cancelar <card>`; sem card, `/pausar` e `/retomar` valem para o daemon. `<card>` é a chave (`PROJ-1`) ou `projeto/chave`. Cada comando recebe resposta no chat (ou no aviso do botão) e vira um evento `command`.
+- Origem não autorizada (outro chat ou outro usuário, inclusive tocando um botão): nada é executado nem respondido; fica só o evento `command` com `accepted: false`.
+- Durabilidade: o progresso fica no estado durável (`ManagementDoc`): o índice do próximo evento a publicar e o `offset` do `getUpdates`. Um reinício não republica mensagens nem repete comandos (o offset é gravado depois de executar o comando; os comandos são idempotentes). Ao ligar o Telegram pela primeira vez, o histórico anterior não é publicado.
+- Falhas: uma mensagem que não sai é tentada de novo em 5 s e em 30 s (relógio da fábrica) e, na terceira falha, é descartada com um evento `delivery` (`status: "descartada"`) e um log; as seguintes continuam saindo. Uma falha ao receber espera 10 s e tenta de novo. Nenhuma falha do Telegram derruba nem trava a fábrica (a publicação corre à parte da fila de Tarefas).
+- Limites da Bot API: texto acima de 4096 caracteres é truncado com "…"; botão cujo comando passa de 64 bytes (`callback_data`) é omitido, e o comando continua valendo por texto.
+
+#### Testes de contrato contra o Telegram real (opt-in)
+
+A suíte de contrato da `ManagementInterface` (`test/management.contract.ts`) roda na CI contra o fake em memória (`test/fakes/fake-telegram.ts`) e contra o adaptador real falando com uma Bot API falsa e estrita (`test/fakes/fake-bot-api.ts`). Contra o Telegram real, só com variáveis explícitas, usando um bot e um chat **de teste** (a suíte publica mensagens nele e consome os updates pendentes do bot):
+
+```sh
+TEST_TELEGRAM_BOT_TOKEN="token-do-bot-de-teste" \
+TEST_TELEGRAM_CHAT_ID="id-do-chat-de-teste" \
+npx vitest run test/management-telegram.contract.test.ts
+```
+
+Sem as duas variáveis, o arquivo é pulado. Contra o real, os testes de recepção que dependem de simular o usuário são pulados; o bot não pode ter webhook configurado (o `getUpdates` falha com webhook ativo).
+
 ### Fonte Jira
 
 O adaptador Jira (`src/jira-demand-source.ts`) fala com o Jira pelo `acli` (Atlassian CLI), já autenticado na máquina (`acli jira auth login`); `ACLI_PATH` aponta para o binário se ele não estiver no `PATH`. Em `source.assignee`, use o seu accountId ou o seu e-mail do Jira.

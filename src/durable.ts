@@ -130,6 +130,23 @@ export const StateDoc = defineDoc<FactoryState>({
   checkpointWhen: () => true,
 });
 
+/** Progresso de uma interface de gestão: o que já foi publicado e o que já foi recebido. */
+export type ManagementProgress = {
+  /** Próximo evento do log a publicar (índice). `null`: interface nova, começa pelos eventos que vierem. */
+  eventCursor: number | null;
+  /** Próximo update a receber (no Telegram, o `offset` do `getUpdates`). */
+  updateOffset: number;
+};
+
+/** Progresso de cada interface de gestão, pelo nome dela: um reinício não republica nem reprocessa nada. */
+export const ManagementDoc = defineDoc<Record<string, ManagementProgress>>({
+  kind: "fabrica.gestao",
+  version: 1,
+  scope: "session",
+  initial: () => ({}),
+  checkpointWhen: () => true,
+});
+
 /** Um evento da fábrica, gravado no transcript da conversa raiz. */
 export const EventEntry = defineEntry<JsonObject>("fabrica.evento");
 

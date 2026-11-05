@@ -98,6 +98,14 @@ export const BusinessCalendar = z
   .refine((c) => c.start < c.end, { message: "start precisa ser antes de end", path: ["end"] });
 export type BusinessCalendar = z.infer<typeof BusinessCalendar>;
 
+/**
+ * Quanto do conteúdo do projeto vai nas mensagens ao Telegram (ADR-0009). Toda mensagem passa pelo filtro de segredos.
+ * - `full`: o texto completo (títulos de card, avisos, motivos de bloqueio);
+ * - `minimal`: só o tipo do evento, o card, o projeto e prazos; nada escrito por pessoas ou modelos.
+ */
+export const TelegramContent = z.enum(["full", "minimal"]);
+export type TelegramContent = z.infer<typeof TelegramContent>;
+
 export const ProjectConfig = z.object({
   name: z.string().min(1),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
@@ -137,6 +145,8 @@ export const ProjectConfig = z.object({
   repositories: z.array(RepoMapping).optional(),
   /** Sobrescritas de convenção de branch e commit. */
   conventions: ConventionsConfig.optional(),
+  /** Mensagens deste projeto no Telegram. Sem o bloco, `content: full`. */
+  telegram: z.object({ content: TelegramContent.default("full") }).optional(),
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;
 
