@@ -25,6 +25,28 @@ roles:
     provider: anthropic
     model: claude-sonnet-4-6
 
+# Pessoas do projeto: as únicas com quem a fábrica conversa neste projeto (dados fictícios).
+# id é o identificador da pessoa na Fonte (no Jira, o accountId): é com ele que a fábrica menciona a pessoa e
+# reconhece a resposta dela no card. Papéis: po (perguntas de negócio) e tech_lead.
+# Mencionar alguém fora desta lista é bloqueado por guardrail; sem um po, uma pergunta de negócio bloqueia a Tarefa.
+people:
+  - id: id-do-po-no-jira
+    role: po
+    name: PO Fictício
+  - id: id-do-tech-lead-no-jira
+    role: tech_lead
+
+# Expediente do projeto. Os prazos das perguntas contam só horas úteis: lembrete à pessoa após 4 h úteis sem
+# resposta e aviso a você após 1 dia útil (a duração do expediente, aqui 9 h).
+# timezone é um fuso IANA; workdays usa sun, mon, tue, wed, thu, fri, sat; holidays são datas AAAA-MM-DD sem
+# expediente. Sem calendar: segunda a sexta, 09:00-18:00, UTC.
+calendar:
+  timezone: America/Sao_Paulo
+  workdays: [mon, tue, wed, thu, fri]
+  start: "09:00"
+  end: "18:00"
+  holidays: ["2026-12-25"]
+
 # Prefixo do título/chave ou board do card -> repositório (o primeiro que corresponder vale).
 # path é a sua cópia local: a fábrica só lê dela e trabalha num clone próprio ao lado do estado durável
 # (<dir do FACTORY_STATE_PATH>/worktrees/<projeto>/<card>), com push para o mesmo remoto origin.

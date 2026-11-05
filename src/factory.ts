@@ -9,27 +9,43 @@ import {
   defineExtension,
   Harness,
   ROOT_CONVERSATION_ID,
+  type SetTimer,
   type TaskId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
+import { addBusinessHours, workdayHours } from "./business-hours.js";
+import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import {
   createTarefaTask,
+  DeadlineGateTask,
   EventEntry,
   eventToJson,
   type FactoryState,
   GateTask,
+  pendingQuestion,
+  type Question,
   type QueuedTask,
+  recordAnswer,
   StateDoc,
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
-import { renderTickets, requestSpec, type SpecDelivery, SpecExtension, specInput } from "./spec-stage.js";
+import {
+  answerFollowUp,
+  isShallowCard,
+  renderTickets,
+  requestSpec,
+  SHALLOW_CARD_QUESTION,
+  type SpecDelivery,
+  SpecExtension,
+  specInput,
+} from "./spec-stage.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
 
 export interface FactoryProject {
@@ -71,12 +87,28 @@ const ELIGIBLE: ReadonlySet<CardState> = new Set(["todo", "in_progress"]);
 /** Estado mais avançado para onde a fábrica move cards no M1. */
 const TRANSITION_LIMIT: CardState = "in_progress";
 
+/** Horas úteis sem resposta até o lembrete à pessoa perguntada. */
+export const REMINDER_BUSINESS_HOURS = 4;
+
+/** Perguntas ao PO numa mesma Tarefa; na seguinte, a Tarefa fica bloqueada para o usuário decidir. */
+export const MAX_PO_QUESTIONS = 5;
+
+/** Relógio da fábrica: prazos, sonos do motor e horário dos eventos. Nos testes, um relógio falso. */
+export interface FactoryClock {
+  now(): number;
+  /** Timers do motor e do agendador (ver `HarnessOptions.setTimer`). Sem ele, `setTimeout`. */
+  setTimer?: SetTimer;
+}
+
 /** Log de eventos durável: cada evento é uma entry na conversa raiz, e os assinantes recebem os novos. */
 class DurableEventLog implements EventRecorder {
   private events: FactoryEvent[] = [];
   private subscribers = new Set<(event: FactoryEvent) => void>();
 
-  constructor(private harness: Harness) {}
+  constructor(
+    private harness: Harness,
+    private now: () => number,
+  ) {}
 
   async load(): Promise<void> {
     const root = await this.harness.root(context);
@@ -91,7 +123,7 @@ class DurableEventLog implements EventRecorder {
   }
 
   async append(event: NewEvent): Promise<void> {
-    const full = { ...event, at: new Date().toISOString() } as FactoryEvent;
+    const full = { ...event, at: new Date(this.now()).toISOString() } as FactoryEvent;
     await this.harness.commit(
       (tx) => tx.appendEntry(EventEntry, ROOT_CONVERSATION_ID, { data: eventToJson(full) }),
       context,
@@ -124,8 +156,18 @@ export async function startFactory(opts: {
   models: Models;
   /** Quem roda o comando de teste dos repositórios. Padrão: direto no host, com ambiente mínimo. */
   testRunner?: TestRunner;
+  /** Relógio da fábrica. Padrão: o relógio do sistema. */
+  clock?: FactoryClock;
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
+  const clock: FactoryClock = opts.clock ?? { now: Date.now };
+  /** Um timer do agendador no relógio da fábrica. */
+  const armTimer = (callback: () => void, delayMs: number): (() => void) => {
+    const disarm = clock.setTimer?.(callback, delayMs, { background: false });
+    if (disarm) return disarm;
+    const timer = setTimeout(callback, delayMs);
+    return () => clearTimeout(timer);
+  };
   let events!: DurableEventLog;
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
@@ -140,7 +182,8 @@ export async function startFactory(opts: {
         isFactoryBranch: async (branch) =>
           (await readState()).tasks.some((t) => t.project === p.config.name && t.implementation?.branch === branch),
       });
-      return [p.config.name, { ...p, codeHost, writer }] as const;
+      const channel: Channel = createCardCommentChannel({ source: p.source, writer });
+      return [p.config.name, { ...p, codeHost, writer, channel }] as const;
     }),
   );
   // Os clones da fábrica ficam ao lado do estado durável, nunca na cópia de trabalho do usuário.
@@ -161,8 +204,14 @@ export async function startFactory(opts: {
     async run(input, step, runtime) {
       const project = projectOf(input.project);
       const { writer, source } = project;
-      if (step === "comentar") return void (await writer.commentOnce(input.key, "Assumindo este card."));
-      if (step === "transicionar") return writer.transition(input.key, "in_progress", { from: "todo" });
+      if (step === "comentar") {
+        await writer.commentOnce(input.key, "Assumindo este card.");
+        return undefined;
+      }
+      if (step === "transicionar") {
+        await writer.transition(input.key, "in_progress", { from: "todo" });
+        return undefined;
+      }
 
       // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
       let delivery: SpecDelivery | undefined;
@@ -176,7 +225,7 @@ export async function startFactory(opts: {
         if (!delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
-        return runImplementation({
+        await runImplementation({
           harness,
           runtime,
           taskId: input.id,
@@ -189,34 +238,155 @@ export async function startFactory(opts: {
           deps: implementationDeps,
           tools: implementationTools,
         });
+        return undefined;
       }
 
-      if (!delivery) delivery = await requestDelivery();
+      if (!delivery) {
+        const outcome = await grill();
+        if (outcome === "aguardar") return "aguardar";
+        delivery = outcome;
+      }
       await writer.upsertComment(input.key, "SPEC", delivery.spec);
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
+      return undefined;
 
-      async function requestDelivery(): Promise<SpecDelivery> {
+      /** Grill → SPEC. Devolve a entrega, ou `"aguardar"` depois de levar uma pergunta ao PO. */
+      async function grill(): Promise<SpecDelivery | "aguardar"> {
+        let questions: Question[] = [];
+        await runtime.commit(async (tx) => {
+          const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.questions;
+          questions = stored ? (JSON.parse(JSON.stringify(stored)) as Question[]) : [];
+        });
+        // Uma pergunta já registrada e sem resposta (ex.: reinício logo depois de perguntar): só volta a esperar.
+        if (questions.some((q) => q.answer === null)) return "aguardar";
+
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
-        const delivered = await requestSpec({
+        const comments = await source.listComments(input.key);
+        const attachments = await source.listTextAttachments(input.key);
+        if (questions.length === 0 && isShallowCard(card, comments, attachments)) {
+          await ask(questions, SHALLOW_CARD_QUESTION, "card-raso");
+          return "aguardar";
+        }
+
+        const answered = questions.map((q) => ({ text: q.text, answer: q.answer ?? "" }));
+        const last = answered.at(-1);
+        const outcome = await requestSpec({
           harness,
           commit: runtime.commit,
           taskId: runtime.taskId,
           model: project.config.roles.spec,
           context: runtime.context,
+          requestId: `spec-${questions.length}`,
           input: specInput({
             card,
-            comments: await source.listComments(input.key),
-            attachments: await source.listTextAttachments(input.key),
+            comments,
+            attachments,
             knowledge: await readKnowledge(project.knowledgeDir),
+            answered,
           }),
+          followUp: last && questions.at(-1)?.origin === "grill" ? answerFollowUp(last) : undefined,
         });
+        if (outcome.kind === "question") {
+          await ask(questions, outcome.text, "grill");
+          return "aguardar";
+        }
+        const delivered = outcome.delivery;
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
           if (task) task.delivery = delivered;
         });
         return delivered;
       }
+
+      /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */
+      async function ask(previous: Question[], text: string, origin: Question["origin"]): Promise<void> {
+        const po = project.config.people.find((p) => p.role === "po");
+        if (!po)
+          throw new StageBlocked(`o grill precisa perguntar ao PO, mas o projeto ${input.project} não declara um`);
+        if (previous.length >= MAX_PO_QUESTIONS)
+          throw new StageBlocked(
+            `o grill já fez ${MAX_PO_QUESTIONS} perguntas ao PO e ainda quer perguntar: "${text}"`,
+          );
+        const n = previous.length + 1;
+        const ref = await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
+        const askedAt = clock.now();
+        const { calendar } = project.config;
+        const question: Question = {
+          n,
+          origin,
+          to: po.id,
+          text,
+          ref,
+          askedAt,
+          remindAt: addBusinessHours(calendar, askedAt, REMINDER_BUSINESS_HOURS),
+          notifyAt: addBusinessHours(calendar, askedAt, workdayHours(calendar)),
+          reminded: false,
+          notified: false,
+          answer: null,
+        };
+        await runtime.commit(async (tx) => {
+          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+          if (task && !task.questions?.some((q) => q.n === n)) task.questions = [...(task.questions ?? []), question];
+        });
+        await events.append({
+          type: "question",
+          project: input.project,
+          target: input.key,
+          n,
+          to: po.id,
+          text,
+          status: "enviada",
+        });
+      }
+    },
+    async escalate(input, runtime) {
+      const project = projectOf(input.project);
+      let question: Question | undefined;
+      await runtime.commit(async (tx) => {
+        const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+        const pending = task && pendingQuestion(task);
+        question = pending ? (JSON.parse(JSON.stringify(pending)) as Question) : undefined;
+      });
+      if (!question) return null;
+      const q = question;
+      if (await checkAnswer(input, q)) return null;
+
+      const now = runtime.now();
+      if (!q.reminded && now >= q.remindAt) {
+        await project.channel.remind(
+          q.ref,
+          `Lembrete da pergunta ${q.n}: ainda aguardo a sua resposta neste card. ${q.text}`,
+        );
+        await markQuestion(input.id, q.n, (stored) => {
+          stored.reminded = true;
+        });
+        await events.append({
+          type: "question",
+          project: input.project,
+          target: input.key,
+          n: q.n,
+          to: q.to,
+          text: q.text,
+          status: "lembrete",
+        });
+        q.reminded = true;
+      }
+      if (!q.notified && now >= q.notifyAt) {
+        await events.append({
+          type: "notify",
+          project: input.project,
+          target: input.key,
+          reason: "pergunta-sem-resposta",
+          message: `A pergunta ${q.n} ao PO no card ${input.key} está há 1 dia útil sem resposta: ${q.text}`,
+        });
+        await markQuestion(input.id, q.n, (stored) => {
+          stored.notified = true;
+        });
+        q.notified = true;
+      }
+      const next = [!q.reminded ? q.remindAt : null, !q.notified ? q.notifyAt : null].filter((t) => t !== null);
+      return next.length > 0 ? Math.min(...next) : null;
     },
     classify: (err) =>
       err instanceof GuardrailViolation || err instanceof StageBlocked
@@ -226,13 +396,15 @@ export async function startFactory(opts: {
   });
 
   const registry = createRegistry();
-  registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask] }));
+  registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask, DeadlineGateTask] }));
   registry.install(SpecExtension);
   registry.install(implementationTools.extension);
   await mkdir(dirname(opts.statePath), { recursive: true });
   const harness = await Harness.open(
     await openNodeSqliteStorage(opts.statePath),
     {
+      now: clock.now,
+      setTimer: clock.setTimer,
       models: opts.models,
       registry,
       onReport: (report) => console.error(`[fábrica] ${report.kind}:`, report.error),
@@ -240,11 +412,50 @@ export async function startFactory(opts: {
     context,
   );
   await harness.root(context);
-  events = new DurableEventLog(harness);
+  events = new DurableEventLog(harness, clock.now);
   await events.load();
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
+
+  // --- Perguntas -------------------------------------------------------------------------------
+
+  /** Altera uma pergunta registrada no estado durável. */
+  async function markQuestion(id: string, n: number, change: (q: Question) => void): Promise<void> {
+    await harness.commit(async (tx) => {
+      const question = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id)?.questions?.find((q) => q.n === n);
+      if (question) change(question);
+    }, context);
+  }
+
+  /** Lê a resposta pelo Canal; se chegou, registra e devolve a Tarefa à fila. */
+  async function checkAnswer(task: { id: string; project: string; key: string }, q: Question): Promise<boolean> {
+    const answer = await projectOf(task.project).channel.answer(q.ref);
+    if (answer === undefined) return false;
+    const recorded = await harness.commit(
+      async (tx) => recordAnswer(await tx.doc(StateDoc), task.id, q.n, answer),
+      context,
+    );
+    if (recorded)
+      await events.append({
+        type: "question",
+        project: task.project,
+        target: task.key,
+        n: q.n,
+        to: q.to,
+        text: q.text,
+        status: "respondida",
+      });
+    return true;
+  }
+
+  /** Confere, na Fonte, a resposta de cada Tarefa que aguarda uma pessoa. */
+  async function checkAnswers(): Promise<void> {
+    for (const task of (await readState()).tasks) {
+      const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
+      if (pending) await checkAnswer(task, pending);
+    }
+  }
 
   // --- Fila ------------------------------------------------------------------------------------
 
@@ -261,8 +472,9 @@ export async function startFactory(opts: {
     return items;
   }
 
-  /** Busca na Fonte e enfileira os cards "A Fazer" que ainda não viraram Tarefa. */
+  /** Busca na Fonte: enfileira os cards "A Fazer" que ainda não viraram Tarefa e confere as respostas esperadas. */
   async function poll(): Promise<void> {
+    await checkAnswers();
     const todo = (await queue()).filter((item) => item.state === "todo");
     await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
@@ -291,22 +503,22 @@ export async function startFactory(opts: {
   // --- Agendador -------------------------------------------------------------------------------
 
   let closing = false;
-  let retryTimer: NodeJS.Timeout | undefined;
+  let disarmRetry: (() => void) | undefined;
   let known = new Map((await readState()).tasks.map((t) => [t.id, t.status]));
 
   /** Ativa a próxima Tarefa se nenhuma estiver ativa. Abre o portão de uma Tarefa que estava pausada. */
   async function schedule(): Promise<void> {
     const state = await readState();
     if (state.daemonPaused || state.tasks.some((t) => t.status === "ativa")) return;
-    const now = Date.now();
+    const now = clock.now();
     const next = state.tasks.find((t) => t.status === "enfileirada" && !t.pauseRequested && (t.notBefore ?? 0) <= now);
     if (!next) {
       const wakeAt = Math.min(
         ...state.tasks.filter((t) => t.status === "enfileirada" && t.notBefore).map((t) => t.notBefore as number),
       );
       if (Number.isFinite(wakeAt) && !closing) {
-        clearTimeout(retryTimer);
-        retryTimer = setTimeout(react, Math.max(0, wakeAt - now));
+        disarmRetry?.();
+        disarmRetry = armTimer(react, Math.max(0, wakeAt - now));
       }
       return;
     }
@@ -548,7 +760,7 @@ export async function startFactory(opts: {
     close: async () => {
       closing = true;
       if (pollTimer) clearInterval(pollTimer);
-      clearTimeout(retryTimer);
+      disarmRetry?.();
       for (const stream of streams) stream.end();
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       await polling;

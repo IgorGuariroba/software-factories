@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SPEC_INPUT_MAX_CHARS } from "../src/spec-stage.js";
 import { DEFAULT_SPEC, deliverSpec, FakeModel } from "./fakes/fake-model.js";
 import {
+  DEFAULT_DESCRIPTION,
   events,
   eventually,
   hold,
@@ -79,7 +80,7 @@ describe("etapas grill → SPEC → Tickets", () => {
 
   it("o modelo recebe o card (campos, comentários, anexos de texto) e o conhecimento do projeto", async () => {
     factory = await startTestFactory({
-      cards: [card({ description: "Hoje o relatório só sai em PDF." })],
+      cards: [card({ description: `Hoje o relatório só sai em PDF. ${DEFAULT_DESCRIPTION}` })],
       knowledge: "Neste projeto, todo endpoint novo exige teste de contrato.",
     });
     factory.source.humanComment("PROJ-1", "po", "O CSV deve usar ponto e vírgula.");
@@ -138,7 +139,7 @@ describe("etapas grill → SPEC → Tickets", () => {
 
   it("um conhecimento do projeto enorme não tira o espaço da descrição do card", async () => {
     factory = await startTestFactory({
-      cards: [card({ description: "Requisito que precisa chegar." })],
+      cards: [card({ description: `Requisito que precisa chegar. ${DEFAULT_DESCRIPTION}` })],
       knowledge: "k".repeat(500_000),
     });
 

@@ -26,6 +26,11 @@ export interface EffectWriter {
    * Só considera comentários escritos pelo usuário da fábrica; um de outra pessoa com o mesmo título é ignorado.
    */
   upsertComment(cardKey: string, title: string, body: string): Promise<{ id: string }>;
+  /**
+   * Comentário próprio que menciona `personId` (pergunta, lembrete). Só para as pessoas do projeto: qualquer outro
+   * destinatário é bloqueado. Idempotente como `commentOnce`.
+   */
+  mention(cardKey: string, personId: string, body: string): Promise<{ id: string }>;
   /** Edita um comentário criado pela própria fábrica. */
   editComment(cardKey: string, commentId: string, body: string): Promise<void>;
   /**
@@ -110,6 +115,28 @@ export function createEffectWriter(opts: {
         if (existing) return { id: existing.id };
       }
       return this.comment(cardKey, body);
+    },
+
+    async mention(cardKey, personId, body) {
+      const content = outgoing(`${source.formatMention(personId)} ${body}`);
+      if (!config.dryRun) {
+        const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
+        if (existing) return { id: existing.id };
+      }
+      return write(
+        { target: cardKey, action: "mention", content },
+        async () => {
+          if (!config.people.some((p) => p.id === personId))
+            return `${personId} não está entre as pessoas do projeto ${config.name}`;
+          return cardNotOwned(cardKey);
+        },
+        () => source.addComment(cardKey, content),
+        () => {
+          const id = `dry-run-${dryRunIds.size + 1}`;
+          dryRunIds.add(id);
+          return { id };
+        },
+      );
     },
 
     async upsertComment(cardKey, title, body) {

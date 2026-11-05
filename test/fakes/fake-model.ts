@@ -54,6 +54,10 @@ export interface SpecDelivery {
 export const deliverSpec = (delivery: SpecDelivery): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall("entregar_spec", { ...delivery })], { stopReason: "toolUse" });
 
+/** Resposta do modelo que, no grill, leva uma pergunta de negócio ao PO pela ferramenta da etapa. */
+export const askPo = (pergunta: string): AssistantMessage =>
+  fauxAssistantMessage([fauxToolCall("perguntar_po", { pergunta })], { stopReason: "toolUse" });
+
 export const DEFAULT_SPEC: SpecDelivery = {
   spec: "Entregar o que o card pede.",
   tickets: [{ titulo: "Fazer o que o card pede", aceite: "O card está atendido" }],

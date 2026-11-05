@@ -8,12 +8,41 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
+import type { QuestionRef } from "./channel.js";
 import type { TestCommand } from "./config.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 
 /** Status de uma Tarefa na fila. */
-export type TaskStatus = "enfileirada" | "ativa" | "pausada" | "concluida" | "cancelada" | "bloqueada";
+export type TaskStatus =
+  | "enfileirada"
+  | "ativa"
+  | "aguardando-humano"
+  | "pausada"
+  | "concluida"
+  | "cancelada"
+  | "bloqueada";
+
+/** Uma pergunta de negócio da Tarefa ao PO, com os prazos de escalonamento já calculados em horas úteis. */
+export type Question = {
+  /** Número da pergunta na Tarefa (1, 2, …). */
+  n: number;
+  /** Quem levantou a pergunta: o grill ou a própria fábrica, diante de um card vazio ou raso. */
+  origin: "grill" | "card-raso";
+  /** Pessoa do projeto a quem foi feita. */
+  to: string;
+  text: string;
+  /** Onde o Canal fez a pergunta. */
+  ref: QuestionRef;
+  askedAt: number;
+  /** Lembrete à pessoa (4 h úteis depois da pergunta). */
+  remindAt: number;
+  /** Aviso ao usuário (1 dia útil depois da pergunta). */
+  notifyAt: number;
+  reminded: boolean;
+  notified: boolean;
+  answer: string | null;
+};
 
 /** Uma Tarefa da fábrica, na ordem da fila. */
 export type QueuedTask = {
@@ -25,7 +54,7 @@ export type QueuedTask = {
   status: TaskStatus;
   /** Task durável que executa a Tarefa, depois de ativada pela primeira vez. */
   durableId: number | null;
-  /** Task "portão" em que a Tarefa espera enquanto está pausada. */
+  /** Task "portão" em que a Tarefa espera enquanto está pausada ou aguardando uma pessoa. */
   gateId: number | null;
   /** O usuário pediu pausa; a Tarefa ativa para no próximo passo. */
   pauseRequested: boolean;
@@ -38,6 +67,8 @@ export type QueuedTask = {
    * a SPEC e os Tickets) republica a mesma entrega, sem chamar o modelo de novo nem trocar uma SPEC válida.
    */
   delivery?: SpecDelivery | null;
+  /** Perguntas ao PO, na ordem; a última sem resposta é a que a Tarefa aguarda. */
+  questions?: Question[];
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
 };
@@ -96,6 +127,8 @@ export type TarefaCheckpoint =
   | { phase: "comentar" }
   | { phase: "transicionar" }
   | { phase: "spec" }
+  /** Dormindo até a resposta de uma pessoa ou o próximo prazo de escalonamento. */
+  | { phase: "aguardar" }
   | { phase: "implementar" };
 
 export type TarefaInput = {
@@ -110,19 +143,31 @@ export interface StepRuntime {
   taskId: TaskId;
   signal: AbortSignal;
   context: Context;
+  /** Relógio da fábrica (o falso, nos testes). */
+  now(): number;
   /** Commit da task durável, sem mudar o estado dela (ex.: criar a conversa de uma etapa). */
   commit(change: (tx: Tx) => Promise<void>): Promise<void>;
 }
 
 export interface TarefaSteps {
-  run(input: TarefaInput, step: TarefaCheckpoint["phase"], runtime: StepRuntime): Promise<void>;
+  /** Executa um passo. `"aguardar"`: a Tarefa fez uma pergunta e dorme até a resposta, sem ocupar a fila. */
+  run(
+    input: TarefaInput,
+    step: Exclude<TarefaCheckpoint["phase"], "aguardar">,
+    runtime: StepRuntime,
+  ): Promise<"aguardar" | undefined>;
+  /**
+   * Acordada por um prazo enquanto aguarda: confere se a resposta chegou (e a registra) e faz o escalonamento vencido.
+   * Retorna quando acordar de novo (ms), ou `null` se não houver mais prazo.
+   */
+  escalate(input: TarefaInput, runtime: StepRuntime): Promise<number | null>;
   /** Classifica uma falha do passo: bloqueio de guardrail (definitivo) ou erro (tentar de novo). */
   classify(err: unknown): { kind: "blocked"; reason: string } | { kind: "error"; message: string };
   onError(input: TarefaInput, message: string): Promise<void>;
   retryDelayMs: number;
 }
 
-const NEXT: Record<TarefaCheckpoint["phase"], TarefaCheckpoint | "fim"> = {
+const NEXT: Record<Exclude<TarefaCheckpoint["phase"], "aguardar">, TarefaCheckpoint | "fim"> = {
   comentar: { phase: "transicionar" },
   transicionar: { phase: "spec" },
   spec: { phase: "implementar" },
@@ -144,6 +189,40 @@ export const GateTask = defineTask<Record<string, never>, { phase: "fechado" }, 
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
+/** Task "prazo": como o portão, mas abre sozinha em `until`. A Tarefa que aguarda uma pessoa dorme nela. */
+export const DeadlineGateTask = defineTask<{ until: number }, { phase: "fechado" }, null>({
+  name: "fabrica.prazo",
+  version: 1,
+  initial: () => ({ phase: "fechado" }),
+  phases: {
+    fechado: (task, runtime, context) =>
+      runtime.now() >= task.input.until
+        ? runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context)
+        : runtime.sleepUntil(task.input.until, { phase: "fechado" }, context),
+  },
+  abort: (_task, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
+/**
+ * Registra a resposta da pergunta `n` e devolve a Tarefa à fila (ou à pausa, se o usuário a pausou enquanto ela
+ * aguardava). Ela volta a rodar quando chegar a vez dela, como uma Tarefa retomada.
+ */
+export function recordAnswer(state: FactoryState, id: string, n: number, answer: string): boolean {
+  const queued = state.tasks.find((t) => t.id === id);
+  const question = queued?.questions?.find((q) => q.n === n);
+  if (!queued || !question || question.answer !== null) return false;
+  question.answer = answer;
+  if (queued.status === "aguardando-humano") queued.status = queued.pauseRequested ? "pausada" : "enfileirada";
+  return true;
+}
+
+/** A pergunta que a Tarefa aguarda: a última, se ainda não tem resposta. */
+export const pendingQuestion = (task: QueuedTask): Question | undefined => {
+  const last = task.questions?.at(-1);
+  return last && last.answer === null ? last : undefined;
+};
+
 function findTask(state: FactoryState, id: string): QueuedTask {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) throw new Error(`Tarefa ${id} não está na fila`);
@@ -164,9 +243,52 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export function createTarefaTask(steps: TarefaSteps) {
   type Runtime = Parameters<Parameters<typeof defineTask<TarefaInput, TarefaCheckpoint, null>>[0]["abort"]>[1];
 
+  type TaskRef = { id: TaskId; input: TarefaInput };
+
+  const stepRuntimeOf = (task: TaskRef, runtime: Runtime, context: Context): StepRuntime => ({
+    taskId: task.id,
+    signal: runtime.signal,
+    context,
+    now: () => runtime.now(),
+    commit: (change) =>
+      runtime.commit(async (tx) => {
+        await change(tx);
+        return undefined;
+      }, context),
+  });
+
+  /** Encerra a task durável depois de uma falha: bloqueia a Tarefa ou a devolve ao fim da fila para nova tentativa. */
+  async function fail(task: TaskRef, err: unknown, runtime: Runtime, context: Context): Promise<void> {
+    if (runtime.signal.aborted) throw err;
+    const failure = steps.classify(err);
+    if (failure.kind === "error") await steps.onError(task.input, failure.message);
+    await runtime.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      const queued = findTask(state, task.input.id);
+      if (failure.kind === "blocked") {
+        queued.status = "bloqueada";
+        queued.reason = failure.reason;
+        queued.gateId = null;
+      } else {
+        // Volta para o fim da fila; a próxima tentativa recomeça do primeiro passo, que é idempotente.
+        const retry: QueuedTask = {
+          ...(JSON.parse(JSON.stringify(queued)) as QueuedTask),
+          status: "enfileirada",
+          durableId: null,
+          gateId: null,
+          attempts: queued.attempts + 1,
+          notBefore: runtime.now() + steps.retryDelayMs,
+          reason: failure.message,
+        };
+        state.tasks = [...state.tasks.filter((t) => t.id !== retry.id), retry];
+      }
+      return { status: "terminal", outcome: { status: "completed", result: null } };
+    }, context);
+  }
+
   async function phase(
-    task: { id: TaskId; input: TarefaInput },
-    step: TarefaCheckpoint["phase"],
+    task: TaskRef,
+    step: Exclude<TarefaCheckpoint["phase"], "aguardar">,
     runtime: Runtime,
     context: Context,
   ): Promise<void> {
@@ -184,50 +306,62 @@ export function createTarefaTask(steps: TarefaSteps) {
     }, context);
     if (gated) return;
 
+    let outcome: "aguardar" | undefined;
     try {
-      const stepRuntime: StepRuntime = {
-        taskId: task.id,
-        signal: runtime.signal,
-        context,
-        commit: (change) =>
-          runtime.commit(async (tx) => {
-            await change(tx);
-            return undefined;
-          }, context),
-      };
-      await abortable(steps.run(task.input, step, stepRuntime), runtime.signal);
+      outcome = await abortable(steps.run(task.input, step, stepRuntimeOf(task, runtime, context)), runtime.signal);
     } catch (err) {
-      if (runtime.signal.aborted) throw err;
-      const failure = steps.classify(err);
-      if (failure.kind === "error") await steps.onError(task.input, failure.message);
-      await runtime.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        const queued = findTask(state, task.input.id);
-        if (failure.kind === "blocked") {
-          queued.status = "bloqueada";
-          queued.reason = failure.reason;
-        } else {
-          // Volta para o fim da fila; a próxima tentativa recomeça do primeiro passo, que é idempotente.
-          const retry: QueuedTask = {
-            ...(JSON.parse(JSON.stringify(queued)) as QueuedTask),
-            status: "enfileirada",
-            durableId: null,
-            attempts: queued.attempts + 1,
-            notBefore: runtime.now() + steps.retryDelayMs,
-            reason: failure.message,
-          };
-          state.tasks = [...state.tasks.filter((t) => t.id !== retry.id), retry];
-        }
-        return { status: "terminal", outcome: { status: "completed", result: null } };
-      }, context);
-      return;
+      return fail(task, err, runtime, context);
     }
 
-    const next = NEXT[step];
+    const next = outcome === "aguardar" ? { phase: "aguardar" as const } : NEXT[step];
     await runtime.commit(async (tx) => {
       if (next !== "fim") return { status: "running", checkpoint: next };
       findTask(await tx.doc(StateDoc), task.input.id).status = "concluida";
       return { status: "terminal", outcome: { status: "completed", result: null } };
+    }, context);
+  }
+
+  /**
+   * Espera por uma pessoa. A Tarefa sai da fila (`aguardando-humano`) e dorme numa task "prazo" até o próximo prazo de
+   * escalonamento. A resposta, achada pela busca na Fonte ou ao acordar num prazo, devolve a Tarefa à fila; quando
+   * chega a vez dela, o agendador abre o prazo e ela volta à etapa SPEC com a resposta.
+   */
+  async function awaitHuman(task: TaskRef, runtime: Runtime, context: Context): Promise<void> {
+    let first = false;
+    let waiting = false;
+    await runtime.commit(async (tx) => {
+      const queued = findTask(await tx.doc(StateDoc), task.input.id);
+      first = queued.status === "ativa" && pendingQuestion(queued) !== undefined;
+      waiting = queued.status === "aguardando-humano" && pendingQuestion(queued) !== undefined;
+      return undefined;
+    }, context);
+
+    let wakeAt: number | null = null;
+    if (first) {
+      // Acabou de perguntar: o primeiro prazo é o lembrete.
+      await runtime.commit(async (tx) => {
+        const question = pendingQuestion(findTask(await tx.doc(StateDoc), task.input.id));
+        wakeAt = question ? question.remindAt : null;
+        return undefined;
+      }, context);
+    } else if (waiting) {
+      try {
+        wakeAt = await abortable(steps.escalate(task.input, stepRuntimeOf(task, runtime, context)), runtime.signal);
+      } catch (err) {
+        return fail(task, err, runtime, context);
+      }
+    }
+
+    await runtime.commit(async (tx) => {
+      const queued = findTask(await tx.doc(StateDoc), task.input.id);
+      // A resposta chegou e é a vez desta Tarefa: volta à SPEC.
+      if (queued.status === "ativa" && !pendingQuestion(queued))
+        return { status: "running", checkpoint: { phase: "spec" } };
+      if (queued.status === "ativa") queued.status = "aguardando-humano";
+      const until = pendingQuestion(queued) && wakeAt !== null ? wakeAt : runtime.now() + TEN_YEARS_MS;
+      const gate = await tx.createTask(DeadlineGateTask, { until }, { ownership: { kind: "task", taskId: task.id } });
+      queued.gateId = gate;
+      return { status: "waiting", checkpoint: { phase: "aguardar" }, on: [gate], policy: "allSettled" };
     }, context);
   }
 
@@ -239,6 +373,7 @@ export function createTarefaTask(steps: TarefaSteps) {
       comentar: (task, runtime, context) => phase(task, "comentar", runtime, context),
       transicionar: (task, runtime, context) => phase(task, "transicionar", runtime, context),
       spec: (task, runtime, context) => phase(task, "spec", runtime, context),
+      aguardar: (task, runtime, context) => awaitHuman(task, runtime, context),
       implementar: (task, runtime, context) => phase(task, "implementar", runtime, context),
     },
     abort: (task, runtime, context) =>
