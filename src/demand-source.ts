@@ -45,4 +45,6 @@ export interface DemandSource {
   editComment(key: string, commentId: string, body: string): Promise<void>;
   /** Move o card para o status de nome `status` no workflow da Fonte. */
   transition(key: string, status: string): Promise<void>;
+  /** Formata o identificador de uma pessoa para menção no corpo de um comentário nesta Fonte. */
+  formatMention(personId: string): string;
 }
