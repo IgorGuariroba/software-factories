@@ -15,7 +15,7 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 | Hook | Checks |
 |---|---|
 | `pre-commit` | bloqueia commit direto em `main`/`master`; conflict markers; arquivos novos > 500 KB; **gitleaks** nas mudanças staged |
-| `pre-push` | bloqueia push para `main`/`master`; **gitleaks** nos commits enviados; `tsc --noEmit` |
+| `pre-push` | bloqueia push para `main`/`master`; **gitleaks** nos commits enviados; `tsc --noEmit` sobre cada commit enviado (worktree temporário) |
 
 - Falso positivo do gitleaks: comentário `gitleaks:allow` na linha, ou fingerprint em `.gitleaksignore`.
 - Segredo real detectado: remova-o **e rotacione-o**: se já foi commitado, continua no histórico.

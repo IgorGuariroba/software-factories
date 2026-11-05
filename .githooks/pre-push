@@ -51,8 +51,19 @@ if [ -n "$ranges" ]; then
   done || exit 1
 fi
 
-# Quality (hooks.quality): typecheck, the same check as 'npm run build' (tsc).
-if [ -f tsconfig.json ] && [ -f package.json ]; then
-  npx --no-install tsc --noEmit || { echo "✋ Typecheck failed (tsc --noEmit). Fix it or: git push --no-verify" >&2; exit 1; }
+# Quality (hooks.quality): typecheck each pushed commit (not the working tree), like 'npm run typecheck' in CI.
+# Each pushed tip is checked out in a temporary worktree that reuses this clone's node_modules.
+tips=$(printf '%s' "$ranges" | sed 's/ .*//; s/.*\.\.//' | sort -u)
+if [ -n "$tips" ] && [ -f tsconfig.json ] && [ -d node_modules ]; then
+  root=$(git rev-parse --show-toplevel)
+  for sha in $tips; do
+    git cat-file -e "$sha:tsconfig.json" 2>/dev/null || continue
+    wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push-tsc.XXXXXX")
+    git worktree add -q --detach "$wt" "$sha" 2>/dev/null || { rm -rf "$wt"; echo "✋ Could not check out $sha for typecheck." >&2; exit 1; }
+    ln -s "$root/node_modules" "$wt/node_modules"
+    ( cd "$wt" && npx --no-install tsc --noEmit ); rc=$?
+    git worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$wt"
+    [ $rc -eq 0 ] || { echo "✋ Typecheck failed on pushed commit $sha (tsc --noEmit). Fix it or: git push --no-verify" >&2; exit 1; }
+  done
 fi
 exit 0
