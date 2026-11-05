@@ -1,7 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import {
   createRegistry,
   Harness
@@ -10,127 +8,76 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
-// CredentialStore unificado: lê credenciais tanto do Codex (~/.pi/agent/auth.json)
-// quanto do Claude Code (~/.claude/.credentials.json)
-class UnifiedSubscriptionCredentialStore {
-  private piAuthPath = path.join(os.homedir(), ".pi/agent/auth.json");
-  private claudeCredPath = path.join(os.homedir(), ".claude/.credentials.json");
-
-  async read(providerId: string) {
-    // 1. Provedor Anthropic / Claude Code
-    if (providerId === "anthropic") {
-      if (fs.existsSync(this.claudeCredPath)) {
-        try {
-          const creds = JSON.parse(fs.readFileSync(this.claudeCredPath, "utf8"));
-          const token = creds.claudeAiOauth?.accessToken;
-          if (token) {
-            return { type: "api_key", key: token };
-          }
-        } catch {}
-      }
-    }
-
-    // 2. Provedor OpenAI Codex e outros registrados no Pi
-    if (fs.existsSync(this.piAuthPath)) {
-      try {
-        const all = JSON.parse(fs.readFileSync(this.piAuthPath, "utf8"));
-        if (all[providerId]) return all[providerId];
-      } catch {}
-    }
-
-    return undefined;
-  }
-
-  async list() {
-    const list: Array<{ providerId: string; type: "api_key" | "oauth" }> = [];
-    if (fs.existsSync(this.claudeCredPath)) {
-      list.push({ providerId: "anthropic", type: "api_key" });
-    }
-    if (fs.existsSync(this.piAuthPath)) {
-      try {
-        const all = JSON.parse(fs.readFileSync(this.piAuthPath, "utf8"));
-        for (const [providerId, c] of Object.entries(all) as [string, any][]) {
-          list.push({ providerId, type: c.type });
-        }
-      } catch {}
-    }
-    return list;
-  }
-
-  async modify(providerId: string, fn: (current: any) => Promise<any>) {
-    if (fs.existsSync(this.piAuthPath)) {
-      const all = JSON.parse(fs.readFileSync(this.piAuthPath, "utf8"));
-      const updated = await fn(all[providerId]);
-      if (updated === undefined) {
-        delete all[providerId];
-      } else {
-        all[providerId] = updated;
-      }
-      fs.writeFileSync(this.piAuthPath, JSON.stringify(all, null, 2));
-      return updated;
-    }
-    return undefined;
-  }
-
-  async delete(providerId: string) {
-    if (fs.existsSync(this.piAuthPath)) {
-      const all = JSON.parse(fs.readFileSync(this.piAuthPath, "utf8"));
-      delete all[providerId];
-      fs.writeFileSync(this.piAuthPath, JSON.stringify(all, null, 2));
-    }
-  }
-}
-
-// Modelos configurados para a sua fábrica
-export const FACTORY_MODELS = {
-  // Plano Codex (ChatGPT Pro)
+// Catálogo com os 5 planos ativos no seu ambiente
+export const FACTORY_PLANS = {
+  // 1. OpenAI ChatGPT Pro / Codex
   codex: {
+    name: "OpenAI Codex (ChatGPT Pro)",
     provider: "openai-codex",
     modelId: "gpt-6-astra",
   },
-  // Plano Claude Code Subscription
-  claudeFast: {
-    provider: "anthropic",
+  // 2. Claude Code Subscription (OAuth)
+  claude: {
+    name: "Claude Code Subscription",
+    provider: "claude-subscription",
     modelId: "claude-haiku-4-5",
   },
-  claudeReasoning: {
-    provider: "anthropic",
-    modelId: "claude-sonnet-4-6",
+  // 3. Antigravity (Google Gemini Quota)
+  antigravity: {
+    name: "Google Antigravity",
+    provider: "antigravity",
+    modelId: "gemini-3.8-flash",
+  },
+  // 4. Cursor Subscription
+  cursor: {
+    name: "Cursor Subscription",
+    provider: "cursor",
+    modelId: "auto",
+  },
+  // 5. OpenRouter
+  openrouter: {
+    name: "OpenRouter",
+    provider: "openrouter",
+    modelId: "~anthropic/claude-haiku-latest",
   },
 } as const;
 
+type PlanKey = keyof typeof FACTORY_PLANS;
+
 async function main() {
   console.log("==================================================");
-  console.log("   Fábrica de Software - Runtime Durável Multi-Plano");
+  console.log("   Fábrica de Software - Runtime Multi-Planos");
   console.log("==================================================\n");
 
-  // 1. Inicializa o catálogo com os dois provedores
-  const credentials = new UnifiedSubscriptionCredentialStore();
-  const models = createModels({ credentials });
+  // 1. Inicializa os serviços oficiais do Pi (carrega auth.json, extensões e tokens automaticamente)
+  const services = await createAgentSessionServices({ cwd: process.cwd() });
+  const models = services.modelRuntime.models;
 
-  const codex = openaiCodexProvider();
-  const claude = anthropicProvider();
+  console.log("Carregando provedores autenticados:");
+  for (const [key, plan] of Object.entries(FACTORY_PLANS)) {
+    const isAvailable = !!models.getProvider(plan.provider);
+    console.log(`  • [${key.padEnd(11)}] ${plan.name} (${plan.provider} / ${plan.modelId}) => ${isAvailable ? "OK" : "Indisponível"}`);
+  }
+  console.log("");
 
-  models.setProvider(codex);
-  models.setProvider(claude);
+  // 2. Determina qual plano testar (via argumento CLI ex: 'npm start antigravity' ou padrão 'antigravity')
+  const requestedArg = process.argv[2] as PlanKey | undefined;
+  const activeKey: PlanKey = (requestedArg && requestedArg in FACTORY_PLANS) ? requestedArg : "antigravity";
+  const selectedPlan = FACTORY_PLANS[activeKey];
 
-  console.log("Provedores configurados:");
-  console.log("  • OpenAI Codex (ChatGPT Pro): gpt-6-astra, gpt-6.1-sol, etc.");
-  console.log("  • Anthropic (Claude Code):    claude-haiku-4-5, claude-sonnet-4-6, etc.\n");
+  console.log(`Plano ativo para este turno: [${activeKey.toUpperCase()}] -> ${selectedPlan.provider} / ${selectedPlan.modelId}`);
 
-  // 2. Registro de ferramentas de código
+  // 3. Registra ferramentas de código (bash, read, edit, write)
   const registry = createRegistry();
   const images = await createNodePhotonImages();
   registry.install(createCodingTools({ images }));
 
-  // 3. Storage durável SQLite
+  // 4. Abre o storage durável SQLite
   const storagePath = "./factory-session.sqlite";
   const storage = await openNodeSqliteStorage(storagePath);
 
+  // 5. Orquestra o Harness durável conectado ao catálogo multi-planos
   const harness = await Harness.open(
     storage,
     {
@@ -144,27 +91,27 @@ async function main() {
   await harness.resume();
   const root = await harness.root(BACKGROUND_CONTEXT);
 
-  // 4. Exemplo de uso: escolher qual plano usar para o turno
-  // Alterne entre FACTORY_MODELS.claudeFast, FACTORY_MODELS.claudeReasoning ou FACTORY_MODELS.codex
-  const targetModel = FACTORY_MODELS.claudeFast;
-
-  console.log(`Configurando agente com: ${targetModel.provider} / ${targetModel.modelId}...`);
+  // 6. Configura o modelo escolhido na sessão
   await root.configure(
     {
-      model: targetModel,
-      instructions: "Você é um assistente conciso e técnico da fábrica de software.",
+      model: {
+        provider: selectedPlan.provider,
+        modelId: selectedPlan.modelId,
+      },
+      instructions: "Você é um assistente técnico conciso da fábrica de software.",
     },
     BACKGROUND_CONTEXT
   );
 
-  console.log("Enviando tarefa de teste durável...");
+  // 7. Envia a tarefa de teste
+  console.log(`Enviando prompt durável via ${selectedPlan.name}...`);
   const submission = await root.submit(
     {
       type: "input",
       content: [
         {
           type: "text",
-          text: "Diga apenas: 'Claude Code conectado com sucesso na fábrica durável!'",
+          text: `Diga apenas: 'Plano ${selectedPlan.name} funcionando 100% na fábrica durável!'`,
         },
       ],
     },
@@ -174,7 +121,7 @@ async function main() {
   const settled = await submission.wait(BACKGROUND_CONTEXT);
   console.log(`Status da execução: ${settled.status}`);
 
-  // 5. Exibe a resposta mais recente registrada no histórico durável
+  // 8. Lê a resposta persistida no banco SQLite
   const page = await root.entries({ order: "ascending" }, 50, undefined, BACKGROUND_CONTEXT);
   const assistantEntries = page.items.filter((e: any) => e.kind === "pi.assistant");
   const lastReply = assistantEntries[assistantEntries.length - 1];
