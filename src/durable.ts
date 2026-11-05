@@ -176,6 +176,11 @@ export type ImplementationProgress = {
   commits: { ticket: number; phase: TddPhase; sha: string }[];
   /** Pedidos feitos ao modelo; numera o próximo para que uma nova tentativa não reaproveite um pedido recusado. */
   requests: number;
+  /**
+   * Resultado da linha de base: a suíte rodada uma vez, antes do primeiro teste novo. Registrado para a retomada não
+   * rodá-la de novo (com o teste novo já no clone, ela falharia). `null`: ainda não rodou.
+   */
+  baseline?: "verde" | "vermelha" | null;
   /** Recusas seguidas da fábrica na fase atual (ex.: o teste novo não falhou). */
   rejections: number;
   /** Por que a fábrica recusou a última tentativa; vai junto do próximo pedido. */

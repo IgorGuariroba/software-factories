@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
@@ -223,14 +223,14 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
 });
 
 describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
-  it("recusa a fase de teste sem arquivo de teste ou com teste que já passa, e só commita um teste que falha", async () => {
+  it("recusa a fase de teste com código de produção ou com teste que já passa, e só commita um teste que falha", async () => {
     const repo = await createRemoteRepo(root, "app");
     const model = new FakeModel();
-    const STUB = `export const gerarCsv = () => {\n  throw new Error("falta implementar");\n};\n`;
+    const PASSING = `import { test } from "node:test";\ntest("sempre passa", () => {});\n`;
     scriptImplementer(model, ONE_TICKET, [
-      write({ "src/csv.mjs": CSV_IMPL }), // sem teste
-      write({ "test/csv.test.mjs": CSV_TEST }), // o teste passa: o código já estava lá
-      write({ "src/csv.mjs": STUB }), // agora o teste falha
+      write({ "test/csv.test.mjs": CSV_TEST, "src/csv.mjs": CSV_IMPL }), // teste junto com o código
+      write({ "test/csv.test.mjs": PASSING }), // o teste novo já passa
+      write({ "test/csv.test.mjs": CSV_TEST }), // agora o teste falha, sem código
       write({ "src/csv.mjs": CSV_IMPL }),
     ]);
     factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
@@ -239,13 +239,35 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
     await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
 
     expect(await repo.branchLog(BRANCH)).toEqual([
-      { subject: "test: adiciona teste para Gerar CSV", files: ["src/csv.mjs", "test/csv.test.mjs"] },
+      { subject: "test: adiciona teste para Gerar CSV", files: ["test/csv.test.mjs"] },
       { subject: "feat: Gerar CSV", files: ["src/csv.mjs"] },
     ]);
     // O modelo soube por que cada tentativa foi recusada.
     const inputs = model.calls.map((c) => c.input).join("\n");
-    expect(inputs).toContain("nenhum arquivo de teste mudou");
+    expect(inputs).toContain("na fase de teste só arquivos de teste podem mudar");
+    expect(inputs).toContain("src/csv.mjs");
     expect(inputs).toContain("os testes passaram");
+  });
+
+  it("com a suíte já vermelha na branch, a Tarefa bloqueia antes do primeiro teste: a falha não seria do teste novo", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      files: {
+        "test/quebrado.test.mjs": `import { test } from "node:test";\ntest("já quebrado", () => { throw new Error("x"); });\n`,
+      },
+    });
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+
+    const blocked = (await events(factory)).find((e) => e.type === "task" && e.status === "bloqueada");
+    expect(blocked?.reason).toContain("linha de base");
+    // O implementador nem foi chamado, e nada foi commitado nem enviado.
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await repo.branches()).toEqual(["main"]);
+    expect(factory.codeHost.pushed).toEqual([]);
   });
 
   it("código que não faz os testes passarem é recusado até o limite: a Tarefa bloqueia e nada é enviado", async () => {
@@ -376,13 +398,17 @@ describe("retomada da implementação depois de um reinício", { timeout: SLOW }
     const flag = join(root, "segurar-testes");
     const started = join(root, "testes-comecaram");
     const wrapper = join(root, "testes.mjs");
+    const runs = join(root, "execucoes.log");
     await writeFile(flag, "");
     // Enquanto a flag existir, o comando de teste fica preso: o daemon cai no meio da verificação da fase de teste.
+    // A linha de base (ainda sem o teste novo) passa direto. Cada execução fica registrada, com ou sem o teste novo.
     await writeFile(
       wrapper,
-      `import { existsSync, writeFileSync } from "node:fs";
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-if (existsSync(${JSON.stringify(flag)})) {
+const withTest = existsSync("test/csv.test.mjs");
+appendFileSync(${JSON.stringify(runs)}, withTest ? "com-teste\\n" : "sem-teste\\n");
+if (withTest && existsSync(${JSON.stringify(flag)})) {
   writeFileSync(${JSON.stringify(started)}, "");
   setInterval(() => {}, 1000);
 } else {
@@ -410,6 +436,8 @@ if (existsSync(${JSON.stringify(flag)})) {
     ]);
     expect(await repo.show(BRANCH, "src/csv.mjs")).toBe(CSV_IMPL.trim());
     expect(existsSync(join(process.cwd(), "src", "csv.mjs"))).toBe(false);
+    // A linha de base rodou uma vez só: a retomada usou o resultado registrado, sem rodar a suíte com o teste novo.
+    expect((await readFile(runs, "utf8")).split("\n").filter((l) => l === "sem-teste")).toHaveLength(1);
   });
 
   it("queda entre o commit e o registro do progresso não duplica o commit na retomada", async () => {
