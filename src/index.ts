@@ -52,7 +52,7 @@ async function main() {
 
   // 1. Inicializa os serviços oficiais do Pi (carrega auth.json, extensões e tokens automaticamente)
   const services = await createAgentSessionServices({ cwd: process.cwd() });
-  const models = services.modelRuntime.models;
+  const models = services.modelRuntime; // ModelRuntime implementa Models
 
   console.log("Carregando provedores autenticados:");
   for (const [key, plan] of Object.entries(FACTORY_PLANS)) {
@@ -137,7 +137,7 @@ async function main() {
     console.log("----------------------------------------------------------------\n");
   }
 
-  await storage.close();
+  await storage.close(BACKGROUND_CONTEXT);
   process.exit(0);
 }
 
