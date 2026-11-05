@@ -61,12 +61,16 @@ vetoMinutes: 30
 telegram:
   content: full
 
-# Prefixo do título/chave do card -> repositório (o primeiro que corresponder vale).
+# Prefixo do título/chave do card -> repositório (o primeiro que corresponder vale; ponha os específicos antes).
 # path é a sua cópia local: a fábrica só lê dela e trabalha num clone próprio ao lado do estado durável
 # (<dir do FACTORY_STATE_PATH>/worktrees/<projeto>/<card>), com push para o mesmo remoto origin.
 # test.command é o argv do comando de teste, sem shell; o modelo só pode rodá-lo como está.
 # Card sem correspondência: a Tarefa fica bloqueada. Sem repositories, a Tarefa termina nos Tickets.
 repositories:
+  - path: /home/voce/projetos/meu-app
+    prefix: "[mobile]"
+    test:
+      command: [npm, test]
   - path: /home/voce/projetos/meu-backend
     prefix: PROJ
     test:
@@ -74,10 +78,6 @@ repositories:
       timeoutSeconds: 300
       # Opcional: padrões (glob) dos arquivos de teste; o padrão cobre *.test.*, *.spec.*, test/, tests/ etc.
       # files: ["src/**/*.test.ts"]
-  - path: /home/voce/projetos/meu-app
-    prefix: "[mobile]"
-    test:
-      command: [npm, test]
 
 # Sobrescritas das convenções descobertas no histórico (opcional).
 # Marcadores: {key} e {slug} na branch; {type}, {summary} e {key} no commit.

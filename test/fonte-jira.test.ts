@@ -93,6 +93,28 @@ describe("Fonte Jira: leituras", () => {
     }
   });
 
+  it("não inclui o corpo privado na falha de execução do acli", async () => {
+    const previous = process.env.ACLI_PATH;
+    process.env.ACLI_PATH = "/usr/bin/false";
+    try {
+      const source = createJiraDemandSource({ project: "PROJ", assignee: me.accountId });
+      const error = await source.addComment("PROJ-1", "conteúdo confidencial do card").catch((e: Error) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toContain("conteúdo confidencial do card");
+      expect(String(error)).toMatch(/PROJ-1.*1/s);
+    } finally {
+      if (previous === undefined) delete process.env.ACLI_PATH;
+      else process.env.ACLI_PATH = previous;
+    }
+  });
+
+  it("não registra o corpo mesmo se o acli o ecoar em stderr", async () => {
+    const source = withRunner(failing("falha: texto confidencial"));
+    const error = await source.editComment("PROJ-1", "123", "texto confidencial").catch((e: Error) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).not.toContain("texto confidencial");
+  });
+
   it("comentários truncados pelo Jira (total maior que os recebidos) lançam erro em vez de uma lista parcial", async () => {
     const partial = {
       key: "PROJ-1",
@@ -139,7 +161,7 @@ describe("Fonte Jira: criação de comentário", () => {
 
   it("a falha do acli ao comentar lança erro com o card", async () => {
     await expect(withRunner(failing("sem permissão")).addComment("PROJ-1", "x")).rejects.toThrow(
-      /PROJ-1.*sem permissão/s,
+      /PROJ-1.*detalhes omitidos/s,
     );
   });
 });

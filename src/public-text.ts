@@ -49,8 +49,8 @@ export function sanitizePublicText(
   opts: { terms: string[]; cardPrefix: string },
 ): { text: string; leftovers: string[] } {
   let out = text
-    // Todo link sai, inclusive os da própria fábrica: a Tarefa aparece só pelo id opaco. O link termina antes da
-    // pontuação que o segue no texto.
+    // Remove URLs com esquema :// e caminhos Unix reconhecidos. Outros formatos exigem revisão humana.
+    // O link termina antes da pontuação que o segue no texto.
     .replace(/\b[a-z][a-z\d+.-]*:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/gi, REMOVED_LINK)
     .replace(/(?<![\p{L}\p{N}_.~-])(?:~|\.\.?)?\/[\w-]+(?:[.][\w-]+)*(?:\/[\w.-]+)*\/?/gu, REMOVED_PATH);
   const cardKey = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(opts.cardPrefix)}-\\d+(?![\\p{N}])`, "giu");

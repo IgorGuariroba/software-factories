@@ -314,6 +314,29 @@ describe("propostas da fábrica viram issues retro", () => {
     expect((await detail(factory)).retros[0]?.proposals[0]?.status).toBe("pendente");
     const url = "/tasks/exemplo/PROJ-1/retros/spec/1";
     const preview = await api<{ title: string; body: string; revision: string }>(factory, "GET", url);
+    const schema = await api<{
+      paths: Record<
+        string,
+        {
+          get: {
+            responses: Record<
+              string,
+              {
+                content: Record<
+                  string,
+                  { schema: { required: string[]; properties: Record<string, { type: string }> } }
+                >;
+              }
+            >;
+          };
+        }
+      >;
+    }>(factory, "GET", "/openapi.json");
+    const responseSchema =
+      schema.paths["/tasks/{project}/{key}/retros/{stage}/{n}"]?.get.responses["200"]?.content["application/json"]
+        ?.schema;
+    expect(responseSchema?.required).toContain("revision");
+    expect(responseSchema?.properties.revision?.type).toBe("string");
     expect(preview.title).toBe("Melhorar validação");
     expect(preview.body).toContain("Validar antes de publicar.");
     const stale = await fetch(`${factory.url}${url}/approve`, {

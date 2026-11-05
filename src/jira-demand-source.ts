@@ -67,7 +67,7 @@ const defaultAcliRunner: AcliRunner = async (args: string[]) => {
     const err = error as { stdout?: string; stderr?: string; code?: number; message?: string };
     return {
       stdout: err.stdout ?? "",
-      stderr: err.stderr?.trim() || err.message || String(error),
+      stderr: err.stderr?.trim() || `código ${err.code ?? "desconhecido"}`,
       exitCode: typeof err.code === "number" ? err.code : 1,
     };
   }
@@ -224,7 +224,10 @@ export class JiraDemandSource implements DemandSource {
   private async run(args: string[], command: string, key: string, notFound = false): Promise<string | undefined> {
     const res = await this.runner(args);
     if (res.exitCode === 0) return res.stdout;
-    const output = (res.stderr || res.stdout).trim();
+    // O acli pode ecoar o corpo privado tanto em stderr quanto em stdout; não o registramos em falhas de escrita.
+    const output = args.includes("--body")
+      ? "detalhes omitidos para proteger o corpo do comentário"
+      : (res.stderr || res.stdout).trim();
     if (notFound && NOT_FOUND.test(output)) return undefined;
     throw new Error(`acli ${command} falhou (card ${key}, exit ${res.exitCode ?? "?"}): ${output}`);
   }

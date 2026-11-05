@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 import { startDaemon } from "../src/daemon.js";
 import type { RunningFactory } from "../src/factory.js";
 import { FakeTelegram, TELEGRAM_CHAT } from "./fakes/fake-telegram.js";
@@ -35,6 +36,11 @@ describe("config de projeto", () => {
     const queue = (await (await fetch(`${daemon.url}/queue`)).json()) as { key: string }[];
 
     expect(queue.map((c) => c.key)).toEqual(["PROJ-7"]);
+  });
+
+  it("prioriza o prefixo específico no exemplo, antes do prefixo genérico da chave", async () => {
+    const example = parse(await readFile("projects/example.yaml", "utf8")) as { repositories: { prefix: string }[] };
+    expect(example.repositories.map((r) => r.prefix)).toEqual(["[mobile]", "PROJ"]);
   });
 
   it("recusa mapeamento por board, que a Fonte Jira não consegue determinar pelo card", async () => {

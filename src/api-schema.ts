@@ -72,7 +72,25 @@ export const API_SCHEMA = {
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         responses: {
-          "200": { description: "Prévia: title, body, repo, dryRun, blocked e revision" },
+          "200": {
+            description: "Prévia do texto público e revisão a ser aprovada",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["title", "body", "repo", "dryRun", "blocked", "revision"],
+                  properties: {
+                    title: { type: "string" },
+                    body: { type: "string" },
+                    repo: { type: "string" },
+                    dryRun: { type: "boolean" },
+                    blocked: { type: "boolean" },
+                    revision: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
           "404": { description: "Proposta inexistente" },
           "409": { description: "Proposta indisponível ou sem repositório" },
         },
