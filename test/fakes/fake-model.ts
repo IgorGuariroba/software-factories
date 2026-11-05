@@ -1,5 +1,6 @@
 import {
   type AssistantMessage,
+  type Context,
   createModels,
   type FauxResponseFactory,
   fauxAssistantMessage,
@@ -13,7 +14,36 @@ import {
 export interface ModelCall {
   model: string;
   context: string;
+  /** Texto das mensagens do usuário: o que a fábrica montou sobre o card, sem instruções nem ferramentas. */
+  input: string;
+  /** Ferramentas oferecidas ao modelo nesta chamada. */
+  tools: string[];
+  /** Papel da última mensagem do contexto (`user` num pedido novo, `toolResult` depois de ferramentas). */
+  lastRole: string | undefined;
+  /** Resultados de ferramenta que o modelo já recebeu nesta conversa. */
+  toolResults: { name: string; isError: boolean; text: string }[];
 }
+
+const userText = (context: Pick<Context, "messages">): string =>
+  context.messages
+    .filter((m) => m.role === "user")
+    .map((m) =>
+      typeof m.content === "string"
+        ? m.content
+        : m.content.map((block) => (block.type === "text" ? block.text : "")).join(""),
+    )
+    .join("\n");
+
+/** Ferramentas disponíveis ao fim do contexto: as que as mensagens de sistema acrescentaram e não tiraram. */
+const offeredTools = (context: Context): string[] => {
+  const tools = new Set<string>();
+  for (const m of context.messages) {
+    if (m.role !== "system") continue;
+    for (const t of m.toolsAdded ?? []) tools.add(t.name);
+    for (const t of m.toolsRemoved ?? []) tools.delete(t.name);
+  }
+  return [...tools];
+};
 
 export interface SpecDelivery {
   spec: string;
@@ -23,6 +53,21 @@ export interface SpecDelivery {
 /** Resposta do modelo que entrega a SPEC e os Tickets pela ferramenta da etapa. */
 export const deliverSpec = (delivery: SpecDelivery): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall("entregar_spec", { ...delivery })], { stopReason: "toolUse" });
+
+/** Resposta do modelo que, no grill, leva uma pergunta de negócio ao PO pela ferramenta da etapa. */
+export const askPo = (pergunta: string): AssistantMessage =>
+  fauxAssistantMessage([fauxToolCall("perguntar_po", { pergunta })], { stopReason: "toolUse" });
+
+/** Uma proposta da retrô, como o modelo a entrega pela ferramenta `entregar_retro`. */
+export type RetroProposal = {
+  tipo: "fabrica" | "conhecimento" | "repo-time";
+  titulo: string;
+  descricao: string;
+};
+
+/** Resposta do modelo que entrega a retrô de uma etapa (ou a consolidada) pela ferramenta da retrô. */
+export const deliverRetro = (resumo: string, propostas: RetroProposal[] = []): AssistantMessage =>
+  fauxAssistantMessage([fauxToolCall("entregar_retro", { resumo, propostas })], { stopReason: "toolUse" });
 
 export const DEFAULT_SPEC: SpecDelivery = {
   spec: "Entregar o que o card pede.",
@@ -36,11 +81,40 @@ export class FakeModel {
   readonly calls: ModelCall[] = [];
   /** Como responder a cada chamada. Padrão: entrega uma SPEC genérica. */
   respond: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () => deliverSpec(DEFAULT_SPEC);
+  /**
+   * Chamadas da retrô (as que oferecem `entregar_retro`), separadas de `calls`: a retrô roda ao fim de cada etapa e não
+   * deve mudar o que os testes das outras etapas contam.
+   */
+  readonly retroCalls: ModelCall[] = [];
+  /** Como responder à retrô. Padrão: uma retrô sem propostas. */
+  respondRetro: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () =>
+    deliverRetro("Sem observações.");
 
   constructor() {
     const step: FauxResponseFactory = async (context, _options, _state, model) => {
       this.faux.appendResponses([step]);
-      const call = { model: model.id, context: JSON.stringify(context) };
+      const call: ModelCall = {
+        model: model.id,
+        context: JSON.stringify(context),
+        input: userText(context),
+        tools: offeredTools(context),
+        lastRole: context.messages.at(-1)?.role,
+        toolResults: context.messages.flatMap((m) =>
+          m.role === "toolResult"
+            ? [
+                {
+                  name: m.toolName,
+                  isError: m.isError,
+                  text: m.content.map((b) => (b.type === "text" ? b.text : "")).join(""),
+                },
+              ]
+            : [],
+        ),
+      };
+      if (call.tools.includes("entregar_retro")) {
+        this.retroCalls.push(call);
+        return this.respondRetro(call);
+      }
       this.calls.push(call);
       return this.respond(call);
     };
@@ -58,3 +132,34 @@ export class FakeModel {
     return fauxAssistantMessage([fauxText(text)]);
   }
 }
+
+/** Uma rodada do implementador: as chamadas de ferramenta que ele faz ao receber um pedido da fábrica. */
+export type ImplementerTurn = { tool: string; args: Record<string, string> }[];
+
+/**
+ * Roteiro do modelo nos testes da implementação: na conversa da SPEC entrega `spec`; na do implementador, cada pedido
+ * novo da fábrica consome a próxima rodada do roteiro (que pode ser uma função, para decidir na hora) e, depois dos
+ * resultados das ferramentas, responde em texto, encerrando a fase.
+ */
+export function scriptImplementer(
+  model: FakeModel,
+  spec: SpecDelivery,
+  turns: (ImplementerTurn | (() => ImplementerTurn | Promise<ImplementerTurn>))[],
+): void {
+  const queue = [...turns];
+  model.respond = async (call) => {
+    if (call.tools.includes("entregar_spec")) return deliverSpec(spec);
+    if (call.lastRole !== "user") return FakeModel.text("Fase concluída.");
+    const next = queue.shift();
+    const turn = typeof next === "function" ? await next() : (next ?? []);
+    if (turn.length === 0) return FakeModel.text("Nada a fazer.");
+    return fauxAssistantMessage(
+      turn.map((c) => fauxToolCall(c.tool, c.args)),
+      { stopReason: "toolUse" },
+    );
+  };
+}
+
+/** Rodada que escreve arquivos. */
+export const write = (files: Record<string, string>): ImplementerTurn =>
+  Object.entries(files).map(([caminho, conteudo]) => ({ tool: "escrever_arquivo", args: { caminho, conteudo } }));

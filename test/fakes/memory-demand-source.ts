@@ -8,23 +8,30 @@ export class MemoryDemandSource implements DemandSource {
 
   /** Atraso artificial em toda operação, para simular a rede e expor corridas. */
   latencyMs = 0;
+  /** Se definido, toda operação falha com este erro (a Fonte fora do ar). */
+  unavailable: Error | undefined;
 
   constructor(
     public cards: Card[] = [],
     public author = "igor",
+    public project?: string,
   ) {}
 
   private async network(): Promise<void> {
     if (this.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
+    if (this.unavailable) throw this.unavailable;
   }
 
   async listAssignedCards(assignee: string): Promise<Card[]> {
     await this.network();
-    return this.cards.filter((c) => c.assignee === assignee).map((c) => ({ ...c }));
+    return this.cards
+      .filter((c) => c.assignee === assignee && (!this.project || c.key.startsWith(`${this.project}-`)))
+      .map((c) => ({ ...c }));
   }
 
   async getCard(key: string): Promise<Card | undefined> {
     await this.network();
+    if (this.project && !key.startsWith(`${this.project}-`)) return undefined;
     const card = this.cards.find((c) => c.key === key);
     return card && { ...card };
   }
@@ -36,7 +43,8 @@ export class MemoryDemandSource implements DemandSource {
 
   async listTextAttachments(key: string): Promise<TextAttachment[]> {
     await this.network();
-    return (this.attachments.get(key) ?? []).map((a) => ({ ...a }));
+    const isBinary = /\.(png|jpe?g|gif|webp|pdf|zip|tar|gz|bin|exe)$/i;
+    return (this.attachments.get(key) ?? []).filter((a) => !isBinary.test(a.name)).map((a) => ({ ...a }));
   }
 
   async addComment(key: string, body: string): Promise<{ id: string }> {
@@ -58,6 +66,10 @@ export class MemoryDemandSource implements DemandSource {
     const card = this.cards.find((c) => c.key === key);
     if (!card) throw new Error(`Card ${key} não existe`);
     card.status = status;
+  }
+
+  formatMention(personId: string): string {
+    return `[~accountid:${personId}]`;
   }
 
   /** Para os testes: comentários do card, simulando também os escritos por pessoas. */

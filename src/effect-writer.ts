@@ -1,6 +1,9 @@
+import type { CodeHost } from "./code-host.js";
 import { type CardState, type ProjectConfig, STATE_ORDER } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import type { EventRecorder } from "./events.js";
+import { privateTerms, sanitizePublicText } from "./public-text.js";
+import type { RetroSink } from "./retro-sink.js";
 import { redactSecrets } from "./secrets.js";
 
 export const AUTOMATION_PREFIX = "🤖 [fábrica]";
@@ -10,7 +13,13 @@ export class GuardrailViolation extends Error {
   override name = "GuardrailViolation";
 }
 
-/** Toda escrita externa da fábrica num projeto passa por aqui (ADR-0006). */
+/**
+ * Toda escrita externa da fábrica num projeto passa por aqui (ADR-0006).
+ *
+ * No dry-run, as escritas só são registradas (eventos `write` com `dryRun: true`). As idempotentes (todas menos
+ * `comment`) são registradas uma vez só por destino, ação e conteúdo, inclusive depois de um reinício: o registro fica
+ * no log de eventos durável.
+ */
 export interface EffectWriter {
   /** Cria um comentário próprio no card. Retorna o id (no dry-run, um id fictício). */
   comment(cardKey: string, body: string): Promise<{ id: string }>;
@@ -25,6 +34,11 @@ export interface EffectWriter {
    * Só considera comentários escritos pelo usuário da fábrica; um de outra pessoa com o mesmo título é ignorado.
    */
   upsertComment(cardKey: string, title: string, body: string): Promise<{ id: string }>;
+  /**
+   * Comentário próprio que menciona `personId` (pergunta, lembrete). Só para as pessoas do projeto: qualquer outro
+   * destinatário é bloqueado. Idempotente como `commentOnce`.
+   */
+  mention(cardKey: string, personId: string, body: string): Promise<{ id: string }>;
   /** Edita um comentário criado pela própria fábrica. */
   editComment(cardKey: string, commentId: string, body: string): Promise<void>;
   /**
@@ -32,7 +46,32 @@ export interface EffectWriter {
    * Com `from`, bloqueia se o card não estiver mais nesse estado (ex.: uma pessoa o moveu nesse meio-tempo).
    */
   transition(cardKey: string, state: CardState, opts?: { from?: CardState }): Promise<void>;
+  /**
+   * Envia `branch` do clone em `repoPath` para o remoto, pelo CodeHost. Nunca em `main`/`master`/`develop`;
+   * force-push só numa branch da fábrica (criada por ela e registrada no estado durável de uma Tarefa;
+   * uma branch adotada do remoto não conta).
+   */
+  pushBranch(repoPath: string, branch: string, opts?: { force?: boolean }): Promise<void>;
+  /**
+   * Abre uma issue `retro` no repositório **público** da fábrica pelo RetroSink. Só no repositório configurado; o
+   * título e o corpo passam pelo filtro de segredos e pelo saneamento dos valores do projeto (e do card `cardKey`), e
+   * a escrita é barrada se sobrar algum. No dry-run, só registra e devolve `undefined`.
+   */
+  openRetroIssue(
+    cardKey: string,
+    repo: string,
+    issue: { title: string; body: string },
+  ): Promise<{ number: number; url: string } | undefined>;
+  /** Aplica o mesmo saneamento público para comparar textos já publicados. */
+  publicRetroText(cardKey: string, text: string): Promise<string>;
+  /** Sinaliza valores privados que o saneamento não conseguiu remover. */
+  publicRetroPreview(cardKey: string, text: string): Promise<{ text: string; leftovers: string[] }>;
+  /** Comenta numa issue do repositório da fábrica, com as mesmas regras de `openRetroIssue`. */
+  commentRetroIssue(cardKey: string, repo: string, issue: number, body: string): Promise<void>;
 }
+
+/** Branches em que a fábrica nunca faz push. */
+export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master", "develop"]);
 
 export function createEffectWriter(opts: {
   config: ProjectConfig;
@@ -40,25 +79,73 @@ export function createEffectWriter(opts: {
   events: EventRecorder;
   /** Estado mais avançado para onde a fábrica pode mover um card neste marco. */
   transitionLimit: CardState;
+  /** Porta do remoto de código. Sem ela, todo push é recusado. */
+  codeHost?: CodeHost;
+  /** Se `branch` foi criada pela fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
+  isFactoryBranch?: (branch: string) => boolean | Promise<boolean>;
+  /** Issues da fábrica: a porta e o único repositório em que ela escreve. */
+  retro?: { sink?: RetroSink; repo?: string };
 }): EffectWriter {
   const { config, source, events } = opts;
   const user = config.source.assignee;
   const dryRunIds = new Set<string>();
 
-  /** Aplica os guardrails, registra e executa (ou só registra, no dry-run). */
+  /**
+   * Se o dry-run já registrou esta escrita (mesmo destino, ação e conteúdo). O log de eventos é durável, então a
+   * lembrança sobrevive a um reinício: no dry-run nada chega ao sistema, e é só por ela que uma escrita idempotente
+   * repetida (ex.: um passo refeito depois de um reinício) não aparece de novo.
+   */
+  const dryRunRegistered = (w: { target: string; action: string; content: string }) =>
+    events
+      .list()
+      .some(
+        (e) =>
+          e.type === "write" &&
+          e.dryRun &&
+          e.project === config.name &&
+          e.target === w.target &&
+          e.action === w.action &&
+          e.content === w.content,
+      );
+
+  /**
+   * Aplica os guardrails, registra e executa (ou só registra, no dry-run). Com `once` (escritas idempotentes: todas
+   * menos `comment`), o dry-run não registra de novo uma escrita que já registrou.
+   */
   async function write<T>(
     w: { target: string; action: string; content: string },
     check: () => Promise<string | undefined>,
     run: () => Promise<T>,
     dry: () => T,
+    once = true,
   ): Promise<T> {
     const reason = await check();
     if (reason) {
       await events.append({ type: "blocked", project: config.name, ...w, reason });
       throw new GuardrailViolation(`Guardrail: ${w.action} em ${w.target} bloqueado: ${reason}`);
     }
+    if (config.dryRun && once && dryRunRegistered(w)) return dry();
     await events.append({ type: "write", project: config.name, ...w, dryRun: config.dryRun });
     return config.dryRun ? dry() : run();
+  }
+
+  /** Id fictício de um comentário do dry-run, que `editComment` aceita sem procurar na Fonte. */
+  const dryRunComment = () => {
+    const id = `dry-run-${dryRunIds.size + 1}`;
+    dryRunIds.add(id);
+    return { id };
+  };
+
+  /** Cria um comentário próprio no card; `once` como em `write`. */
+  function addOwnComment(cardKey: string, body: string, once: boolean): Promise<{ id: string }> {
+    const content = outgoing(body);
+    return write(
+      { target: cardKey, action: "comment", content },
+      () => cardNotOwned(cardKey),
+      () => source.addComment(cardKey, content),
+      dryRunComment,
+      once,
+    );
   }
 
   async function cardNotOwned(key: string): Promise<string | undefined> {
@@ -73,21 +160,36 @@ export function createEffectWriter(opts: {
     const clean = redactSecrets(body);
     return clean.startsWith(AUTOMATION_PREFIX) ? clean : `${AUTOMATION_PREFIX} ${clean}`;
   };
+  /** Texto que vai ao repositório público: sem segredos e saneado dos valores do projeto e do card. */
+  async function publicText(cardKey: string, raw: string) {
+    const card = await source.getCard(cardKey);
+    return sanitizePublicText(redactSecrets(raw), {
+      terms: privateTerms(config, [cardKey, card?.title ?? ""]),
+      cardPrefix: config.source.project,
+    });
+  }
+  const retroSink = (): RetroSink => {
+    const sink = opts.retro?.sink;
+    if (!sink) throw new Error("RetroSink não configurado");
+    return sink;
+  };
+  function retroRefused(repo: string, leftovers: string[]): string | undefined {
+    const target = opts.retro?.repo;
+    if (!opts.retro?.sink || !target) return "nenhum repositório da fábrica configurado (FACTORY_RETRO_REPO)";
+    if (repo !== target) return `o RetroSink só escreve no repositório da fábrica (${target}), não em ${repo}`;
+    if (leftovers.length > 0) return `o texto público ainda cita valores do projeto: ${leftovers.join(", ")}`;
+    return undefined;
+  }
+
   const statusFor = (state: CardState) => Object.entries(config.statuses).find(([, s]) => s === state)?.[0];
 
   return {
+    async publicRetroText(cardKey, text) {
+      return (await publicText(cardKey, text)).text;
+    },
+    publicRetroPreview: publicText,
     comment(cardKey, body) {
-      const content = outgoing(body);
-      return write(
-        { target: cardKey, action: "comment", content },
-        () => cardNotOwned(cardKey),
-        () => source.addComment(cardKey, content),
-        () => {
-          const id = `dry-run-${dryRunIds.size + 1}`;
-          dryRunIds.add(id);
-          return { id };
-        },
-      );
+      return addOwnComment(cardKey, body, false);
     },
 
     async commentOnce(cardKey, body) {
@@ -96,7 +198,25 @@ export function createEffectWriter(opts: {
         const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
         if (existing) return { id: existing.id };
       }
-      return this.comment(cardKey, body);
+      return addOwnComment(cardKey, body, true);
+    },
+
+    async mention(cardKey, personId, body) {
+      const content = outgoing(`${source.formatMention(personId)} ${body}`);
+      if (!config.dryRun) {
+        const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
+        if (existing) return { id: existing.id };
+      }
+      return write(
+        { target: cardKey, action: "mention", content },
+        async () => {
+          if (!config.people.some((p) => p.id === personId))
+            return `${personId} não está entre as pessoas do projeto ${config.name}`;
+          return cardNotOwned(cardKey);
+        },
+        () => source.addComment(cardKey, content),
+        dryRunComment,
+      );
     },
 
     async upsertComment(cardKey, title, body) {
@@ -105,7 +225,7 @@ export function createEffectWriter(opts: {
       const existing = (await source.listComments(cardKey)).find(
         (c) => c.author === user && c.body.split("\n")[0] === header,
       );
-      if (!existing) return this.comment(cardKey, content);
+      if (!existing) return addOwnComment(cardKey, content, true);
       if (existing.body !== content) await this.editComment(cardKey, existing.id, content);
       return { id: existing.id };
     },
@@ -149,6 +269,46 @@ export function createEffectWriter(opts: {
           return undefined;
         },
         () => source.transition(cardKey, status),
+        () => undefined,
+      );
+    },
+
+    pushBranch(repoPath, branch, pushOpts) {
+      const force = pushOpts?.force ?? false;
+      const name = branch.replace(/^refs\/heads\//, "");
+      return write(
+        { target: name, action: force ? "force-push" : "push", content: `${repoPath} -> origin/${name}` },
+        async () => {
+          if (PROTECTED_BRANCHES.has(name)) return `push na branch protegida "${name}" é proibido`;
+          if (force && !(await opts.isFactoryBranch?.(name)))
+            return `force-push só nas branches da fábrica; "${name}" não é uma delas`;
+          if (!opts.codeHost) return "projeto sem CodeHost configurado";
+          return undefined;
+        },
+        () => (opts.codeHost as CodeHost).pushBranch(repoPath, name, { force }),
+        () => undefined,
+      );
+    },
+
+    async openRetroIssue(cardKey, repo, issue) {
+      const title = await publicText(cardKey, issue.title);
+      const body = await publicText(cardKey, issue.body);
+      const content = `${AUTOMATION_PREFIX} ${body.text}`;
+      return write<{ number: number; url: string } | undefined>(
+        { target: `${cardKey}#retro`, action: "retro-issue", content: `${repo}: ${title.text}\n\n${content}` },
+        async () => retroRefused(repo, [...title.leftovers, ...body.leftovers]),
+        () => retroSink().create(repo, { title: title.text, body: content }),
+        () => undefined,
+      );
+    },
+
+    async commentRetroIssue(cardKey, repo, issue, raw) {
+      const body = await publicText(cardKey, raw);
+      const content = `${AUTOMATION_PREFIX} ${body.text}`;
+      return write(
+        { target: `${cardKey}#retro`, action: "retro-comment", content: `${repo}#${issue}: ${content}` },
+        async () => retroRefused(repo, body.leftovers),
+        () => retroSink().comment(repo, issue, content),
         () => undefined,
       );
     },

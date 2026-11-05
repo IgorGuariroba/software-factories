@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { SPEC_INPUT_MAX_CHARS } from "../src/spec-stage.js";
 import { DEFAULT_SPEC, deliverSpec, FakeModel } from "./fakes/fake-model.js";
 import {
+  DEFAULT_DESCRIPTION,
   events,
   eventually,
   hold,
@@ -78,7 +80,7 @@ describe("etapas grill → SPEC → Tickets", () => {
 
   it("o modelo recebe o card (campos, comentários, anexos de texto) e o conhecimento do projeto", async () => {
     factory = await startTestFactory({
-      cards: [card({ description: "Hoje o relatório só sai em PDF." })],
+      cards: [card({ description: `Hoje o relatório só sai em PDF. ${DEFAULT_DESCRIPTION}` })],
       knowledge: "Neste projeto, todo endpoint novo exige teste de contrato.",
     });
     factory.source.humanComment("PROJ-1", "po", "O CSV deve usar ponto e vírgula.");
@@ -129,10 +131,25 @@ describe("etapas grill → SPEC → Tickets", () => {
     await waitForStatus(factory, "PROJ-1", "concluida");
 
     const [call] = factory.model.calls;
-    expect(call?.context.length).toBeLessThan(250_000);
-    expect(call?.context).toContain("truncado");
-    expect(call?.context).toContain("Descrição que precisa chegar.");
-    expect(call?.context).toContain("Conhecimento que precisa chegar.");
+    expect(call?.input.length).toBeLessThanOrEqual(SPEC_INPUT_MAX_CHARS);
+    expect(call?.input).toContain("truncado");
+    expect(call?.input).toContain("Descrição que precisa chegar.");
+    expect(call?.input).toContain("Conhecimento que precisa chegar.");
+  });
+
+  it("um conhecimento do projeto enorme não tira o espaço da descrição do card", async () => {
+    factory = await startTestFactory({
+      cards: [card({ description: `Requisito que precisa chegar. ${DEFAULT_DESCRIPTION}` })],
+      knowledge: "k".repeat(500_000),
+    });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+
+    const [call] = factory.model.calls;
+    expect(call?.input.length).toBeLessThanOrEqual(SPEC_INPUT_MAX_CHARS);
+    expect(call?.input).toContain("Requisito que precisa chegar.");
+    expect(call?.input).toContain("truncado");
   });
 
   it("retomar após reinício no meio da etapa não duplica os comentários nem chama o modelo de novo", async () => {

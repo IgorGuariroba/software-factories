@@ -2,9 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 import { startDaemon } from "../src/daemon.js";
 import type { RunningFactory } from "../src/factory.js";
+import { FakeTelegram, TELEGRAM_CHAT } from "./fakes/fake-telegram.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
 
 let dir: string;
@@ -34,6 +36,24 @@ describe("config de projeto", () => {
     const queue = (await (await fetch(`${daemon.url}/queue`)).json()) as { key: string }[];
 
     expect(queue.map((c) => c.key)).toEqual(["PROJ-7"]);
+  });
+
+  it("prioriza o prefixo específico no exemplo, antes do prefixo genérico da chave", async () => {
+    const example = parse(await readFile("projects/example.yaml", "utf8")) as { repositories: { prefix: string }[] };
+    expect(example.repositories.map((r) => r.prefix)).toEqual(["[mobile]", "PROJ"]);
+  });
+
+  it("recusa mapeamento por board, que a Fonte Jira não consegue determinar pelo card", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(join(dir, "board.yaml"), example.replace("prefix: PROJ", "prefix: PROJ\n    board: Mobile"));
+    await expect(
+      startDaemon({
+        configDir: dir,
+        sources,
+        statePath: join(dir, "estado", "fabrica.sqlite"),
+        models: createModels(),
+      }),
+    ).rejects.toThrow(/board/);
   });
 
   it("recusa iniciar com config inválida, dizendo arquivo, campo e motivo", async () => {
@@ -67,6 +87,60 @@ describe("config de projeto", () => {
 
     await expect(start).rejects.toThrow(/a-malformado\.yaml: .*at line \d+, column \d+/);
     await expect(start).rejects.toThrow(/b-incompleto\.yaml: source/);
+  });
+
+  it("recusa um calendário de horas úteis inválido, dizendo o campo", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(
+      join(dir, "calendario.yaml"),
+      example
+        .replace(/timezone: .*/, "timezone: Lugar/Nenhum")
+        .replace(/start: "09:00"/, 'start: "19:00"')
+        .replace(/role: po/, "role: chefe"),
+    );
+
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
+
+    await expect(start).rejects.toThrow(/calendar\.timezone: fuso horário IANA desconhecido/);
+    await expect(start).rejects.toThrow(/calendar\.end: start precisa ser antes de end/);
+    await expect(start).rejects.toThrow(/people\.0\.role/);
+  });
+
+  it("recusa um nível de conteúdo do Telegram desconhecido", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(join(dir, "telegram.yaml"), example.replace(/content: full/, "content: tudo"));
+
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
+
+    await expect(start).rejects.toThrow(/telegram\.content/);
+  });
+
+  it("com uma interface de gestão, o daemon publica nela no nível do projeto", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    expect(example).toMatch(/content: full/);
+    await writeFile(join(dir, "exemplo.yaml"), example.replace(/content: full/, "content: minimal"));
+    const telegram = new FakeTelegram();
+
+    daemon = await startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+      management: { port: telegram, chat: TELEGRAM_CHAT },
+    });
+    await fetch(`${daemon.url}/poll`, { method: "POST" });
+
+    await vi.waitFor(() => expect(telegram.texts()).toContain("Assumi o card PROJ-7 (exemplo)."));
   });
 
   it("recusa iniciar sem nenhum projeto configurado", async () => {

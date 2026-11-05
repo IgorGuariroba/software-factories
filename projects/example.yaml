@@ -12,14 +12,78 @@ source:
   # Chave do projeto na Fonte.
   project: PROJ
   # Seu identificador na Fonte: a fábrica só trabalha nos cards atribuídos a ele.
+  # No Jira, o seu accountId ou o seu e-mail; é com este valor que a fábrica reconhece os próprios comentários.
   assignee: seu-id-no-jira
 
 # Modelo fixado para cada papel (provedor e modelo como o pi-ai os conhece).
-# spec: grill, SPEC e Tickets.
+# spec: grill, SPEC e Tickets. implementer: implementação com TDD (opcional; sem ele, usa o de spec).
 roles:
   spec:
     provider: anthropic
     model: claude-sonnet-4-6
+  implementer:
+    provider: anthropic
+    model: claude-sonnet-4-6
+  # Retrô de cada etapa e consolidada. Sem ele, usa o modelo de spec.
+  retro:
+    provider: anthropic
+    model: claude-sonnet-4-6
+
+# Pessoas do projeto: as únicas com quem a fábrica conversa neste projeto (dados fictícios).
+# id é o identificador da pessoa na Fonte (no Jira, o accountId): é com ele que a fábrica menciona a pessoa e
+# reconhece a resposta dela no card. Papéis: po (perguntas de negócio) e tech_lead.
+# Mencionar alguém fora desta lista é bloqueado por guardrail; sem um po, uma pergunta de negócio bloqueia a Tarefa.
+people:
+  - id: id-do-po-no-jira
+    role: po
+    name: PO Fictício
+  - id: id-do-tech-lead-no-jira
+    role: tech_lead
+
+# Expediente do projeto. Os prazos das perguntas contam só horas úteis: lembrete à pessoa após 4 h úteis sem
+# resposta e aviso a você após 1 dia útil (a duração do expediente, aqui 9 h).
+# timezone é um fuso IANA; workdays usa sun, mon, tue, wed, thu, fri, sat; holidays são datas AAAA-MM-DD sem
+# expediente. Sem calendar: segunda a sexta, 09:00-18:00, UTC.
+calendar:
+  timezone: America/Sao_Paulo
+  workdays: [mon, tue, wed, thu, fri]
+  start: "09:00"
+  end: "18:00"
+  holidays: ["2026-12-25"]
+
+# Prazo de veto, em minutos: um card seu que já estava "Em Andamento" é assumido com comentário e aviso a você, e a
+# fábrica só continua depois desse prazo se você não vetar (POST /tasks/<projeto>/<card>/veto). Padrão: 30.
+vetoMinutes: 30
+
+# Mensagens deste projeto no Telegram (a interface de gestão; ver CONTRIBUTING.md). Toda mensagem passa pelo filtro
+# de segredos. O nível full (padrão) manda o texto completo: títulos de card, avisos e motivos de bloqueio;
+# o minimal manda só o tipo do evento, o card, o projeto e prazos, sem nada escrito por pessoas ou modelos.
+telegram:
+  content: full
+
+# Prefixo do título/chave do card -> repositório (o primeiro que corresponder vale; ponha os específicos antes).
+# path é a sua cópia local: a fábrica só lê dela e trabalha num clone próprio ao lado do estado durável
+# (<dir do FACTORY_STATE_PATH>/worktrees/<projeto>/<card>), com push para o mesmo remoto origin.
+# test.command é o argv do comando de teste, sem shell; o modelo só pode rodá-lo como está.
+# Card sem correspondência: a Tarefa fica bloqueada. Sem repositories, a Tarefa termina nos Tickets.
+repositories:
+  - path: /home/voce/projetos/meu-app
+    prefix: "[mobile]"
+    test:
+      command: [npm, test]
+  - path: /home/voce/projetos/meu-backend
+    prefix: PROJ
+    test:
+      command: [npm, test]
+      timeoutSeconds: 300
+      # Opcional: padrões (glob) dos arquivos de teste; o padrão cobre *.test.*, *.spec.*, test/, tests/ etc.
+      # files: ["src/**/*.test.ts"]
+
+# Sobrescritas das convenções descobertas no histórico (opcional).
+# Marcadores: {key} e {slug} na branch; {type}, {summary} e {key} no commit.
+# conventions:
+#   branch: feature/{key}-{slug}
+#   commit: "{type}: {summary} ({key})"
 
 # Nome do status no workflow da Fonte -> estado que a fábrica entende.
 # Estados: backlog, todo, in_progress, waiting_test, waiting_validation, gmud, done.

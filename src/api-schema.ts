@@ -21,7 +21,12 @@ export const API_SCHEMA = {
     "/queue": {
       get: { summary: "Cards elegíveis na Fonte (A Fazer e Em Andamento atribuídos ao usuário)", responses: ok },
     },
-    "/poll": { post: { summary: "Busca agora na Fonte e enfileira os cards 'A Fazer' novos", responses: ok } },
+    "/poll": {
+      post: {
+        summary: "Busca agora na Fonte e enfileira os cards elegíveis (A Fazer e Em Andamento) novos",
+        responses: ok,
+      },
+    },
     "/tasks": {
       get: {
         summary: "Tarefas na ordem da fila, com status",
@@ -57,14 +62,108 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/retros/{stage}/{n}": {
+      get: {
+        summary: "Prévia do conteúdo público de uma proposta pendente",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        responses: {
+          "200": {
+            description: "Prévia do texto público e revisão a ser aprovada",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["title", "body", "repo", "dryRun", "blocked", "revision"],
+                  properties: {
+                    title: { type: "string" },
+                    body: { type: "string" },
+                    repo: { type: "string" },
+                    dryRun: { type: "boolean" },
+                    blocked: { type: "boolean" },
+                    revision: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "404": { description: "Proposta inexistente" },
+          "409": { description: "Proposta indisponível ou sem repositório" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/retros/{stage}/{n}/approve": {
+      post: {
+        summary: "Aprova a revisão exata e publica ou registra +1 no repositório público",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", required: ["revision"], properties: { revision: { type: "string" } } },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "404": { description: "Proposta inexistente" },
+          "409": { description: "Prévia mudou, publicação bloqueada ou já processada" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}": {
+      get: {
+        summary:
+          "Detalhe da tarefa: estado, etapa, perguntas ao PO, SPEC e Tickets entregues, progresso da implementação, " +
+          "retrôs com as propostas classificadas, " +
+          "histórico de eventos dela e escritas registradas (feitas, do dry-run ou barradas por guardrail)",
+        parameters: taskPath("").post.parameters,
+        responses: {
+          "200": {
+            description: "Detalhe da tarefa",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/TaskDetail" } } },
+          },
+          "404": { description: "Tarefa inexistente" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/pause": taskPath("Pausa a tarefa (a ativa para no próximo passo)"),
     "/tasks/{project}/{key}/resume": taskPath("Retoma a tarefa pausada"),
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
+    "/tasks/{project}/{key}/veto": {
+      post: {
+        summary:
+          "Veta a tarefa de um card que já estava em andamento, dentro do prazo de veto: ela fica vetada e não age mais no card",
+        parameters: taskPath("").post.parameters,
+        responses: {
+          "200": { description: "Tarefa vetada" },
+          "404": { description: "Tarefa inexistente" },
+          "409": {
+            description: "A tarefa não está aguardando veto (o prazo já passou ou ela não passa por veto); sem efeito",
+          },
+        },
+      },
+    },
     "/daemon": { get: { summary: "Estado do daemon ({ paused })", responses: ok } },
     "/daemon/pause": { post: { summary: "Pausa o daemon: nenhuma tarefa nova começa", responses: ok } },
     "/daemon/resume": { post: { summary: "Retoma o daemon", responses: ok } },
     "/events": {
-      get: { summary: "Histórico de eventos (escritas, bloqueios, erros, status de tarefas)", responses: ok },
+      get: {
+        summary:
+          "Histórico de eventos (escritas, bloqueios, erros, status de tarefas, assunções, perguntas, avisos ao usuário do " +
+          "tipo notify (inclusive sugestões da retrô para o repo do time), retrôs concluídas ou que desistiram, comandos recebidos pelas interfaces de gestão e mensagens descartadas)",
+        responses: ok,
+      },
     },
     "/events/stream": { get: { summary: "Eventos novos em tempo real (Server-Sent Events)", responses: ok } },
     "/openapi.json": { get: { summary: "Este schema", responses: ok } },
@@ -75,13 +174,133 @@ export const API_SCHEMA = {
         type: "object",
         properties: {
           id: { type: "string", description: "<projeto>/<card>" },
+          ref: {
+            type: ["string", "null"],
+            description:
+              "Id opaco e estável da tarefa: a única referência a ela nas issues públicas da fábrica " +
+              "(sem URL; colado na página local como #/retro/<ref>, abre a tarefa)",
+          },
           project: { type: "string" },
           key: { type: "string" },
           title: { type: "string" },
-          status: { enum: ["enfileirada", "ativa", "pausada", "concluida", "cancelada", "bloqueada"] },
+          status: {
+            enum: [
+              "enfileirada",
+              "ativa",
+              "aguardando-humano",
+              "aguardando-veto",
+              "pausada",
+              "concluida",
+              "cancelada",
+              "bloqueada",
+              "vetada",
+            ],
+          },
+          stage: {
+            description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
+            enum: ["assumir", "veto", "spec", "implementacao", null],
+          },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
         },
+      },
+      Retro: {
+        type: "object",
+        properties: {
+          stage: { enum: ["spec", "implementacao", "tarefa"], description: "tarefa: a retrô consolidada" },
+          status: {
+            enum: ["em-andamento", "concluida", "falhou"],
+            description: "falhou: desistiu depois das tentativas, sem bloquear a tarefa",
+          },
+          attempts: { type: "integer", description: "Tentativas que falharam" },
+          error: { type: ["string", "null"] },
+          summary: { type: ["string", "null"] },
+          proposals: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                n: { type: "integer" },
+                kind: { enum: ["fabrica", "conhecimento", "repo-time"] },
+                title: { type: "string" },
+                description: { type: "string" },
+                status: {
+                  enum: [
+                    "a-publicar",
+                    "issue-criada",
+                    "mais-um",
+                    "ja-registrada",
+                    "dry-run",
+                    "sem-repo",
+                    "bloqueada",
+                    "pendente",
+                    "avisada",
+                  ],
+                },
+                issue: {
+                  type: ["object", "null"],
+                  description: "Issue retro aberta ou comentada no repositório da fábrica",
+                  properties: { number: { type: "integer" }, url: { type: "string" } },
+                },
+                reason: { type: ["string", "null"], description: "Por que o guardrail barrou a escrita" },
+              },
+            },
+          },
+        },
+      },
+      TaskDetail: {
+        allOf: [
+          { $ref: "#/components/schemas/Task" },
+          {
+            type: "object",
+            properties: {
+              pauseRequested: { type: "boolean" },
+              vetoUntil: { type: ["string", "null"], description: "Fim do prazo de veto (ISO 8601), se aguarda veto" },
+              questions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    n: { type: "integer" },
+                    to: { type: "string" },
+                    text: { type: "string" },
+                    askedAt: { type: "string" },
+                    answer: { type: ["string", "null"], description: "null enquanto pendente" },
+                  },
+                },
+              },
+              spec: { type: ["string", "null"] },
+              tickets: {
+                type: "array",
+                items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },
+              },
+              implementation: {
+                type: ["object", "null"],
+                properties: {
+                  branch: { type: "string" },
+                  branchOrigin: {
+                    type: ["string", "null"],
+                    enum: ["criada", "adotada", null],
+                    description: "criada pela fábrica (aceita force-push) ou adotada do remoto (só push normal)",
+                  },
+                  commits: { type: "array", items: { type: "object" } },
+                  pushed: { type: "boolean" },
+                },
+              },
+              retros: {
+                type: "array",
+                description: "Retrôs das etapas de modelo (spec, implementacao) e a consolidada (tarefa), na ordem",
+                items: { $ref: "#/components/schemas/Retro" },
+              },
+              events: { type: "array", description: "Eventos desta tarefa, em ordem", items: { type: "object" } },
+              writes: {
+                type: "array",
+                description: "Eventos write (com dryRun) e blocked (com o motivo) desta tarefa",
+                items: { type: "object" },
+              },
+            },
+          },
+        ],
       },
     },
   },

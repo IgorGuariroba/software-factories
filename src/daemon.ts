@@ -5,6 +5,8 @@ import { parse } from "yaml";
 import { ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import { type RunningFactory, startFactory } from "./factory.js";
+import type { ManagementInterface } from "./management.js";
+import type { RetroSink } from "./retro-sink.js";
 
 /** Como criar a Fonte de cada tipo declarado em `source.type`. */
 export type SourceFactories = Record<ProjectConfig["source"]["type"], (config: ProjectConfig) => DemandSource>;
@@ -45,6 +47,10 @@ export async function startDaemon(opts: {
   pollIntervalMs?: number;
   /** Provedores de modelos com as credenciais do usuário. */
   models: Models;
+  /** Interface de gestão (Telegram), global ao daemon: um bot e uma conversa para todos os projetos. */
+  management?: { port: ManagementInterface; chat: string; user?: string };
+  /** Issues da fábrica: a porta e o repositório público da fábrica (global ao daemon). */
+  retro?: { sink?: RetroSink; repo?: string };
 }): Promise<RunningFactory> {
   const configs = await loadProjects(opts.configDir);
   return startFactory({
@@ -52,6 +58,8 @@ export async function startDaemon(opts: {
     statePath: opts.statePath,
     pollIntervalMs: opts.pollIntervalMs,
     models: opts.models,
+    management: opts.management,
+    retro: opts.retro,
     // O conhecimento de cada projeto fica ao lado da config: <configDir>/<projeto>/knowledge.md (ADR-0010).
     projects: configs.map((config) => ({
       config,
