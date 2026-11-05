@@ -13,13 +13,20 @@ const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
 ];
 
-/** `CHAVE=valor`, `chave: "valor"` ou `"chave": "valor"` (JSON) em que o nome da chave indica um segredo. */
+/**
+ * `CHAVE=valor`, `chave: "valor"` ou `"chave": "valor"` (JSON) em que o nome da chave indica um segredo.
+ * Valores entre aspas podem ter espaços e aspas escapadas; sem aspas, o valor vai até o próximo espaço.
+ */
 const SECRET_ASSIGNMENT =
-  /\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)(["']?\s*[:=]\s*)(["']?)([^\s"']+)\3/gi;
+  /\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)(["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"']+)/gi;
 
 /** Mascara segredos em qualquer texto que sai da fábrica. */
 export function redactSecrets(text: string): string {
   let out = text;
   for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, MASK);
-  return out.replace(SECRET_ASSIGNMENT, (_m, key, sep, quote) => `${key}${sep}${quote}${MASK}${quote}`);
+  return out.replace(SECRET_ASSIGNMENT, (match, key: string, sep: string) => {
+    const value = match.slice(key.length + sep.length);
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : "";
+    return `${key}${sep}${quote}${MASK}${quote}`;
+  });
 }

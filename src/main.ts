@@ -6,8 +6,12 @@ import type { DemandSource } from "./demand-source.js";
 const configDir = process.env.FACTORY_CONFIG_DIR ?? join(homedir(), ".config", "software-factory", "projects");
 const port = Number(process.env.FACTORY_PORT ?? 7420);
 const pollSeconds = Number(process.env.FACTORY_POLL_SECONDS ?? 300);
-if (!Number.isFinite(pollSeconds) || pollSeconds <= 0) {
-  console.error(`FACTORY_POLL_SECONDS inválido: "${process.env.FACTORY_POLL_SECONDS}" (use um número de segundos > 0)`);
+/** Maior atraso aceito por setInterval; acima disso o Node usa 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+if (!Number.isFinite(pollSeconds) || pollSeconds <= 0 || pollSeconds * 1000 > MAX_TIMER_MS) {
+  console.error(
+    `FACTORY_POLL_SECONDS inválido: "${process.env.FACTORY_POLL_SECONDS}" (use segundos > 0 e <= ${MAX_TIMER_MS / 1000})`,
+  );
   process.exit(1);
 }
 const pollIntervalMs = pollSeconds * 1000;

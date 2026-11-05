@@ -28,9 +28,12 @@ export interface TestFactory extends RunningFactory {
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória. */
-export async function startTestFactory(opts: { cards?: Card[]; dryRun?: boolean } = {}): Promise<TestFactory> {
-  const source = new MemoryDemandSource(opts.cards);
+export async function startTestFactory(
+  opts: { cards?: Card[]; source?: MemoryDemandSource; dryRun?: boolean; pollIntervalMs?: number } = {},
+): Promise<TestFactory> {
+  const source = opts.source ?? new MemoryDemandSource(opts.cards);
   const factory = await startFactory({
+    pollIntervalMs: opts.pollIntervalMs,
     projects: [{ config: testProjectConfig({ dryRun: opts.dryRun ?? false }), source }],
   });
   return { ...factory, source };

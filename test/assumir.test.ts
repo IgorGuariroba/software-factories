@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
 import { startTestFactory, type TestFactory, USER } from "./harness.js";
 
 let factory: TestFactory | undefined;
@@ -137,5 +138,24 @@ describe("buscas simultâneas", () => {
     await Promise.all([poll(factory), poll(factory)]);
 
     expect(factory.source.commentsOf("PROJ-1")).toHaveLength(1);
+  });
+
+  it("a busca automática ignora os ticks enquanto um poll ainda está em andamento", async () => {
+    const source = new MemoryDemandSource();
+    source.latencyMs = 40;
+    let polls = 0;
+    const list = source.listAssignedCards.bind(source);
+    source.listAssignedCards = async (assignee) => {
+      polls++;
+      return list(assignee);
+    };
+    factory = await startTestFactory({ source, pollIntervalMs: 5 });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await factory.close();
+    factory = undefined;
+
+    // ~150 ms / 40 ms por busca: sem acumular, no máximo uma busca por janela de 40 ms.
+    expect(polls).toBeLessThanOrEqual(5);
   });
 });

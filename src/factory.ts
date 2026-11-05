@@ -104,14 +104,19 @@ export async function startFactory(opts: {
 
   /** Uma busca por vez, venha ela do timer ou da API, para nunca assumir o mesmo card em dobro. */
   let polling: Promise<void> = Promise.resolve();
+  let pending = 0;
   function serializedPoll(): Promise<void> {
-    const run = polling.then(poll);
+    pending++;
+    const run = polling.then(poll).finally(() => pending--);
     polling = run.catch(() => undefined);
     return run;
   }
+  // O timer pula o tick se ainda houver busca pendente, para não acumular buscas com a Fonte lenta.
+  // Chamadas explícitas a POST /poll sempre entram na fila.
   const timer =
     opts.pollIntervalMs &&
     setInterval(() => {
+      if (pending > 0) return;
       serializedPoll().catch((err) => console.error("[fábrica] erro na busca:", err));
     }, opts.pollIntervalMs);
 

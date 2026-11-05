@@ -147,6 +147,19 @@ describe("escritor de efeitos", () => {
       );
     });
 
+    it("mascara valores entre aspas com espaços e aspas escapadas", async () => {
+      const { source, writer } = setup();
+
+      await writer.comment(
+        "PROJ-1",
+        `{"password":"${"correct"} horse \\"battery\\" staple", "user": "igor"} senha='${"minha"} senha secreta' ok`,
+      );
+
+      expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
+        `🤖 [fábrica] {"password":"[segredo removido]", "user": "igor"} senha='[segredo removido]' ok`,
+      );
+    });
+
     it("não altera texto comum", async () => {
       const { source, writer } = setup();
 
