@@ -66,6 +66,7 @@ export const API_SCHEMA = {
       get: {
         summary:
           "Detalhe da tarefa: estado, etapa, perguntas ao PO, SPEC e Tickets entregues, progresso da implementação, " +
+          "retrôs com as propostas classificadas, " +
           "histórico de eventos dela e escritas registradas (feitas, do dry-run ou barradas por guardrail)",
         parameters: taskPath("").post.parameters,
         responses: {
@@ -101,7 +102,7 @@ export const API_SCHEMA = {
       get: {
         summary:
           "Histórico de eventos (escritas, bloqueios, erros, status de tarefas, assunções, perguntas, avisos ao usuário do " +
-          "tipo notify, comandos recebidos pelas interfaces de gestão e mensagens descartadas)",
+          "tipo notify (inclusive sugestões da retrô para o repo do time), retrôs concluídas ou que desistiram, comandos recebidos pelas interfaces de gestão e mensagens descartadas)",
         responses: ok,
       },
     },
@@ -114,6 +115,12 @@ export const API_SCHEMA = {
         type: "object",
         properties: {
           id: { type: "string", description: "<projeto>/<card>" },
+          ref: {
+            type: ["string", "null"],
+            description:
+              "Id opaco e estável da tarefa: a única referência a ela nas issues públicas da fábrica " +
+              "(o link é http://127.0.0.1:<porta>/#/retro/<ref>)",
+          },
           project: { type: "string" },
           key: { type: "string" },
           title: { type: "string" },
@@ -136,6 +143,50 @@ export const API_SCHEMA = {
           },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
+        },
+      },
+      Retro: {
+        type: "object",
+        properties: {
+          stage: { enum: ["spec", "implementacao", "tarefa"], description: "tarefa: a retrô consolidada" },
+          status: {
+            enum: ["em-andamento", "concluida", "falhou"],
+            description: "falhou: desistiu depois das tentativas, sem bloquear a tarefa",
+          },
+          attempts: { type: "integer", description: "Tentativas que falharam" },
+          error: { type: ["string", "null"] },
+          summary: { type: ["string", "null"] },
+          proposals: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                n: { type: "integer" },
+                kind: { enum: ["fabrica", "conhecimento", "repo-time"] },
+                title: { type: "string" },
+                description: { type: "string" },
+                status: {
+                  enum: [
+                    "a-publicar",
+                    "issue-criada",
+                    "mais-um",
+                    "ja-registrada",
+                    "dry-run",
+                    "sem-repo",
+                    "bloqueada",
+                    "pendente",
+                    "avisada",
+                  ],
+                },
+                issue: {
+                  type: ["object", "null"],
+                  description: "Issue retro aberta ou comentada no repositório da fábrica",
+                  properties: { number: { type: "integer" }, url: { type: "string" } },
+                },
+                reason: { type: ["string", "null"], description: "Por que o guardrail barrou a escrita" },
+              },
+            },
+          },
         },
       },
       TaskDetail: {
@@ -171,6 +222,11 @@ export const API_SCHEMA = {
                   commits: { type: "array", items: { type: "object" } },
                   pushed: { type: "boolean" },
                 },
+              },
+              retros: {
+                type: "array",
+                description: "Retrôs das etapas de modelo (spec, implementacao) e a consolidada (tarefa), na ordem",
+                items: { $ref: "#/components/schemas/Retro" },
               },
               events: { type: "array", description: "Eventos desta tarefa, em ordem", items: { type: "object" } },
               writes: {

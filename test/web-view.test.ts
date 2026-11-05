@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { actionsFor, describeEvent, moveTask, stageLabel, writeSituation } from "../web/view.js";
+import {
+  actionsFor,
+  describeEvent,
+  moveTask,
+  proposalLabel,
+  retroStageLabel,
+  stageLabel,
+  taskByRef,
+  writeSituation,
+} from "../web/view.js";
 
 const t = (id: string, status = "enfileirada") => ({ id, status });
 
@@ -50,5 +59,23 @@ describe("textos da página", () => {
     expect(describeEvent({ type: "write", dryRun: true, action: "comment", target: "PROJ-1" })).toBe(
       "Registrada no dry-run: comment em PROJ-1",
     );
+  });
+});
+
+describe("retrôs na página", () => {
+  it("o link público de uma issue (#/retro/<id>) resolve a Tarefa só pelo id opaco", () => {
+    const list = [
+      { id: "exemplo/PROJ-1", ref: "0a1b2c3d4e5f" },
+      { id: "exemplo/PROJ-2", ref: "ffffffffffff" },
+    ];
+
+    expect(taskByRef(list, "ffffffffffff")?.id).toBe("exemplo/PROJ-2");
+    expect(taskByRef(list, "123456789abc")).toBeNull();
+  });
+
+  it("rótulos da retrô e das propostas em pt-BR", () => {
+    expect(retroStageLabel("tarefa")).toBe("Retrô consolidada");
+    expect(proposalLabel({ kind: "fabrica", status: "mais-um" })).toBe("Fábrica: +1 numa issue parecida");
+    expect(proposalLabel({ kind: "repo-time", status: "avisada" })).toBe("Repo do time: sugestão enviada a você");
   });
 });

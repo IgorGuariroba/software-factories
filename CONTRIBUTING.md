@@ -38,7 +38,7 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 - `npm test`: roda a suíte.
 - Seam principal: a fábrica inteira montada com fakes em memória das portas (`test/fakes/`), exercitada pela API HTTP local (`test/harness.ts`). Teste só comportamento observável, nunca internals.
 - Implementação: git real contra um remoto bare temporário (`test/fakes/git-repos.ts`) e o modelo faux roteirizado (`scriptImplementer`); o comando de teste dos repositórios de teste é `node --test`.
-- Rodar o daemon localmente: `npm start` (lê `~/.config/software-factory/projects/*.yaml`; o conhecimento de cada projeto em `<configDir>/<projeto>/knowledge.md`; a etapa SPEC usa o modelo de `roles.spec` com a chave do provedor no ambiente, ex. `ANTHROPIC_API_KEY`; `FACTORY_CONFIG_DIR`, `FACTORY_PORT`, `FACTORY_POLL_SECONDS` e `FACTORY_STATE_PATH` (estado durável, padrão `~/.local/state/software-factory/fabrica.sqlite`) sobrescrevem). Exemplo de config em `projects/example.yaml`. A etapa de implementação clona o repositório mapeado para `<dir do estado>/worktrees/<projeto>/<card>` e nunca mexe na cópia de trabalho mapeada.
+- Rodar o daemon localmente: `npm start` (lê `~/.config/software-factory/projects/*.yaml`; o conhecimento de cada projeto em `<configDir>/<projeto>/knowledge.md`; a etapa SPEC usa o modelo de `roles.spec` com a chave do provedor no ambiente, ex. `ANTHROPIC_API_KEY`; `FACTORY_CONFIG_DIR`, `FACTORY_PORT`, `FACTORY_POLL_SECONDS`, `FACTORY_RETRO_REPO` (repositório público da fábrica para as issues de retrô) e `FACTORY_STATE_PATH` (estado durável, padrão `~/.local/state/software-factory/fabrica.sqlite`) sobrescrevem). Exemplo de config em `projects/example.yaml`. A etapa de implementação clona o repositório mapeado para `<dir do estado>/worktrees/<projeto>/<card>` e nunca mexe na cópia de trabalho mapeada.
 
 ### Assumir card "Em Andamento" e veto
 
@@ -72,6 +72,26 @@ O daemon serve uma página de gestão em `GET /` (abra `http://127.0.0.1:7420/` 
 - Segurança: as mesmas proteções da API (Host local e Origin local nos POST); a resposta da página e dos assets leva `Content-Security-Policy` restritiva (`default-src 'self'`, sem script nem estilo inline) e `X-Content-Type-Options: nosniff`; o DOM é montado com `createElement`/`textContent`, nunca com `innerHTML` (o conteúdo vem do card e do modelo).
 - Build: `web/` fica na raiz, ao lado de `src/` e `dist/`; o daemon resolve `../web/` relativo ao próprio módulo, então `tsx src/main.ts` e `node dist/main.js` acham a mesma página.
 - Testes: `test/web-gestao.test.ts` (pela API: cabeçalhos, cliente local, rotas que o JS chama conferidas contra o `/openapi.json`) e `test/web-view.test.ts` (apresentação pura de `web/view.js`). Não há navegador nos testes.
+
+### Retrô e issues da fábrica
+
+Cada etapa de modelo termina com a sua retrô (hoje: SPEC e implementação; a implementação que não rodou, por falta de repositório mapeado, não tem retrô) e a Tarefa termina com a consolidada, que recebe as retrôs das etapas. Uma etapa nova entra com um passo `retro-<etapa>` em `RETRO_STEP`/`NEXT` (`src/durable.ts`) e o relato dela em `retroInput` (`src/factory.ts`).
+
+- **Modelo**: conversa durável da Tarefa, com entrega estruturada pela ferramenta `entregar_retro` (resumo e propostas classificadas em `fabrica`, `conhecimento` e `repo-time`). Papel `roles.retro`, opcional; sem ele, usa o modelo de `roles.spec`.
+- **Visível na API**: `GET /tasks/{projeto}/{card}` traz `retros` (etapa, status, resumo, propostas e o que virou cada uma); a página mostra a seção "Retrôs".
+- **fábrica** → issue com a label `retro` no repositório da fábrica, pela porta `RetroSink` (`src/retro-sink.ts`; adaptador real `gh`, que usa as credenciais do usuário; a label `retro` precisa existir). O repositório vem de `FACTORY_RETRO_REPO=dono/nome`; sem ele, as propostas ficam só registradas (`sem-repo`) e o daemon avisa no log.
+  - **Dedupe**: entre as issues abertas com a label `retro`, a "parecida" é a de maior similaridade de Jaccard entre os tokens dos títulos (minúsculas, sem acento nem pontuação, sem palavras vazias e tokens de uma letra) com pelo menos `SIMILARITY_THRESHOLD` (0,6); no empate, a mais antiga. Parecida → comentário "+1" com o link da Tarefa; nenhuma → issue nova.
+  - **Idempotência**: a entrega do modelo é gravada antes de publicar e cada proposta é registrada depois de publicada. O texto leva a marca `Origem: tarefa \`<id>\`, retrô <etapa>, proposta <n>.`; uma retomada que acha a marca numa issue aberta não escreve de novo. Uma Tarefa conta uma vez por issue: se a parecida já cita a Tarefa, nada é escrito (`ja-registrada`).
+- **conhecimento do projeto** → proposta `pendente` na Tarefa (a aprovação e a rejeição com motivo são da M1-18, #26).
+- **repo do time** → só um evento `notify` (`reason: "sugestao-repo-time"`) ao usuário, que as interfaces de gestão encaminham. Nenhuma issue ou MR no repositório do time.
+- **Falhas não bloqueiam a entrega**: uma falha da retrô (modelo sem entrega, GitHub fora do ar) conta uma tentativa e a Tarefa é tentada de novo como em qualquer erro; na `MAX_RETRO_ATTEMPTS`ª (3), a retrô fica `falhou`, sai um evento `retro` (encaminhado ao Telegram) e a Tarefa segue. Uma escrita barrada por guardrail deixa só aquela proposta `bloqueada`.
+- **O repositório da fábrica é público.** Todo texto de issue e de "+1" passa pelo escritor de efeitos (`openRetroIssue`/`commentRetroIssue`), que:
+  1. só escreve no repositório de `FACTORY_RETRO_REPO` (outro repositório é barrado com evento `blocked`);
+  2. aplica o filtro de segredos;
+  3. saneia por código (`src/public-text.ts`): troca por `[removido]` o nome do projeto, a chave do projeto na Fonte e as chaves de card (`CHAVE-123`), o usuário, as pessoas (ids e nomes), os repositórios mapeados (caminho, nome, prefixo, board) e a chave e o título do card; tira links e caminhos absolutos; e **barra a escrita com evento** se sobrar algo (uma chave de card com outra grafia, como `chave_123`, ou um termo de 6+ letras escrito de outro jeito);
+  4. no dry-run, só registra.
+  O modelo recebe a regra de descrever só a fábrica (`RETRO_PUBLIC_RULE`). A Tarefa aparece só pelo id opaco `ref` (aleatório, gravado na Tarefa, sem derivar do projeto nem do card) e pelo link `http://127.0.0.1:<porta>/#/retro/<ref>`, que a página local resolve para a Tarefa pelo `ref` de `GET /tasks`.
+- **Contrato**: `test/retro-sink.contract.ts` roda contra o fake em memória e contra o adaptador `gh` com um `gh` falso. Contra o GitHub real, só opt-in, num repositório de teste seu (com a label `retro`), nunca no da fábrica: `TEST_RETRO_REPO=seu-usuario/sandbox-retro npx vitest run test/retro-sink-gh.contract.test.ts`.
 
 ### Telegram (interface de gestão)
 

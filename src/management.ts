@@ -188,6 +188,11 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
         const vetoOpen = event.reason === "aguardando-veto" && event.until && Date.parse(event.until) > deps.now();
         return vetoOpen ? { text, buttons: [{ label: "Vetar", command: `/vetar ${id}` }] } : { text };
       }
+      case "retro":
+        if (event.status !== "falhou") return null;
+        return {
+          text: full ? event.message : `A retrô (${event.stage}) do card ${event.target} (${event.project}) desistiu.`,
+        };
       case "blocked":
         return {
           text: `Guardrail bloqueou ${event.action} em ${event.target} (${event.project})${full ? `: ${event.reason}` : "."}`,

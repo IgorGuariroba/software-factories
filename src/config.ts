@@ -123,6 +123,8 @@ export const ProjectConfig = z.object({
     spec: ModelRef,
     /** Implementação com TDD. Sem ele, usa o modelo de `spec`. */
     implementer: ModelRef.optional(),
+    /** Retrô de cada etapa e consolidada. Sem ele, usa o modelo de `spec`. */
+    retro: ModelRef.optional(),
   }),
   /** Pessoas do projeto. A fábrica só menciona e pergunta a quem está aqui; perguntas de negócio vão ao `po`. */
   people: z.array(Person).default([]),
