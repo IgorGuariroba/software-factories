@@ -26,7 +26,7 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 
 ## Lint e formatação
 
-[Biome](https://biomejs.dev) (`biome.json`), aplicado a `src/**` e aos JSON da raiz:
+[Biome](https://biomejs.dev) (`biome.json`), aplicado a `src/**`, `test/**` e aos JSON da raiz (exceto `package-lock.json`):
 
 - `npm run lint`: checa lint + formatação (o mesmo que a CI roda).
 - `npm run format`: corrige o que for automático.
