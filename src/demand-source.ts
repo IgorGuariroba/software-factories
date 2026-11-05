@@ -8,6 +8,8 @@ export interface Card {
   assignee: string;
   /** Descrição do card, em texto. */
   description?: string;
+  /** Board em que o card está, quando a Fonte informa (usado no mapeamento board → repositório). */
+  board?: string;
 }
 
 /** Um anexo de texto de um card (ex.: .txt, .md, .csv), já com o conteúdo lido. */

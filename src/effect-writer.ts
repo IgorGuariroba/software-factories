@@ -1,3 +1,4 @@
+import type { CodeHost } from "./code-host.js";
 import { type CardState, type ProjectConfig, STATE_ORDER } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import type { EventRecorder } from "./events.js";
@@ -32,7 +33,15 @@ export interface EffectWriter {
    * Com `from`, bloqueia se o card não estiver mais nesse estado (ex.: uma pessoa o moveu nesse meio-tempo).
    */
   transition(cardKey: string, state: CardState, opts?: { from?: CardState }): Promise<void>;
+  /**
+   * Envia `branch` do clone em `repoPath` para o remoto, pelo CodeHost. Nunca em `main`/`master`/`develop`;
+   * force-push só numa branch da fábrica (registrada no estado durável de uma Tarefa).
+   */
+  pushBranch(repoPath: string, branch: string, opts?: { force?: boolean }): Promise<void>;
 }
+
+/** Branches em que a fábrica nunca faz push. */
+export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master", "develop"]);
 
 export function createEffectWriter(opts: {
   config: ProjectConfig;
@@ -40,6 +49,10 @@ export function createEffectWriter(opts: {
   events: EventRecorder;
   /** Estado mais avançado para onde a fábrica pode mover um card neste marco. */
   transitionLimit: CardState;
+  /** Porta do remoto de código. Sem ela, todo push é recusado. */
+  codeHost?: CodeHost;
+  /** Se `branch` é uma branch da fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
+  isFactoryBranch?: (branch: string) => boolean | Promise<boolean>;
 }): EffectWriter {
   const { config, source, events } = opts;
   const user = config.source.assignee;
@@ -149,6 +162,23 @@ export function createEffectWriter(opts: {
           return undefined;
         },
         () => source.transition(cardKey, status),
+        () => undefined,
+      );
+    },
+
+    pushBranch(repoPath, branch, pushOpts) {
+      const force = pushOpts?.force ?? false;
+      const name = branch.replace(/^refs\/heads\//, "");
+      return write(
+        { target: name, action: force ? "force-push" : "push", content: `${repoPath} -> origin/${name}` },
+        async () => {
+          if (PROTECTED_BRANCHES.has(name)) return `push na branch protegida "${name}" é proibido`;
+          if (force && !(await opts.isFactoryBranch?.(name)))
+            return `force-push só nas branches da fábrica; "${name}" não é uma delas`;
+          if (!opts.codeHost) return "projeto sem CodeHost configurado";
+          return undefined;
+        },
+        () => (opts.codeHost as CodeHost).pushBranch(repoPath, name, { force }),
         () => undefined,
       );
     },
