@@ -140,8 +140,6 @@ export async function runRetro(opts: {
   sink?: RetroSink;
   /** Repositório (público) da fábrica; sem ele, as propostas da fábrica só ficam registradas. */
   repo?: string;
-  /** Link local da Tarefa a partir do id opaco. */
-  linkFor: (ref: string) => string;
 }): Promise<void> {
   const { runtime, stage, config, events } = opts;
   const { context } = runtime;
@@ -301,8 +299,8 @@ export async function runRetro(opts: {
       return;
     }
     const taskMarker = `tarefa \`${ref}\``;
+    // A Tarefa aparece só pelo id opaco, sem URL (o texto público não leva link nenhum).
     const origin = `Origem: ${taskMarker}, retrô ${stage}, proposta ${proposal.n}.`;
-    const footer = `${origin}\nTarefa: ${opts.linkFor(ref)}`;
     const mentions = (issue: RetroIssue, marker: string) =>
       issue.body.includes(marker) || issue.comments.some((c) => c.includes(marker));
 
@@ -321,14 +319,14 @@ export async function runRetro(opts: {
         proposal.status = "ja-registrada";
         proposal.issue = { number: similar.number, url: similar.url };
       } else if (similar) {
-        await opts.writer.commentRetroIssue(opts.cardKey, repo, similar.number, `+1\n\n${footer}`);
+        await opts.writer.commentRetroIssue(opts.cardKey, repo, similar.number, `+1\n\n${origin}`);
         proposal.status = config.dryRun ? "dry-run" : "mais-um";
         proposal.issue = { number: similar.number, url: similar.url };
       } else {
         const created = await opts.writer.openRetroIssue(opts.cardKey, repo, {
           // O GitHub aceita títulos de até 256 caracteres.
           title: proposal.title.slice(0, 200),
-          body: `${proposal.description}\n\n---\n${footer}`,
+          body: `${proposal.description}\n\n---\n${origin}`,
         });
         proposal.status = created ? "issue-criada" : "dry-run";
         proposal.issue = created ?? null;

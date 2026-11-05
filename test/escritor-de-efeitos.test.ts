@@ -310,6 +310,7 @@ describe("menção a uma pessoa do projeto (mention)", () => {
 
 describe("escritor de efeitos: issues de retrô no repositório público da fábrica", () => {
   const REPO = "fabrica/fabrica-publica";
+  /** O link local de uma Tarefa na página da fábrica: também não vai ao repositório público. */
   const LINK = "http://127.0.0.1:7420/#/retro/";
   function retroSetup(opts: { dryRun?: boolean; repo?: string } = {}) {
     const source = new MemoryDemandSource([
@@ -332,7 +333,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
       source,
       events,
       transitionLimit: "in_progress",
-      retro: { sink, repo: "repo" in opts ? opts.repo : REPO, linkPrefix: () => LINK },
+      retro: { sink, repo: "repo" in opts ? opts.repo : REPO },
     });
     return { events, sink, writer };
   }
@@ -378,7 +379,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     expect(sink.issues).toEqual([]);
   });
 
-  it("saneia os valores do projeto e do card, links, caminhos e segredos; mantém só o link opaco da fábrica", async () => {
+  it("saneia os valores do projeto e do card, todos os links (inclusive os da fábrica), caminhos e segredos", async () => {
     const { sink, writer } = retroSetup();
     const token = `glpat-${"x".repeat(20)}`;
 
@@ -395,7 +396,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     expect(issue?.body).toBe(
       '\u{1F916} [fábrica] Projeto [removido], pessoa [removido] ([removido]), card "[removido]", repo [removido] ' +
         "em [caminho removido], chave [segredo removido], [link removido], " +
-        `[link removido] e ${LINK}0a1b2c3d4e5f.`,
+        "[link removido] e [link removido].",
     );
   });
 

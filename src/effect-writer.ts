@@ -73,8 +73,8 @@ export function createEffectWriter(opts: {
   codeHost?: CodeHost;
   /** Se `branch` foi criada pela fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
   isFactoryBranch?: (branch: string) => boolean | Promise<boolean>;
-  /** Issues da fábrica: a porta, o único repositório em que ela escreve e o prefixo do link público da Tarefa. */
-  retro?: { sink?: RetroSink; repo?: string; linkPrefix?: () => string };
+  /** Issues da fábrica: a porta e o único repositório em que ela escreve. */
+  retro?: { sink?: RetroSink; repo?: string };
 }): EffectWriter {
   const { config, source, events } = opts;
   const user = config.source.assignee;
@@ -114,7 +114,6 @@ export function createEffectWriter(opts: {
     return sanitizePublicText(redactSecrets(raw), {
       terms: privateTerms(config, [cardKey, card?.title ?? ""]),
       cardPrefix: config.source.project,
-      keepLinksTo: opts.retro?.linkPrefix?.(),
     });
   }
   const retroSink = (): RetroSink => {
