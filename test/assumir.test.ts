@@ -85,6 +85,48 @@ describe("assumir card 'A Fazer'", () => {
   });
 });
 
+describe("falhas ao assumir", () => {
+  it("se a transição falha, o próximo poll não comenta 'Assumindo' de novo e completa a transição", async () => {
+    factory = await startTestFactory({
+      cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
+    });
+    const source = factory.source;
+    const transition = source.transition.bind(source);
+    let failures = 1;
+    source.transition = async (key, status) => {
+      if (failures-- > 0) throw new Error("Jira fora do ar");
+      return transition(key, status);
+    };
+
+    const first = await fetch(`${factory.url}/poll`, { method: "POST" });
+    await poll(factory);
+
+    expect(first.status).toBe(500);
+    expect(source.commentsOf("PROJ-1")).toHaveLength(1);
+    expect(source.cards[0]?.status).toBe("Em Andamento");
+  });
+
+  it("um erro num card não impede que os outros sejam assumidos no mesmo poll", async () => {
+    factory = await startTestFactory({
+      cards: [
+        { key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER },
+        { key: "PROJ-2", title: "t", status: "A Fazer", assignee: USER },
+      ],
+    });
+    const source = factory.source;
+    const addComment = source.addComment.bind(source);
+    source.addComment = async (key, body) => {
+      if (key === "PROJ-1") throw new Error("Jira fora do ar");
+      return addComment(key, body);
+    };
+
+    await fetch(`${factory.url}/poll`, { method: "POST" });
+
+    expect(source.commentsOf("PROJ-2")).toHaveLength(1);
+    expect(source.cards[1]?.status).toBe("Em Andamento");
+  });
+});
+
 describe("buscas simultâneas", () => {
   it("dois POST /poll ao mesmo tempo assumem o card uma única vez", async () => {
     factory = await startTestFactory({

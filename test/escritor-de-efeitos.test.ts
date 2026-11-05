@@ -137,6 +137,16 @@ describe("escritor de efeitos", () => {
       );
     });
 
+    it("mascara segredos em JSON, mantendo chave e aspas", async () => {
+      const { source, writer } = setup();
+
+      await writer.comment("PROJ-1", `{"password":"${"hunter"}2xyz", "api_key": "${"abc"}123def456", "user": "igor"}`);
+
+      expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
+        '🤖 [fábrica] {"password":"[segredo removido]", "api_key": "[segredo removido]", "user": "igor"}',
+      );
+    });
+
     it("não altera texto comum", async () => {
       const { source, writer } = setup();
 

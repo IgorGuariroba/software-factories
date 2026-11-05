@@ -41,8 +41,9 @@ export async function startFactory(opts: {
     ...p,
     writer: createEffectWriter({ ...p, events, transitionLimit: TRANSITION_LIMIT }) satisfies EffectWriter,
   }));
-  /** Cards já assumidos, por projeto e chave. Persistência durável chega na M1-04. */
+  /** Cards já assumidos e cards que já receberam o comentário de assunção. Persistência durável chega na M1-04. */
   const assumed = new Set<string>();
+  const commented = new Set<string>();
 
   async function queue(): Promise<QueueItem[]> {
     const items: QueueItem[] = [];
@@ -58,20 +59,27 @@ export async function startFactory(opts: {
 
   /** Busca na Fonte e assume os cards "A Fazer" ainda não assumidos. */
   async function poll(): Promise<void> {
+    const failures: unknown[] = [];
     for (const item of await queue()) {
       const id = `${item.project}/${item.key}`;
       if (item.state !== "todo" || assumed.has(id)) continue;
       const project = projects.find((p) => p.config.name === item.project);
       if (!project) continue;
       try {
-        await project.writer.comment(item.key, "Assumindo este card.");
+        // Cada passo é registrado ao concluir, para que uma nova tentativa não repita o que já foi feito.
+        if (!commented.has(id)) {
+          await project.writer.comment(item.key, "Assumindo este card.");
+          commented.add(id);
+        }
         await project.writer.transition(item.key, "in_progress");
         assumed.add(id);
       } catch (err) {
-        // O guardrail já registrou o bloqueio; segue para o próximo card.
-        if (!(err instanceof GuardrailViolation)) throw err;
+        // Bloqueio de guardrail já fica registrado como evento; outros erros não impedem os demais cards.
+        if (!(err instanceof GuardrailViolation)) failures.push(err);
       }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, `${failures.length} cards falharam ao ser assumidos`);
   }
 
   const json = (res: import("node:http").ServerResponse, status: number, body: unknown) => {

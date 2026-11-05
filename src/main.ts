@@ -5,7 +5,12 @@ import type { DemandSource } from "./demand-source.js";
 
 const configDir = process.env.FACTORY_CONFIG_DIR ?? join(homedir(), ".config", "software-factory", "projects");
 const port = Number(process.env.FACTORY_PORT ?? 7420);
-const pollIntervalMs = Number(process.env.FACTORY_POLL_SECONDS ?? 300) * 1000;
+const pollSeconds = Number(process.env.FACTORY_POLL_SECONDS ?? 300);
+if (!Number.isFinite(pollSeconds) || pollSeconds <= 0) {
+  console.error(`FACTORY_POLL_SECONDS inválido: "${process.env.FACTORY_POLL_SECONDS}" (use um número de segundos > 0)`);
+  process.exit(1);
+}
+const pollIntervalMs = pollSeconds * 1000;
 
 // O adaptador real do Jira chega na M1-03 (#11). Até lá, a Fonte Jira responde vazio e recusa escritas.
 const notYet = async (): Promise<never> => {

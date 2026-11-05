@@ -13,9 +13,9 @@ const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
 ];
 
-/** `CHAVE=valor` ou `chave: "valor"` em que o nome da chave indica um segredo. */
+/** `CHAVE=valor`, `chave: "valor"` ou `"chave": "valor"` (JSON) em que o nome da chave indica um segredo. */
 const SECRET_ASSIGNMENT =
-  /\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)(\s*[:=]\s*)(["']?)([^\s"']+)\3/gi;
+  /\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)(["']?\s*[:=]\s*)(["']?)([^\s"']+)\3/gi;
 
 /** Mascara segredos em qualquer texto que sai da fábrica. */
 export function redactSecrets(text: string): string {
