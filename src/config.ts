@@ -14,6 +14,8 @@ export type CardState = z.infer<typeof CardState>;
 
 export const ProjectConfig = z.object({
   name: z.string().min(1),
+  /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
+  dryRun: z.boolean().default(true),
   source: z.object({
     type: z.literal("jira"),
     /** Chave do projeto na Fonte (ex.: "PROJ"). */
@@ -25,3 +27,6 @@ export const ProjectConfig = z.object({
   statuses: z.record(z.string(), CardState),
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;
+
+/** Ordem dos estados no workflow, do início ao fim. */
+export const STATE_ORDER: readonly CardState[] = CardState.options;
