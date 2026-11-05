@@ -30,6 +30,8 @@ import {
   pendingQuestion,
   type Question,
   type QueuedTask,
+  RETRO_STEP,
+  type RetroStage,
   recordAnswer,
   StateDoc,
 } from "./durable.js";
@@ -38,6 +40,8 @@ import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
+import type { RetroSink } from "./retro-sink.js";
+import { newTaskRef, RetroExtension, runRetro } from "./retro-stage.js";
 import {
   answerFollowUp,
   isShallowCard,
@@ -48,7 +52,7 @@ import {
   SpecExtension,
   specInput,
 } from "./spec-stage.js";
-import { taskDetail, taskSummary } from "./task-view.js";
+import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
 import { webFile } from "./web.js";
 
@@ -163,6 +167,53 @@ class DurableEventLog implements EventRecorder {
   }
 }
 
+/** O relato que o modelo da retrô recebe: o que aconteceu na etapa (ou, na consolidada, as retrôs das etapas). */
+function retroInput(stage: RetroStage, task: QueuedTask, all: FactoryEvent[]): string {
+  const incidents = taskEvents(task, all)
+    .filter((e) => e.type === "error" || e.type === "blocked")
+    .map((e) => (e.type === "error" ? `- erro: ${e.message}` : e.type === "blocked" ? `- barrada: ${e.reason}` : ""));
+  const questions = task.questions ?? [];
+  const common = [
+    `Tentativas da Tarefa depois de falhas: ${task.attempts}.`,
+    `Perguntas ao PO: ${questions.length}.`,
+    ...questions.map((q) => `- pergunta ${q.n} (${q.origin}): ${q.text}`),
+    `Incidentes registrados: ${incidents.length}.`,
+    ...incidents,
+  ];
+  if (stage === "spec")
+    return [
+      "# Retrô da etapa SPEC (grill → SPEC → Tickets)",
+      ...common,
+      "## SPEC entregue",
+      task.delivery?.spec ?? "(nenhuma)",
+      `## Tickets (${task.delivery?.tickets.length ?? 0})`,
+      ...(task.delivery?.tickets ?? []).map((t, i) => `${i + 1}. ${t.titulo}: ${t.aceite}`),
+    ].join("\n");
+  if (stage === "implementacao") {
+    const impl = task.implementation;
+    const commits = impl?.commits ?? [];
+    return [
+      "# Retrô da etapa de implementação (TDD ticket a ticket)",
+      ...common,
+      `Pedidos ao implementador: ${impl?.requests ?? 0}; commits aceitos: ${commits.length}; ` +
+        `pedidos recusados ou sem resposta: ${Math.max(0, (impl?.requests ?? 0) - commits.length)}.`,
+      ...commits.map((c) => `- ticket ${c.ticket + 1}, fase ${c.phase}`),
+      `Push da branch: ${impl?.pushed ? "feito" : "não feito"}.`,
+    ].join("\n");
+  }
+  const retros = (task.retros ?? []).filter((r) => r.stage !== "tarefa");
+  return [
+    "# Retrô consolidada da Tarefa",
+    ...common,
+    "## Retrôs das etapas",
+    ...retros.flatMap((r) => [
+      `### ${r.stage} (${r.status})`,
+      r.summary ?? "(sem resumo)",
+      ...(r.proposals ?? []).map((p) => `- [${p.kind}] ${p.title}: ${p.description}`),
+    ]),
+  ].join("\n");
+}
+
 /** Sobe a fábrica: estado durável, agendador da fila única e API local, sempre só em localhost. */
 export async function startFactory(opts: {
   projects: FactoryProject[];
@@ -181,6 +232,11 @@ export async function startFactory(opts: {
   clock?: FactoryClock;
   /** Interface de gestão (Telegram) e a conversa/usuário de onde ela aceita comandos. Sem ela, a fábrica só tem a API. */
   management?: { port: ManagementInterface; chat: string; user?: string };
+  /**
+   * Issues da fábrica (RetroSink) e o repositório **público** da fábrica (`dono/nome`) onde as retrôs abrem issues.
+   * Sem `repo`, as propostas da fábrica ficam só registradas na Tarefa.
+   */
+  retro?: { sink?: RetroSink; repo?: string };
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
   const clock: FactoryClock = opts.clock ?? { now: Date.now };
@@ -192,6 +248,14 @@ export async function startFactory(opts: {
     return () => clearTimeout(timer);
   };
   let events!: DurableEventLog;
+  // O link público de uma Tarefa leva só o id opaco; a página local resolve o id (`#/retro/<id>`).
+  let baseUrl = `http://127.0.0.1:${opts.port ?? 0}`;
+  const retroLinkPrefix = () => `${baseUrl}/#/retro/`;
+  if (!opts.retro?.sink || !opts.retro.repo)
+    console.warn(
+      "[fábrica] retrô sem repositório da fábrica: defina FACTORY_RETRO_REPO=dono/nome para abrir issues; " +
+        "as propostas da fábrica ficam só registradas nas Tarefas.",
+    );
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
     opts.projects.map((p) => {
@@ -204,6 +268,7 @@ export async function startFactory(opts: {
         // Branch da fábrica é a registrada no estado durável de uma Tarefa deste projeto, não um padrão de nome.
         isFactoryBranch: async (branch) =>
           (await readState()).tasks.some((t) => t.project === p.config.name && t.implementation?.branch === branch),
+        retro: { ...opts.retro, linkPrefix: retroLinkPrefix },
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
       return [p.config.name, { ...p, codeHost, writer, channel }] as const;
@@ -253,6 +318,9 @@ export async function startFactory(opts: {
         await writer.transition(input.key, "in_progress", { from: "todo" });
         return undefined;
       }
+      if (step === RETRO_STEP.spec) return retro("spec");
+      if (step === RETRO_STEP.implementacao) return retro("implementacao");
+      if (step === RETRO_STEP.tarefa) return retro("tarefa");
 
       // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
       let delivery: SpecDelivery | undefined;
@@ -338,6 +406,31 @@ export async function startFactory(opts: {
           if (task) task.delivery = delivered;
         });
         return delivered;
+      }
+
+      /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
+      async function retro(stage: RetroStage): Promise<undefined> {
+        const task = (await readState()).tasks.find((t) => t.id === input.id);
+        if (!task || (stage === "implementacao" && !task.implementation)) return undefined;
+        await runRetro({
+          harness,
+          runtime,
+          taskId: input.id,
+          cardKey: input.key,
+          stage,
+          config: project.config,
+          writer,
+          events: eventRecorder,
+          model: project.config.roles.retro ?? project.config.roles.spec,
+          input: async () => {
+            const current = (await readState()).tasks.find((t) => t.id === input.id) ?? task;
+            return retroInput(stage, current, events.list());
+          },
+          sink: opts.retro?.sink,
+          repo: opts.retro?.repo,
+          linkFor: (ref) => `${retroLinkPrefix()}${ref}`,
+        });
+        return undefined;
       }
 
       /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */
@@ -453,6 +546,7 @@ export async function startFactory(opts: {
   const registry = createRegistry();
   registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask, DeadlineGateTask] }));
   registry.install(SpecExtension);
+  registry.install(RetroExtension);
   registry.install(implementationTools.extension);
   await mkdir(dirname(opts.statePath), { recursive: true });
   const harness = await Harness.open(
@@ -542,6 +636,7 @@ export async function startFactory(opts: {
           project: item.project,
           key: item.key,
           title: item.title,
+          ref: newTaskRef(),
           status: "enfileirada",
           durableId: null,
           gateId: null,
@@ -877,6 +972,7 @@ export async function startFactory(opts: {
 
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
+  baseUrl = `http://127.0.0.1:${port}`;
   return {
     url: `http://127.0.0.1:${port}`,
     commands,

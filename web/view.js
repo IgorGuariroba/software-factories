@@ -19,6 +19,42 @@ const STAGE = {
   implementacao: "Implementação",
 };
 
+const RETRO_STAGE = { spec: "Retrô da SPEC", implementacao: "Retrô da implementação", tarefa: "Retrô consolidada" };
+
+const RETRO_STATUS = { "em-andamento": "em andamento", concluida: "concluída", falhou: "desistiu (a tarefa seguiu)" };
+
+const PROPOSAL_KIND = { fabrica: "Fábrica", conhecimento: "Conhecimento do projeto", "repo-time": "Repo do time" };
+
+const PROPOSAL_STATUS = {
+  "a-publicar": "a publicar",
+  "issue-criada": "issue aberta",
+  "mais-um": "+1 numa issue parecida",
+  "ja-registrada": "já registrada numa issue",
+  "dry-run": "registrada no dry-run",
+  "sem-repo": "só registrada (sem repositório da fábrica)",
+  bloqueada: "barrada pelo guardrail",
+  pendente: "pendente de aprovação",
+  avisada: "sugestão enviada a você",
+};
+
+/** @param {string} stage */
+export const retroStageLabel = (stage) => RETRO_STAGE[stage] ?? stage;
+
+/** @param {string} status */
+export const retroStatusLabel = (status) => RETRO_STATUS[status] ?? status;
+
+/** @param {{ kind: string, status: string }} p */
+export const proposalLabel = (p) => `${PROPOSAL_KIND[p.kind] ?? p.kind}: ${PROPOSAL_STATUS[p.status] ?? p.status}`;
+
+/**
+ * A Tarefa do link público de uma issue da fábrica (`#/retro/<id opaco>`).
+ * @template {{ ref?: string | null }} T
+ * @param {T[]} tasks
+ * @param {string} ref
+ * @returns {T | null}
+ */
+export const taskByRef = (tasks, ref) => tasks.find((t) => t.ref === ref) ?? null;
+
 /** Status em que a Tarefa não anda mais. */
 const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada"]);
 
@@ -86,6 +122,8 @@ export function describeEvent(e) {
       return e.waitsVeto ? "Card assumido; aguarda o prazo de veto" : "Card assumido";
     case "command":
       return `Comando pelo ${e.via}: ${e.text} (${e.result})`;
+    case "retro":
+      return e.message;
     case "delivery":
       return `Mensagem descartada no ${e.via} depois de ${e.attempts} tentativas`;
     default:

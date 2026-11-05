@@ -24,6 +24,10 @@ roles:
   implementer:
     provider: anthropic
     model: claude-sonnet-4-6
+  # Retrô de cada etapa e consolidada. Sem ele, usa o modelo de spec.
+  retro:
+    provider: anthropic
+    model: claude-sonnet-4-6
 
 # Pessoas do projeto: as únicas com quem a fábrica conversa neste projeto (dados fictícios).
 # id é o identificador da pessoa na Fonte (no Jira, o accountId): é com ele que a fábrica menciona a pessoa e

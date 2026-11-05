@@ -15,7 +15,19 @@ import {
   resumeTask,
   vetoTask,
 } from "./api.js";
-import { actionsFor, describeEvent, isTerminal, moveTask, stageLabel, statusLabel, writeSituation } from "./view.js";
+import {
+  actionsFor,
+  describeEvent,
+  isTerminal,
+  moveTask,
+  proposalLabel,
+  retroStageLabel,
+  retroStatusLabel,
+  stageLabel,
+  statusLabel,
+  taskByRef,
+  writeSituation,
+} from "./view.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -41,6 +53,8 @@ let tasks = [];
 let daemonPaused = false;
 /** Tarefa aberta no detalhe, pelo hash `#/tarefa/<projeto>/<card>`. */
 let selected = null;
+/** Id opaco de um link público (`#/retro/<id>`), resolvido para a Tarefa quando a lista chega. */
+let pendingRef = null;
 
 function showError(err) {
   const aviso = $("aviso");
@@ -207,6 +221,32 @@ function renderDetail(task) {
       : el("p", { className: "vazio", text: "Ainda não começou." }),
   );
 
+  $("detalhe-retros").replaceChildren(
+    ...(task.retros.length === 0
+      ? [el("p", { className: "vazio", text: "Nenhuma retrô ainda." })]
+      : task.retros.map((r) =>
+          el(
+            "div",
+            {},
+            el("h4", { text: `${retroStageLabel(r.stage)} (${retroStatusLabel(r.status)})` }),
+            el("p", { text: r.summary ?? r.error ?? "" }),
+            el(
+              "ul",
+              { className: "lista" },
+              ...r.proposals.map((p) =>
+                el(
+                  "li",
+                  {},
+                  el("strong", { text: p.title }),
+                  ` (${proposalLabel(p)}${p.issue ? `, issue #${p.issue.number}` : ""}${p.reason ? `: ${p.reason}` : ""}): `,
+                  p.description,
+                ),
+              ),
+            ),
+          ),
+        )),
+  );
+
   $("detalhe-escritas")
     .querySelector("tbody")
     .replaceChildren(
@@ -236,6 +276,8 @@ function renderDetail(task) {
 }
 
 function readSelection() {
+  const retro = location.hash.match(/^#\/retro\/([0-9a-f]+)$/);
+  pendingRef = retro ? retro[1] : null;
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
 }
@@ -260,6 +302,12 @@ async function refresh() {
     daemonPaused = daemon.paused;
     renderTasks();
     renderDaemon();
+    if (pendingRef) {
+      const task = taskByRef(tasks, pendingRef);
+      pendingRef = null;
+      if (task) location.replace(`#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}`);
+      else showError(new Error("Nenhuma tarefa com esse id de retrô."));
+    }
   } catch (err) {
     showError(err);
   }
@@ -312,6 +360,10 @@ $("fechar-detalhe").addEventListener("click", () => {
 });
 window.addEventListener("hashchange", () => {
   readSelection();
+  if (pendingRef) {
+    refresh();
+    return;
+  }
   renderTasks();
   refreshDetail();
 });

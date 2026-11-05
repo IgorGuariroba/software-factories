@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { ConfigError, startDaemon } from "./daemon.js";
 import { createJiraDemandSource } from "./jira-demand-source.js";
+import { createGhRetroSink } from "./retro-sink.js";
 import { createTelegramBot } from "./telegram.js";
 
 const configDir = process.env.FACTORY_CONFIG_DIR ?? join(homedir(), ".config", "software-factory", "projects");
@@ -38,6 +39,13 @@ function telegramFromEnv() {
   return { port: createTelegramBot({ token, chat }), chat, user };
 }
 
+/** Repositório público da fábrica para as issues de retrô (`dono/nome`). Sem ele, as propostas só ficam registradas. */
+const retroRepo = process.env.FACTORY_RETRO_REPO?.trim() || undefined;
+if (retroRepo && !/^[\w.-]+\/[\w.-]+$/.test(retroRepo)) {
+  console.error(`FACTORY_RETRO_REPO inválido: "${retroRepo}" (use dono/nome)`);
+  process.exit(1);
+}
+
 try {
   const daemon = await startDaemon({
     configDir,
@@ -54,6 +62,7 @@ try {
     // Provedores com as chaves do ambiente; a seleção por regras e a allowlist vêm na M1-16.
     models: builtinModels(),
     management: telegramFromEnv(),
+    retro: { sink: createGhRetroSink(), repo: retroRepo },
   });
   console.log(`[fábrica] API local em ${daemon.url}`);
   const stop = () => void daemon.close().then(() => process.exit(0));

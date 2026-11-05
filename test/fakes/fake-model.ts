@@ -58,6 +58,17 @@ export const deliverSpec = (delivery: SpecDelivery): AssistantMessage =>
 export const askPo = (pergunta: string): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall("perguntar_po", { pergunta })], { stopReason: "toolUse" });
 
+/** Uma proposta da retrô, como o modelo a entrega pela ferramenta `entregar_retro`. */
+export type RetroProposal = {
+  tipo: "fabrica" | "conhecimento" | "repo-time";
+  titulo: string;
+  descricao: string;
+};
+
+/** Resposta do modelo que entrega a retrô de uma etapa (ou a consolidada) pela ferramenta da retrô. */
+export const deliverRetro = (resumo: string, propostas: RetroProposal[] = []): AssistantMessage =>
+  fauxAssistantMessage([fauxToolCall("entregar_retro", { resumo, propostas })], { stopReason: "toolUse" });
+
 export const DEFAULT_SPEC: SpecDelivery = {
   spec: "Entregar o que o card pede.",
   tickets: [{ titulo: "Fazer o que o card pede", aceite: "O card está atendido" }],
@@ -70,6 +81,14 @@ export class FakeModel {
   readonly calls: ModelCall[] = [];
   /** Como responder a cada chamada. Padrão: entrega uma SPEC genérica. */
   respond: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () => deliverSpec(DEFAULT_SPEC);
+  /**
+   * Chamadas da retrô (as que oferecem `entregar_retro`), separadas de `calls`: a retrô roda ao fim de cada etapa e não
+   * deve mudar o que os testes das outras etapas contam.
+   */
+  readonly retroCalls: ModelCall[] = [];
+  /** Como responder à retrô. Padrão: uma retrô sem propostas. */
+  respondRetro: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () =>
+    deliverRetro("Sem observações.");
 
   constructor() {
     const step: FauxResponseFactory = async (context, _options, _state, model) => {
@@ -92,6 +111,10 @@ export class FakeModel {
             : [],
         ),
       };
+      if (call.tools.includes("entregar_retro")) {
+        this.retroCalls.push(call);
+        return this.respondRetro(call);
+      }
       this.calls.push(call);
       return this.respond(call);
     };

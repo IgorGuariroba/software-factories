@@ -52,7 +52,7 @@ export type FactoryEvent =
       at: string;
       project: string;
       target: string;
-      reason: "pergunta-sem-resposta" | "aguardando-veto";
+      reason: "pergunta-sem-resposta" | "aguardando-veto" | "sugestao-repo-time";
       message: string;
       /** Até quando o usuário pode agir (ex.: o fim do prazo de veto), em ISO 8601. */
       until?: string;
@@ -89,6 +89,17 @@ export type FactoryEvent =
       attempts: number;
       text: string;
       error: string;
+    }
+  | {
+      /** Uma retrô terminou (`concluida`) ou desistiu depois das tentativas (`falhou`), sem bloquear a Tarefa. */
+      type: "retro";
+      at: string;
+      project: string;
+      /** Card da Tarefa. */
+      target: string;
+      stage: "spec" | "implementacao" | "tarefa";
+      status: "concluida" | "falhou";
+      message: string;
     }
   | {
       /** Mudança de status de uma tarefa. */

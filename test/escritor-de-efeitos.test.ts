@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createEffectWriter } from "../src/effect-writer.js";
 import { EventLog } from "../src/events.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
+import { MemoryRetroSink } from "./fakes/memory-retro-sink.js";
 import { PO, testProjectConfig, USER } from "./harness.js";
 
 function setup(opts: { dryRun?: boolean } = {}) {
@@ -294,5 +295,125 @@ describe("menção a uma pessoa do projeto (mention)", () => {
 
     expect(source.commentsOf("PROJ-1")).toEqual([]);
     expect(events.list()).toMatchObject([{ type: "write", action: "mention", dryRun: true }]);
+  });
+});
+
+describe("escritor de efeitos: issues de retrô no repositório público da fábrica", () => {
+  const REPO = "fabrica/fabrica-publica";
+  const LINK = "http://127.0.0.1:7420/#/retro/";
+  function retroSetup(opts: { dryRun?: boolean; repo?: string } = {}) {
+    const source = new MemoryDemandSource([
+      { key: "PROJ-1", title: "Conciliar pagamentos do mês", status: "A Fazer", assignee: USER },
+    ]);
+    const events = new EventLog();
+    const sink = new MemoryRetroSink();
+    const writer = createEffectWriter({
+      config: testProjectConfig({
+        dryRun: opts.dryRun ?? false,
+        people: [{ id: PO, role: "po", name: "Fulana Ficticia" }],
+        repositories: [
+          {
+            path: "/srv/codigo/servico-pagamentos",
+            prefix: "PAG",
+            test: { command: ["true"], timeoutSeconds: 1, files: ["x"] },
+          },
+        ],
+      }),
+      source,
+      events,
+      transitionLimit: "in_progress",
+      retro: { sink, repo: "repo" in opts ? opts.repo : REPO, linkPrefix: () => LINK },
+    });
+    return { events, sink, writer };
+  }
+
+  it("abre a issue com o prefixo de automação e registra a escrita", async () => {
+    const { events, sink, writer } = retroSetup();
+
+    const created = await writer.openRetroIssue("PROJ-1", REPO, { title: "Melhorar o grill", body: "Corpo." });
+
+    expect(sink.issuesOf(REPO)).toMatchObject([
+      { number: created?.number, title: "Melhorar o grill", body: "\u{1F916} [fábrica] Corpo.", labels: ["retro"] },
+    ]);
+    expect(events.list()).toMatchObject([
+      { type: "write", action: "retro-issue", target: "PROJ-1#retro", dryRun: false },
+    ]);
+  });
+
+  it("só escreve no repositório da fábrica configurado: outro repositório é barrado com evento", async () => {
+    const { events, sink, writer } = retroSetup();
+
+    await expect(writer.openRetroIssue("PROJ-1", "time/servico-pagamentos", { title: "t", body: "b" })).rejects.toThrow(
+      /guardrail/i,
+    );
+    await expect(writer.commentRetroIssue("PROJ-1", "time/servico-pagamentos", 1, "+1")).rejects.toThrow(/guardrail/i);
+
+    expect(sink.issues).toEqual([]);
+    expect(events.list()).toMatchObject([
+      {
+        type: "blocked",
+        action: "retro-issue",
+        reason: expect.stringContaining("só escreve no repositório da fábrica"),
+      },
+      { type: "blocked", action: "retro-comment" },
+    ]);
+  });
+
+  it("sem repositório da fábrica configurado, nenhuma issue é aberta", async () => {
+    const { sink, writer } = retroSetup({ repo: undefined });
+
+    await expect(writer.openRetroIssue("PROJ-1", REPO, { title: "t", body: "b" })).rejects.toThrow(
+      /FACTORY_RETRO_REPO/,
+    );
+    expect(sink.issues).toEqual([]);
+  });
+
+  it("saneia os valores do projeto e do card, links, caminhos e segredos; mantém só o link opaco da fábrica", async () => {
+    const { sink, writer } = retroSetup();
+    const token = `glpat-${"x".repeat(20)}`;
+
+    await writer.openRetroIssue("PROJ-1", REPO, {
+      title: "Grill do PROJ-1 e do PAG",
+      body:
+        `Projeto exemplo, pessoa Fulana Ficticia (${PO}), card "Conciliar pagamentos do mês", repo servico-pagamentos ` +
+        `em /srv/codigo/servico-pagamentos, chave ${token}, https://gitlab.invalid/time/x, ` +
+        `${LINK}tarefa/exemplo/PROJ-1 e ${LINK}0a1b2c3d4e5f.`,
+    });
+
+    const [issue] = sink.issuesOf(REPO);
+    expect(issue?.title).toBe("Grill do [removido] e do [removido]");
+    expect(issue?.body).toBe(
+      '\u{1F916} [fábrica] Projeto [removido], pessoa [removido] ([removido]), card "[removido]", repo [removido] ' +
+        "em [caminho removido], chave [segredo removido], [link removido], " +
+        `[link removido] e ${LINK}0a1b2c3d4e5f.`,
+    );
+  });
+
+  it("barra a escrita, com evento, se sobrar um valor do projeto escrito de outro jeito", async () => {
+    const { events, sink, writer } = retroSetup();
+
+    await expect(
+      writer.openRetroIssue("PROJ-1", REPO, { title: "Melhorar o Servico_Pagamentos", body: "b" }),
+    ).rejects.toThrow(/guardrail/i);
+    await expect(writer.commentRetroIssue("PROJ-1", REPO, 1, "+1 do proj 1")).rejects.toThrow(/guardrail/i);
+
+    expect(sink.issues).toEqual([]);
+    expect(events.list()).toMatchObject([
+      { type: "blocked", action: "retro-issue", reason: expect.stringContaining('"servico-pagamentos"') },
+      { type: "blocked", action: "retro-comment", reason: expect.stringContaining("chave de card") },
+    ]);
+  });
+
+  it("no dry-run só registra a issue e o comentário", async () => {
+    const { events, sink, writer } = retroSetup({ dryRun: true });
+
+    expect(await writer.openRetroIssue("PROJ-1", REPO, { title: "t", body: "b" })).toBeUndefined();
+    await writer.commentRetroIssue("PROJ-1", REPO, 1, "+1");
+
+    expect(sink.issues).toEqual([]);
+    expect(events.list()).toMatchObject([
+      { type: "write", action: "retro-issue", dryRun: true },
+      { type: "write", action: "retro-comment", dryRun: true },
+    ]);
   });
 });

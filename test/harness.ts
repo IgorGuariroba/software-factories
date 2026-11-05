@@ -11,8 +11,11 @@ import { FakeCodeHost } from "./fakes/fake-code-host.js";
 import { FakeModel } from "./fakes/fake-model.js";
 import { type FakeTelegram, TELEGRAM_CHAT, TELEGRAM_USER } from "./fakes/fake-telegram.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
+import { MemoryRetroSink } from "./fakes/memory-retro-sink.js";
 
 export const USER = "igor";
+/** Repositório (público) da fábrica onde as retrôs dos testes abrem issues. */
+export const FACTORY_REPO = "fabrica/fabrica-publica";
 /** O PO declarado nas pessoas do projeto de teste. */
 export const PO = "po-ficticio";
 /** Descrição que os cards dos testes recebem quando o teste não diz outra: o bastante para a SPEC não exigir o PO. */
@@ -51,6 +54,8 @@ export interface TestFactory extends RunningFactory {
   source: MemoryDemandSource;
   model: FakeModel;
   codeHost: FakeCodeHost;
+  /** Issues da fábrica (GitHub fake) onde as retrôs publicam. */
+  retroSink: MemoryRetroSink;
   /** Diretório do estado durável (e dos clones da fábrica, em `worktrees/`). */
   stateDir: string;
   /** Fecha a fábrica e sobe outra sobre o mesmo estado durável e a mesma Fonte: um reinício do daemon. */
@@ -72,6 +77,9 @@ interface TestFactoryOptions {
   clock?: FakeClock;
   /** Telegram fake como interface de gestão, com o chat e o usuário autorizados de `fake-telegram.ts`. */
   telegram?: FakeTelegram;
+  retroSink?: MemoryRetroSink;
+  /** Repositório da fábrica para as issues de retrô; `null` desliga (como sem `FACTORY_RETRO_REPO`). */
+  retroRepo?: string | null;
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória e estado durável num diretório temporário. */
@@ -82,6 +90,8 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     opts.source ?? new MemoryDemandSource(opts.cards?.map((c) => ({ description: DEFAULT_DESCRIPTION, ...c })));
   const model = opts.model ?? new FakeModel();
   const codeHost = opts.codeHost ?? new FakeCodeHost();
+  const retroSink = opts.retroSink ?? new MemoryRetroSink();
+  const retroRepo = opts.retroRepo === undefined ? FACTORY_REPO : opts.retroRepo;
   const knowledgeDir = join(dir, "conhecimento");
   await mkdir(knowledgeDir, { recursive: true });
   if (opts.knowledge !== undefined) await writeFile(join(knowledgeDir, "knowledge.md"), opts.knowledge);
@@ -93,6 +103,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     testRunner: opts.testRunner,
     clock: opts.clock,
     management: opts.telegram && { port: opts.telegram, chat: TELEGRAM_CHAT, user: TELEGRAM_USER },
+    retro: { sink: retroSink, repo: retroRepo ?? undefined },
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
     ],
@@ -102,6 +113,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     source,
     model,
     codeHost,
+    retroSink,
     stateDir: dir,
     close: async () => {
       await factory.close();
@@ -109,7 +121,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     },
     restart: async () => {
       await factory.close();
-      return startTestFactory({ ...opts, source, model, codeHost, knowledge: undefined }, dir);
+      return startTestFactory({ ...opts, source, model, codeHost, retroSink, knowledge: undefined }, dir);
     },
   };
 }

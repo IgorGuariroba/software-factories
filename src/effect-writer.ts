@@ -2,6 +2,8 @@ import type { CodeHost } from "./code-host.js";
 import { type CardState, type ProjectConfig, STATE_ORDER } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import type { EventRecorder } from "./events.js";
+import { privateTerms, sanitizePublicText } from "./public-text.js";
+import type { RetroSink } from "./retro-sink.js";
 import { redactSecrets } from "./secrets.js";
 
 export const AUTOMATION_PREFIX = "🤖 [fábrica]";
@@ -43,6 +45,18 @@ export interface EffectWriter {
    * force-push só numa branch da fábrica (registrada no estado durável de uma Tarefa).
    */
   pushBranch(repoPath: string, branch: string, opts?: { force?: boolean }): Promise<void>;
+  /**
+   * Abre uma issue `retro` no repositório **público** da fábrica pelo RetroSink. Só no repositório configurado; o
+   * título e o corpo passam pelo filtro de segredos e pelo saneamento dos valores do projeto (e do card `cardKey`), e
+   * a escrita é barrada se sobrar algum. No dry-run, só registra e devolve `undefined`.
+   */
+  openRetroIssue(
+    cardKey: string,
+    repo: string,
+    issue: { title: string; body: string },
+  ): Promise<{ number: number; url: string } | undefined>;
+  /** Comenta numa issue do repositório da fábrica, com as mesmas regras de `openRetroIssue`. */
+  commentRetroIssue(cardKey: string, repo: string, issue: number, body: string): Promise<void>;
 }
 
 /** Branches em que a fábrica nunca faz push. */
@@ -58,6 +72,8 @@ export function createEffectWriter(opts: {
   codeHost?: CodeHost;
   /** Se `branch` é uma branch da fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
   isFactoryBranch?: (branch: string) => boolean | Promise<boolean>;
+  /** Issues da fábrica: a porta, o único repositório em que ela escreve e o prefixo do link público da Tarefa. */
+  retro?: { sink?: RetroSink; repo?: string; linkPrefix?: () => string };
 }): EffectWriter {
   const { config, source, events } = opts;
   const user = config.source.assignee;
@@ -91,6 +107,28 @@ export function createEffectWriter(opts: {
     const clean = redactSecrets(body);
     return clean.startsWith(AUTOMATION_PREFIX) ? clean : `${AUTOMATION_PREFIX} ${clean}`;
   };
+  /** Texto que vai ao repositório público: sem segredos e saneado dos valores do projeto e do card. */
+  async function publicText(cardKey: string, raw: string) {
+    const card = await source.getCard(cardKey);
+    return sanitizePublicText(redactSecrets(raw), {
+      terms: privateTerms(config, [cardKey, card?.title ?? ""]),
+      cardPrefix: config.source.project,
+      keepLinksTo: opts.retro?.linkPrefix?.(),
+    });
+  }
+  const retroSink = (): RetroSink => {
+    const sink = opts.retro?.sink;
+    if (!sink) throw new Error("RetroSink não configurado");
+    return sink;
+  };
+  function retroRefused(repo: string, leftovers: string[]): string | undefined {
+    const target = opts.retro?.repo;
+    if (!opts.retro?.sink || !target) return "nenhum repositório da fábrica configurado (FACTORY_RETRO_REPO)";
+    if (repo !== target) return `o RetroSink só escreve no repositório da fábrica (${target}), não em ${repo}`;
+    if (leftovers.length > 0) return `o texto público ainda cita valores do projeto: ${leftovers.join(", ")}`;
+    return undefined;
+  }
+
   const statusFor = (state: CardState) => Object.entries(config.statuses).find(([, s]) => s === state)?.[0];
 
   return {
@@ -206,6 +244,29 @@ export function createEffectWriter(opts: {
           return undefined;
         },
         () => (opts.codeHost as CodeHost).pushBranch(repoPath, name, { force }),
+        () => undefined,
+      );
+    },
+
+    async openRetroIssue(cardKey, repo, issue) {
+      const title = await publicText(cardKey, issue.title);
+      const body = await publicText(cardKey, issue.body);
+      const content = `${AUTOMATION_PREFIX} ${body.text}`;
+      return write<{ number: number; url: string } | undefined>(
+        { target: `${cardKey}#retro`, action: "retro-issue", content: `${repo}: ${title.text}\n\n${content}` },
+        async () => retroRefused(repo, [...title.leftovers, ...body.leftovers]),
+        () => retroSink().create(repo, { title: title.text, body: content }),
+        () => undefined,
+      );
+    },
+
+    async commentRetroIssue(cardKey, repo, issue, raw) {
+      const body = await publicText(cardKey, raw);
+      const content = `${AUTOMATION_PREFIX} ${body.text}`;
+      return write(
+        { target: `${cardKey}#retro`, action: "retro-comment", content: `${repo}#${issue}: ${content}` },
+        async () => retroRefused(repo, body.leftovers),
+        () => retroSink().comment(repo, issue, content),
         () => undefined,
       );
     },

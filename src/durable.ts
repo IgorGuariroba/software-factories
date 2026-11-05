@@ -57,6 +57,61 @@ export type Question = {
 /** Etapa em que a Tarefa está (ou a última em que esteve), para as interfaces de gestão. */
 export type TaskStage = "assumir" | "veto" | "spec" | "implementacao";
 
+/** De que a retrô trata: uma etapa de modelo, ou a Tarefa inteira (a consolidada). */
+export type RetroStage = "spec" | "implementacao" | "tarefa";
+
+/** Os três tipos de proposta de retrô (SPEC, "Retrô"). */
+export type RetroKind = "fabrica" | "conhecimento" | "repo-time";
+
+/** Situação de uma proposta de retrô. */
+export type RetroProposalStatus =
+  /** Ainda não publicada (a retrô foi interrompida antes). */
+  | "a-publicar"
+  /** fábrica: abriu uma issue `retro`. */
+  | "issue-criada"
+  /** fábrica: comentou "+1" numa issue parecida já aberta. */
+  | "mais-um"
+  /** fábrica: uma issue parecida já citava esta Tarefa; nada a escrever. */
+  | "ja-registrada"
+  /** fábrica: no dry-run, a escrita só ficou registrada. */
+  | "dry-run"
+  /** fábrica: sem repositório da fábrica configurado (`FACTORY_RETRO_REPO`); só registrada. */
+  | "sem-repo"
+  /** fábrica: o escritor de efeitos barrou a escrita (ver `reason`). */
+  | "bloqueada"
+  /** conhecimento do projeto: aguarda aprovação do usuário. */
+  | "pendente"
+  /** repo do time: virou aviso ao usuário. */
+  | "avisada";
+
+export type RetroProposal = {
+  n: number;
+  kind: RetroKind;
+  title: string;
+  description: string;
+  status: RetroProposalStatus;
+  /** A issue aberta ou comentada (fábrica). */
+  issue: { number: number; url: string } | null;
+  reason: string | null;
+};
+
+/**
+ * Uma retrô. A entrega do modelo é gravada antes de publicar: uma nova tentativa só publica o que falta, sem chamar o
+ * modelo de novo.
+ */
+export type RetroRecord = {
+  stage: RetroStage;
+  status: "em-andamento" | "concluida" | "falhou";
+  /** Tentativas que falharam; no limite, a retrô desiste (`falhou`) sem bloquear a Tarefa. */
+  attempts: number;
+  error: string | null;
+  conversationId: ConversationId | null;
+  /** Resumo do modelo; `null` até a entrega. */
+  summary: string | null;
+  /** Propostas classificadas; `null` até a entrega. */
+  proposals: RetroProposal[] | null;
+};
+
 /** Uma Tarefa da fábrica, na ordem da fila. */
 export type QueuedTask = {
   /** `<projeto>/<card>`. */
@@ -90,6 +145,13 @@ export type QueuedTask = {
   questions?: Question[];
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
+  /**
+   * Identificador opaco e estável da Tarefa, sem relação com o projeto nem com o card: é a única referência a ela que
+   * sai para o repositório público da fábrica.
+   */
+  ref?: string;
+  /** Retrôs das etapas e a consolidada, na ordem em que aconteceram. */
+  retros?: RetroRecord[];
 };
 
 /** Uma fase do ciclo TDD de um ticket: o teste que falha, depois o código que o faz passar. */
@@ -167,7 +229,11 @@ export type TarefaCheckpoint =
   | { phase: "spec" }
   /** Dormindo até a resposta de uma pessoa ou o próximo prazo de escalonamento. */
   | { phase: "aguardar" }
-  | { phase: "implementar" };
+  | { phase: "implementar" }
+  /** Retrôs: uma ao fim de cada etapa de modelo e a consolidada ao fim da Tarefa. */
+  | { phase: "retro-spec" }
+  | { phase: "retro-implementacao" }
+  | { phase: "retro-tarefa" };
 
 export type TarefaInput = {
   id: string;
@@ -208,15 +274,21 @@ export interface TarefaSteps {
 /** Passos comuns, executados por `TarefaSteps.run`; as esperas (`aguardar`, `veto`) são tratadas pela própria task. */
 export type Step = Exclude<TarefaCheckpoint["phase"], "aguardar" | "veto">;
 
+/** O passo da retrô de cada etapa de modelo; uma etapa nova entra aqui e em `NEXT`. */
+export const RETRO_STEP = { spec: "retro-spec", implementacao: "retro-implementacao", tarefa: "retro-tarefa" } as const;
+
 const NEXT: Record<Step, TarefaCheckpoint | "fim"> = {
   comentar: { phase: "veto" },
   transicionar: { phase: "spec" },
-  spec: { phase: "implementar" },
-  implementar: "fim",
+  spec: { phase: RETRO_STEP.spec },
+  [RETRO_STEP.spec]: { phase: "implementar" },
+  implementar: { phase: RETRO_STEP.implementacao },
+  [RETRO_STEP.implementacao]: { phase: RETRO_STEP.tarefa },
+  [RETRO_STEP.tarefa]: "fim",
 };
 
-/** A etapa de cada passo comum. */
-const STAGE: Record<Step, TaskStage> = {
+/** A etapa de cada passo comum. As retrôs não mudam a etapa: ficam na que avaliam. */
+const STAGE: Partial<Record<Step, TaskStage>> = {
   comentar: "assumir",
   transicionar: "assumir",
   spec: "spec",
@@ -342,7 +414,8 @@ export function createTarefaTask(steps: TarefaSteps) {
       const state = await tx.doc(StateDoc);
       const queued = findTask(state, task.input.id);
       if (!state.daemonPaused && !queued.pauseRequested) {
-        queued.stage = STAGE[step];
+        const stage = STAGE[step];
+        if (stage) queued.stage = stage;
         return undefined;
       }
       const gate = await tx.createTask(GateTask, {}, { ownership: { kind: "task", taskId: task.id } });
@@ -482,6 +555,9 @@ export function createTarefaTask(steps: TarefaSteps) {
       spec: (task, runtime, context) => phase(task, "spec", runtime, context),
       aguardar: (task, runtime, context) => awaitHuman(task, runtime, context),
       implementar: (task, runtime, context) => phase(task, "implementar", runtime, context),
+      "retro-spec": (task, runtime, context) => phase(task, "retro-spec", runtime, context),
+      "retro-implementacao": (task, runtime, context) => phase(task, "retro-implementacao", runtime, context),
+      "retro-tarefa": (task, runtime, context) => phase(task, "retro-tarefa", runtime, context),
     },
     abort: (task, runtime, context) =>
       runtime.commit(async (tx) => {
