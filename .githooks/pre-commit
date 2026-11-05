@@ -50,6 +50,16 @@ check_added_large_files() {
 check_merge_conflict || exit 1
 check_added_large_files || exit 1
 
+# Quality (hooks.quality): Biome lint + format check on staged files only (fix with: npm run format).
+if [ -f biome.json ] && [ -d node_modules ]; then
+  . "$(dirname "$0")/staged.sh"
+  run_staged 'npx --no-install biome check --no-errors-on-unmatched --files-ignore-unknown=true' \
+    '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' '*.json' || {
+    echo "✋ Biome found lint/format errors in staged files. Fix with: npm run format" >&2
+    exit 1
+  }
+fi
+
 # 3. Secret scan (hooks.secrets): gitleaks on staged changes. Fails closed when gitleaks is missing.
 #    False positive: add a "gitleaks:allow" comment on the line, or list it in .gitleaksignore.
 if ! command -v gitleaks >/dev/null 2>&1; then
