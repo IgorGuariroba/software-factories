@@ -186,6 +186,16 @@ describe("escritor de efeitos", () => {
       );
     });
 
+    it("um ')' no meio de um valor YAML de várias palavras não revela o resto do segredo", async () => {
+      const { source, writer } = setup();
+
+      await writer.comment("PROJ-1", `password: ${"correct"} horse) battery staple\nuser: igor`);
+
+      const body = source.commentsOf("PROJ-1")[0]?.body ?? "";
+      expect(body).toBe("\u{1F916} [fábrica] password: [segredo removido]\nuser: igor");
+      expect(body).not.toContain("battery");
+    });
+
     it("não altera texto comum", async () => {
       const { source, writer } = setup();
 
