@@ -6,6 +6,14 @@ export interface Card {
   status: string;
   /** Identificador do responsável na Fonte. */
   assignee: string;
+  /** Descrição do card, em texto. */
+  description?: string;
+}
+
+/** Um anexo de texto de um card (ex.: .txt, .md, .csv), já com o conteúdo lido. */
+export interface TextAttachment {
+  name: string;
+  content: string;
 }
 
 /** Um comentário de um card. */
@@ -31,6 +39,8 @@ export interface DemandSource {
   /** O card atual, ou `undefined` se não existir no projeto configurado. */
   getCard(key: string): Promise<Card | undefined>;
   listComments(key: string): Promise<CardComment[]>;
+  /** Anexos de texto do card. Anexos binários (imagens, PDFs) ficam de fora. */
+  listTextAttachments(key: string): Promise<TextAttachment[]>;
   addComment(key: string, body: string): Promise<{ id: string }>;
   editComment(key: string, commentId: string, body: string): Promise<void>;
   /** Move o card para o status de nome `status` no workflow da Fonte. */

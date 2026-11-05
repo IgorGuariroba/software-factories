@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Models } from "@earendil-works/pi-ai";
 import { parse } from "yaml";
 import { ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
@@ -42,12 +43,20 @@ export async function startDaemon(opts: {
   statePath: string;
   port?: number;
   pollIntervalMs?: number;
+  /** Provedores de modelos com as credenciais do usuário. */
+  models: Models;
 }): Promise<RunningFactory> {
   const configs = await loadProjects(opts.configDir);
   return startFactory({
     port: opts.port,
     statePath: opts.statePath,
     pollIntervalMs: opts.pollIntervalMs,
-    projects: configs.map((config) => ({ config, source: opts.sources[config.source.type](config) })),
+    models: opts.models,
+    // O conhecimento de cada projeto fica ao lado da config: <configDir>/<projeto>/knowledge.md (ADR-0010).
+    projects: configs.map((config) => ({
+      config,
+      source: opts.sources[config.source.type](config),
+      knowledgeDir: join(opts.configDir, config.name),
+    })),
   });
 }

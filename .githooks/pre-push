@@ -59,7 +59,9 @@ if [ -n "$tips" ] && [ -d node_modules ]; then
   for sha in $tips; do
     # Each check depends on the pushed commit's files, not on this working tree.
     has_tsconfig=0; git cat-file -e "$sha:tsconfig.json" 2>/dev/null && has_tsconfig=1
-    has_package=0; git cat-file -e "$sha:package.json" 2>/dev/null && has_package=1
+    # Tests run only when the pushed commit's package.json declares scripts.test (npm test fails without one).
+    has_package=0
+    git show "$sha:package.json" 2>/dev/null | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{process.exit(JSON.parse(s).scripts?.test?0:1)}catch{process.exit(1)}})' 2>/dev/null && has_package=1
     [ $has_tsconfig -eq 1 ] || [ $has_package -eq 1 ] || continue
     wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push-check.XXXXXX")
     git worktree add -q --detach "$wt" "$sha" 2>/dev/null || { rm -rf "$wt"; echo "✋ Could not check out $sha for typecheck/tests." >&2; exit 1; }

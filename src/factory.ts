@@ -1,9 +1,9 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
+import type { Models } from "@earendil-works/pi-ai";
 import {
   createRegistry,
   defineExtension,
@@ -26,10 +26,24 @@ import {
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
+import { renderTickets, requestSpec, type SpecDelivery, SpecExtension, specInput } from "./spec-stage.js";
 
 export interface FactoryProject {
   config: ProjectConfig;
   source: DemandSource;
+  /** Diretório do conhecimento do projeto (`knowledge.md`), fora do repositório (ADR-0010). */
+  knowledgeDir?: string;
+}
+
+/** Lê o conhecimento do projeto a cada etapa; sem o arquivo, a etapa segue sem ele. */
+async function readKnowledge(dir: string | undefined): Promise<string | undefined> {
+  if (!dir) return undefined;
+  try {
+    return await readFile(join(dir, "knowledge.md"), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
 }
 
 export interface QueueItem {
@@ -100,6 +114,8 @@ export async function startFactory(opts: {
   pollIntervalMs?: number;
   /** Espera antes de tentar de novo uma Tarefa que falhou. Padrão: 1 minuto. */
   retryDelayMs?: number;
+  /** Provedores de modelos (nos testes, o provedor faux). */
+  models: Models;
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
   let events!: DurableEventLog;
@@ -124,10 +140,45 @@ export async function startFactory(opts: {
 
   const Tarefa = createTarefaTask({
     retryDelayMs,
-    async run(input, step) {
-      const { writer } = projectOf(input.project);
-      if (step === "comentar") await writer.commentOnce(input.key, "Assumindo este card.");
-      else await writer.transition(input.key, "in_progress", { from: "todo" });
+    async run(input, step, runtime) {
+      const project = projectOf(input.project);
+      const { writer, source } = project;
+      if (step === "comentar") return void (await writer.commentOnce(input.key, "Assumindo este card."));
+      if (step === "transicionar") return writer.transition(input.key, "in_progress", { from: "todo" });
+
+      // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
+      let delivery: SpecDelivery | undefined;
+      await runtime.commit(async (tx) => {
+        const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.delivery;
+        // Cópia: o rascunho do commit não pode ser usado depois que o commit termina.
+        delivery = stored ? (JSON.parse(JSON.stringify(stored)) as SpecDelivery) : undefined;
+      });
+      if (!delivery) delivery = await requestDelivery();
+      await writer.upsertComment(input.key, "SPEC", delivery.spec);
+      await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
+
+      async function requestDelivery(): Promise<SpecDelivery> {
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        const delivered = await requestSpec({
+          harness,
+          commit: runtime.commit,
+          taskId: runtime.taskId,
+          model: project.config.roles.spec,
+          context: runtime.context,
+          input: specInput({
+            card,
+            comments: await source.listComments(input.key),
+            attachments: await source.listTextAttachments(input.key),
+            knowledge: await readKnowledge(project.knowledgeDir),
+          }),
+        });
+        await runtime.commit(async (tx) => {
+          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+          if (task) task.delivery = delivered;
+        });
+        return delivered;
+      }
     },
     classify: (err) =>
       err instanceof GuardrailViolation
@@ -138,11 +189,12 @@ export async function startFactory(opts: {
 
   const registry = createRegistry();
   registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask] }));
+  registry.install(SpecExtension);
   await mkdir(dirname(opts.statePath), { recursive: true });
   const harness = await Harness.open(
     await openNodeSqliteStorage(opts.statePath),
     {
-      models: createModels(),
+      models: opts.models,
       registry,
       onReport: (report) => console.error(`[fábrica] ${report.kind}:`, report.error),
     },
@@ -190,6 +242,7 @@ export async function startFactory(opts: {
           notBefore: null,
           attempts: 0,
           reason: null,
+          delivery: null,
         });
       }
     }, context);

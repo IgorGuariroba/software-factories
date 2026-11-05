@@ -2,6 +2,7 @@ import { request } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   api,
+  assumeComments,
   events,
   eventually,
   hold,
@@ -42,7 +43,7 @@ describe("fila única", () => {
     await waitForStatus(factory, "PROJ-1", "ativa");
 
     expect(await statusOf(factory, "PROJ-2")).toBe("enfileirada");
-    expect(factory.source.commentsOf("PROJ-2")).toEqual([]);
+    expect(assumeComments(factory.source, "PROJ-2")).toEqual([]);
 
     held.release();
     await waitForStatus(factory, "PROJ-2", "concluida");
@@ -72,17 +73,19 @@ describe("reinício do daemon", () => {
     source.transition = async (key, status) => (stuck ? new Promise<void>(() => {}) : transition(key, status));
 
     await poll(factory);
-    await eventually(() => expect(source.commentsOf("PROJ-1")).toHaveLength(1));
+    await eventually(() => expect(assumeComments(source, "PROJ-1")).toHaveLength(1));
     stuck = false;
     factory = await factory.restart();
 
     await waitForStatus(factory, "PROJ-1", "concluida");
-    expect(source.commentsOf("PROJ-1")).toHaveLength(1);
+    expect(assumeComments(source, "PROJ-1")).toHaveLength(1);
     expect(source.cards[0]?.status).toBe("Em Andamento");
     // O histórico sobrevive ao reinício. A transição aparece de novo porque a primeira nunca chegou ao Jira;
     // o comentário, que chegou, não é repetido.
     const writes = (await events(factory)).filter((e) => e.type === "write").map((e) => e.action);
-    expect(writes.filter((a) => a === "comment")).toHaveLength(1);
+    expect(
+      (await events(factory)).filter((e) => e.type === "write" && String(e.content).endsWith("Assumindo este card.")),
+    ).toHaveLength(1);
     expect(writes).toContain("transition");
   });
 
@@ -114,7 +117,7 @@ describe("controle das tarefas", () => {
 
     await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
     await waitForStatus(factory, "PROJ-1", "concluida");
-    expect(factory.source.commentsOf("PROJ-1")).toHaveLength(1);
+    expect(assumeComments(factory.source, "PROJ-1")).toHaveLength(1);
     expect(factory.source.cards[0]?.status).toBe("Em Andamento");
   });
 
@@ -128,7 +131,7 @@ describe("controle das tarefas", () => {
 
     await waitForStatus(factory, "PROJ-2", "concluida");
     expect(await statusOf(factory, "PROJ-1")).toBe("pausada");
-    expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
+    expect(assumeComments(factory.source, "PROJ-1")).toEqual([]);
 
     await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
     await waitForStatus(factory, "PROJ-1", "concluida");
@@ -156,7 +159,7 @@ describe("controle das tarefas", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(await statusOf(factory, "PROJ-1")).toBe("enfileirada");
-    expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
+    expect(assumeComments(factory.source, "PROJ-1")).toEqual([]);
 
     await api(factory, "POST", "/daemon/resume");
     await waitForStatus(factory, "PROJ-1", "concluida");
@@ -172,7 +175,9 @@ describe("controle das tarefas", () => {
 
     await api(factory, "POST", "/daemon/resume");
     await waitForStatus(factory, "PROJ-2", "concluida");
-    const commented = (await events(factory)).filter((e) => e.action === "comment").map((e) => e.target);
+    const commented = (await events(factory))
+      .filter((e) => e.action === "comment" && String(e.content).endsWith("Assumindo este card."))
+      .map((e) => e.target);
     expect(commented).toEqual(["PROJ-3", "PROJ-1", "PROJ-2"]);
   });
 
