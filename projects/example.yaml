@@ -3,6 +3,10 @@
 
 name: exemplo
 
+# Dry-run: lê a Fonte de verdade, mas só registra as escritas (visíveis em GET /events).
+# Ligado por padrão; desligue só depois de conferir o comportamento.
+dryRun: true
+
 source:
   type: jira
   # Chave do projeto na Fonte.

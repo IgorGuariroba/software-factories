@@ -8,6 +8,7 @@ export const USER = "igor";
 export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
   return {
     name: "exemplo",
+    dryRun: false,
     source: { type: "jira", project: "PROJ", assignee: USER },
     statuses: {
       Backlog: "backlog",
@@ -27,8 +28,13 @@ export interface TestFactory extends RunningFactory {
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória. */
-export async function startTestFactory(opts: { cards?: Card[] } = {}): Promise<TestFactory> {
-  const source = new MemoryDemandSource(opts.cards);
-  const factory = await startFactory({ projects: [{ config: testProjectConfig(), source }] });
+export async function startTestFactory(
+  opts: { cards?: Card[]; source?: MemoryDemandSource; dryRun?: boolean; pollIntervalMs?: number } = {},
+): Promise<TestFactory> {
+  const source = opts.source ?? new MemoryDemandSource(opts.cards);
+  const factory = await startFactory({
+    pollIntervalMs: opts.pollIntervalMs,
+    projects: [{ config: testProjectConfig({ dryRun: opts.dryRun ?? false }), source }],
+  });
   return { ...factory, source };
 }

@@ -39,10 +39,12 @@ export async function startDaemon(opts: {
   configDir: string;
   sources: SourceFactories;
   port?: number;
+  pollIntervalMs?: number;
 }): Promise<RunningFactory> {
   const configs = await loadProjects(opts.configDir);
   return startFactory({
     port: opts.port,
+    pollIntervalMs: opts.pollIntervalMs,
     projects: configs.map((config) => ({ config, source: opts.sources[config.source.type](config) })),
   });
 }
