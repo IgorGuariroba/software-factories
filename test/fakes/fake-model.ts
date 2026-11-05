@@ -1,5 +1,6 @@
 import {
   type AssistantMessage,
+  type Context,
   createModels,
   type FauxResponseFactory,
   fauxAssistantMessage,
@@ -13,7 +14,19 @@ import {
 export interface ModelCall {
   model: string;
   context: string;
+  /** Texto das mensagens do usuário: o que a fábrica montou sobre o card, sem instruções nem ferramentas. */
+  input: string;
 }
+
+const userText = (context: Context): string =>
+  context.messages
+    .filter((m) => m.role === "user")
+    .map((m) =>
+      typeof m.content === "string"
+        ? m.content
+        : m.content.map((block) => (block.type === "text" ? block.text : "")).join(""),
+    )
+    .join("\n");
 
 export interface SpecDelivery {
   spec: string;
@@ -40,7 +53,7 @@ export class FakeModel {
   constructor() {
     const step: FauxResponseFactory = async (context, _options, _state, model) => {
       this.faux.appendResponses([step]);
-      const call = { model: model.id, context: JSON.stringify(context) };
+      const call = { model: model.id, context: JSON.stringify(context), input: userText(context) };
       this.calls.push(call);
       return this.respond(call);
     };

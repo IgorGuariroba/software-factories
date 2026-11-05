@@ -58,16 +58,20 @@ Entregue chamando a ferramenta ${DELIVER_TOOL} uma única vez; não responda em 
  */
 export const SPEC_INPUT_MAX_CHARS = 120_000;
 
-/** Corta `text` em `max` caracteres, deixando um marcador do que foi omitido. */
+/** Corta `text` para caber em `max` caracteres, já contando o marcador do que foi omitido. */
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max))}\n[…truncado: ${text.length - Math.max(0, max)} caracteres omitidos]`;
+  const marker = (omitted: number) => `\n[…truncado: ${omitted} caracteres omitidos]`;
+  // O marcador depende de quanto foi omitido; reservar o tamanho do maior marcador possível mantém o corte em `max`.
+  const keep = Math.max(0, max - marker(text.length).length);
+  return `${text.slice(0, keep)}${marker(text.length - keep)}`.slice(0, max);
 }
 
 /**
- * Tudo o que o modelo recebe sobre o card, dentro de `SPEC_INPUT_MAX_CHARS`. Comentários da própria fábrica ficam de
- * fora. Quando não cabe tudo, o orçamento vai por prioridade: conhecimento do projeto, descrição, comentários e, por
- * último, anexos; cada seção cortada leva um marcador.
+ * Tudo o que o modelo recebe sobre o card, sem passar de `SPEC_INPUT_MAX_CHARS` (títulos, separadores e marcadores
+ * incluídos). Comentários da própria fábrica ficam de fora. Quando não cabe tudo, o orçamento vai por prioridade:
+ * descrição do card (os requisitos), conhecimento do projeto, comentários e, por último, anexos; cada seção cortada
+ * leva um marcador.
  */
 export function specInput(input: {
   card: Card;
@@ -78,25 +82,36 @@ export function specInput(input: {
   const { card, comments, attachments, knowledge } = input;
   const human = comments.filter((c) => !c.body.startsWith(AUTOMATION_PREFIX));
   const header = `# Card ${card.key}: ${card.title}\n\nStatus: ${card.status}`;
-  let budget = SPEC_INPUT_MAX_CHARS - header.length;
-  const take = (text: string) => {
-    const kept = truncate(text, budget);
-    budget = Math.max(0, budget - kept.length);
-    return kept;
-  };
+  const SEPARATOR = "\n\n";
+  type Section = { heading: string; text: string };
+  const sections: Section[] = [{ heading: "## Descrição", text: card.description?.trim() || "(sem descrição)" }];
+  if (knowledge?.trim()) sections.push({ heading: "## Conhecimento do projeto", text: knowledge.trim() });
+  sections.push({
+    heading: "## Comentários",
+    text: human.map((c) => `**${c.author}:**\n${c.body}`).join(SEPARATOR) || "(nenhum)",
+  });
+  if (attachments.length > 0)
+    sections.push({
+      heading: "## Anexos",
+      text: attachments.map((a) => `### ${a.name}${SEPARATOR}\`\`\`\n${a.content}\n\`\`\``).join(SEPARATOR),
+    });
 
-  const knowledgeText = knowledge?.trim() ? take(knowledge.trim()) : undefined;
-  const description = take(card.description?.trim() || "(sem descrição)");
-  const commentsText = take(human.map((c) => `**${c.author}:**\n${c.body}`).join("\n\n") || "(nenhum)");
-  const attachmentsText =
-    attachments.length > 0
-      ? take(attachments.map((a) => `### ${a.name}\n\n\`\`\`\n${a.content}\n\`\`\``).join("\n\n"))
-      : undefined;
+  // O que não é conteúdo (cabeçalho, títulos, separadores) sai do orçamento antes de dividir o resto.
+  const structure = header.length + sections.reduce((n, sec) => n + 2 * SEPARATOR.length + sec.heading.length, 0);
+  let budget = Math.max(0, SPEC_INPUT_MAX_CHARS - structure);
+  const kept = new Map<Section, string>();
+  for (const section of sections) {
+    const text = truncate(section.text, budget);
+    budget -= text.length;
+    kept.set(section, text);
+  }
 
-  const parts = [header, `## Descrição\n\n${description}`, `## Comentários\n\n${commentsText}`];
-  if (attachmentsText !== undefined) parts.push(`## Anexos\n\n${attachmentsText}`);
-  if (knowledgeText !== undefined) parts.push(`## Conhecimento do projeto\n\n${knowledgeText}`);
-  return parts.join("\n\n");
+  // Ordem de leitura: descrição, comentários, anexos, conhecimento.
+  const order = ["## Descrição", "## Comentários", "## Anexos", "## Conhecimento do projeto"];
+  const rendered = [...sections]
+    .sort((x, y) => order.indexOf(x.heading) - order.indexOf(y.heading))
+    .map((sec) => `${sec.heading}${SEPARATOR}${kept.get(sec)}`);
+  return [header, ...rendered].join(SEPARATOR);
 }
 
 /** Corpo do comentário "Tickets": checklist que as próximas etapas marcam. */
