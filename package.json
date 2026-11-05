@@ -1,13 +1,16 @@
 {
   "name": "software-factories",
   "version": "1.0.0",
+  "private": true,
   "description": "",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "@earendil-works/chord": "^1.5.0",

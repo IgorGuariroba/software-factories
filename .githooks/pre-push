@@ -1,0 +1,58 @@
+#!/bin/sh
+# Blocks pushes (including deletes and "feat:main") to protected branches.
+# Protected: git config hooks.protectedBranches (space or comma separated); default "main master".
+# Bypass: ALLOW_MAIN=1 git push ...  (or git push --no-verify)
+# stdin: <local ref> <local sha> <remote ref> <remote sha>
+
+# ALLOW_MAIN=1 skips only the branch guard; the secret scan and typecheck still run.
+
+protected=$(git config --get hooks.protectedBranches | tr ',' ' ')
+[ -n "$protected" ] || protected="main master"
+
+blocked=""
+ranges=""   # one git-log range per line (scanned one by one)
+zero=0000000000000000000000000000000000000000
+nl='
+'
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$_local_sha" != "$zero" ]; then
+    if [ "$_remote_sha" = "$zero" ]; then ranges="$ranges$_local_sha --not --remotes$nl"
+    else ranges="$ranges$_remote_sha..$_local_sha$nl"; fi
+  fi
+  for p in $protected; do
+    if [ "$remote_ref" = "refs/heads/$p" ]; then
+      blocked="$blocked $p"
+    fi
+  done
+done
+
+if [ -n "$blocked" ] && [ "${ALLOW_MAIN:-}" != "1" ]; then
+  {
+    echo "✋ Direct push to protected branch blocked:$blocked (remote: ${1:-?})"
+    echo "   Create a work branch:  git switch -c feat/<name>"
+    echo "   and push it:           git push -u origin feat/<name>"
+    echo "   Deliberate bypass:     ALLOW_MAIN=1 git push ..."
+  } >&2
+  exit 1
+fi
+
+# Secret scan (hooks.secrets) on the commits being pushed: second layer after pre-commit.
+if [ -n "$ranges" ]; then
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "✋ gitleaks not found: install it so pushed commits are scanned for secrets." >&2
+    exit 1
+  fi
+  printf '%s' "$ranges" | while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    gitleaks git --no-banner --redact --verbose --log-level warn --exit-code 1 --log-opts="$r" >&2 || {
+      echo "✋ gitleaks found a possible secret in the commits being pushed ($r)." >&2
+      exit 1
+    }
+  done || exit 1
+fi
+
+# Quality (hooks.quality): typecheck, the same check as 'npm run build' (tsc).
+if [ -f tsconfig.json ] && [ -f package.json ]; then
+  npx --no-install tsc --noEmit || { echo "✋ Typecheck failed (tsc --noEmit). Fix it or: git push --no-verify" >&2; exit 1; }
+fi
+exit 0
