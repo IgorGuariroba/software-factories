@@ -62,6 +62,21 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}": {
+      get: {
+        summary:
+          "Detalhe da tarefa: estado, etapa, perguntas ao PO, SPEC e Tickets entregues, progresso da implementação, " +
+          "histórico de eventos dela e escritas registradas (feitas, do dry-run ou barradas por guardrail)",
+        parameters: taskPath("").post.parameters,
+        responses: {
+          "200": {
+            description: "Detalhe da tarefa",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/TaskDetail" } } },
+          },
+          "404": { description: "Tarefa inexistente" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/pause": taskPath("Pausa a tarefa (a ativa para no próximo passo)"),
     "/tasks/{project}/{key}/resume": taskPath("Retoma a tarefa pausada"),
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
@@ -115,9 +130,57 @@ export const API_SCHEMA = {
               "vetada",
             ],
           },
+          stage: {
+            description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
+            enum: ["assumir", "veto", "spec", "implementacao", null],
+          },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
         },
+      },
+      TaskDetail: {
+        allOf: [
+          { $ref: "#/components/schemas/Task" },
+          {
+            type: "object",
+            properties: {
+              pauseRequested: { type: "boolean" },
+              vetoUntil: { type: ["string", "null"], description: "Fim do prazo de veto (ISO 8601), se aguarda veto" },
+              questions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    n: { type: "integer" },
+                    to: { type: "string" },
+                    text: { type: "string" },
+                    askedAt: { type: "string" },
+                    answer: { type: ["string", "null"], description: "null enquanto pendente" },
+                  },
+                },
+              },
+              spec: { type: ["string", "null"] },
+              tickets: {
+                type: "array",
+                items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },
+              },
+              implementation: {
+                type: ["object", "null"],
+                properties: {
+                  branch: { type: "string" },
+                  commits: { type: "array", items: { type: "object" } },
+                  pushed: { type: "boolean" },
+                },
+              },
+              events: { type: "array", description: "Eventos desta tarefa, em ordem", items: { type: "object" } },
+              writes: {
+                type: "array",
+                description: "Eventos write (com dryRun) e blocked (com o motivo) desta tarefa",
+                items: { type: "object" },
+              },
+            },
+          },
+        ],
       },
     },
   },

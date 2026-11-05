@@ -48,7 +48,9 @@ import {
   SpecExtension,
   specInput,
 } from "./spec-stage.js";
+import { taskDetail, taskSummary } from "./task-view.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
+import { webFile } from "./web.js";
 
 export interface FactoryProject {
   config: ProjectConfig;
@@ -748,27 +750,21 @@ export async function startFactory(opts: {
 
   const server = createServer(async (req, res) => {
     try {
+      // A página de gestão passa pela mesma proteção: só clientes locais.
       if (!isLocalRequest(req)) return json(res, 403, { error: "a API aceita só clientes locais" });
       const url = new URL(req.url ?? "/", "http://localhost");
       const route = `${req.method} ${url.pathname}`;
       const taskCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/(pause|resume|cancel)$/);
 
       if (route === "GET /queue") return json(res, 200, await queue());
-      if (route === "GET /tasks") {
-        const { tasks } = await readState();
-        return json(
-          res,
-          200,
-          tasks.map(({ id, project, key, title, status, attempts, reason }) => ({
-            id,
-            project,
-            key,
-            title,
-            status,
-            attempts,
-            reason,
-          })),
-        );
+      if (route === "GET /tasks") return json(res, 200, (await readState()).tasks.map(taskSummary));
+      const taskRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)$/);
+      if (req.method === "GET" && taskRoute) {
+        const id = `${decodeURIComponent(taskRoute[1] as string)}/${decodeURIComponent(taskRoute[2] as string)}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        return task
+          ? json(res, 200, taskDetail(task, events.list()))
+          : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
       if (route === "POST /poll") {
         await serializedPoll();
@@ -824,6 +820,12 @@ export async function startFactory(opts: {
         return;
       }
       if (route === "GET /openapi.json") return json(res, 200, API_SCHEMA);
+      const page = req.method === "GET" ? await webFile(url.pathname) : undefined;
+      if (page) {
+        res.writeHead(200, page.headers);
+        res.end(page.body);
+        return;
+      }
       json(res, 404, { error: "rota inexistente" });
     } catch (err) {
       json(res, 500, { error: String(err) });

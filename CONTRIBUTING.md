@@ -61,6 +61,18 @@ Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta
 - Dry-run: pergunta e lembrete viram só eventos `write` (`action: "mention"`); a leitura das respostas continua real.
 - Nos testes, a fábrica roda num relógio falso (`test/fakes/fake-clock.ts`, opção `clock` de `startTestFactory`), que move o relógio do motor durável e do agendador.
 
+### Web local de gestão
+
+O daemon serve uma página de gestão em `GET /` (abra `http://127.0.0.1:7420/` ou `http://localhost:7420/`), com os assets sob `/web/`. Ela é HTML, CSS e JS puro em módulos (`web/`), sem build nem framework, e só fala com o daemon pela API documentada em `/openapi.json` (`web/api.js` é o único ponto com `fetch`/`EventSource`).
+
+- Mostra a fila (tarefas não encerradas, na ordem, com status e etapa: `assumir`, `veto`, `spec`, `implementacao`), as encerradas e, sob demanda, os cards elegíveis na Fonte (`GET /queue`).
+- Detalhe de uma tarefa (`#/tarefa/<projeto>/<card>`, dados de `GET /tasks/{projeto}/{card}`): estado, prazo de veto, perguntas ao PO, SPEC e Tickets entregues, progresso da implementação, as escritas registradas (feitas, do dry-run ou barradas por guardrail) e o histórico de eventos da tarefa.
+- Ações: vetar (só no prazo de veto), pausar, retomar, cancelar, subir/descer na fila (`POST /tasks/order`), pausar/retomar o daemon e buscar na Fonte.
+- Atualiza-se sozinha pelo SSE (`/events/stream`); o selo no topo mostra se o stream está conectado.
+- Segurança: as mesmas proteções da API (Host local e Origin local nos POST); a resposta da página e dos assets leva `Content-Security-Policy` restritiva (`default-src 'self'`, sem script nem estilo inline) e `X-Content-Type-Options: nosniff`; o DOM é montado com `createElement`/`textContent`, nunca com `innerHTML` (o conteúdo vem do card e do modelo).
+- Build: `web/` fica na raiz, ao lado de `src/` e `dist/`; o daemon resolve `../web/` relativo ao próprio módulo, então `tsx src/main.ts` e `node dist/main.js` acham a mesma página.
+- Testes: `test/web-gestao.test.ts` (pela API: cabeçalhos, cliente local, rotas que o JS chama conferidas contra o `/openapi.json`) e `test/web-view.test.ts` (apresentação pura de `web/view.js`). Não há navegador nos testes.
+
 ### Telegram (interface de gestão)
 
 O Telegram é a interface de gestão do celular (porta `ManagementInterface`, `src/management.ts`; adaptador `src/telegram.ts`, Bot API por HTTP com long polling em `getUpdates`, sem webhook). Ele é **global ao daemon** (um bot e uma conversa para todos os projetos); só o nível de conteúdo é por projeto.
