@@ -52,7 +52,23 @@ Leia o card, os comentários, os anexos e o conhecimento do projeto, e escreva:
 Não invente requisitos que o card não sustenta. Escreva em português do Brasil.
 Entregue chamando a ferramenta ${DELIVER_TOOL} uma única vez; não responda em texto.`;
 
-/** Tudo o que o modelo recebe sobre o card. Comentários da própria fábrica ficam de fora. */
+/**
+ * Limite do texto enviado ao modelo, em caracteres (~30 mil tokens): cabe na janela dos modelos de SPEC com folga
+ * para as instruções e a resposta. Um anexo ou uma discussão enorme não pode travar a Tarefa num erro de contexto.
+ */
+export const SPEC_INPUT_MAX_CHARS = 120_000;
+
+/** Corta `text` em `max` caracteres, deixando um marcador do que foi omitido. */
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max))}\n[…truncado: ${text.length - Math.max(0, max)} caracteres omitidos]`;
+}
+
+/**
+ * Tudo o que o modelo recebe sobre o card, dentro de `SPEC_INPUT_MAX_CHARS`. Comentários da própria fábrica ficam de
+ * fora. Quando não cabe tudo, o orçamento vai por prioridade: conhecimento do projeto, descrição, comentários e, por
+ * último, anexos; cada seção cortada leva um marcador.
+ */
 export function specInput(input: {
   card: Card;
   comments: CardComment[];
@@ -61,15 +77,25 @@ export function specInput(input: {
 }): string {
   const { card, comments, attachments, knowledge } = input;
   const human = comments.filter((c) => !c.body.startsWith(AUTOMATION_PREFIX));
-  const parts = [
-    `# Card ${card.key}: ${card.title}`,
-    `Status: ${card.status}`,
-    `## Descrição\n\n${card.description?.trim() || "(sem descrição)"}`,
-    `## Comentários\n\n${human.map((c) => `**${c.author}:**\n${c.body}`).join("\n\n") || "(nenhum)"}`,
-  ];
-  if (attachments.length > 0)
-    parts.push(`## Anexos\n\n${attachments.map((a) => `### ${a.name}\n\n\`\`\`\n${a.content}\n\`\`\``).join("\n\n")}`);
-  if (knowledge?.trim()) parts.push(`## Conhecimento do projeto\n\n${knowledge.trim()}`);
+  const header = `# Card ${card.key}: ${card.title}\n\nStatus: ${card.status}`;
+  let budget = SPEC_INPUT_MAX_CHARS - header.length;
+  const take = (text: string) => {
+    const kept = truncate(text, budget);
+    budget = Math.max(0, budget - kept.length);
+    return kept;
+  };
+
+  const knowledgeText = knowledge?.trim() ? take(knowledge.trim()) : undefined;
+  const description = take(card.description?.trim() || "(sem descrição)");
+  const commentsText = take(human.map((c) => `**${c.author}:**\n${c.body}`).join("\n\n") || "(nenhum)");
+  const attachmentsText =
+    attachments.length > 0
+      ? take(attachments.map((a) => `### ${a.name}\n\n\`\`\`\n${a.content}\n\`\`\``).join("\n\n"))
+      : undefined;
+
+  const parts = [header, `## Descrição\n\n${description}`, `## Comentários\n\n${commentsText}`];
+  if (attachmentsText !== undefined) parts.push(`## Anexos\n\n${attachmentsText}`);
+  if (knowledgeText !== undefined) parts.push(`## Conhecimento do projeto\n\n${knowledgeText}`);
   return parts.join("\n\n");
 }
 

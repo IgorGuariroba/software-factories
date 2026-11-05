@@ -95,14 +95,14 @@ describe("etapas grill → SPEC → Tickets", () => {
     expect(call?.context).toContain("Neste projeto, todo endpoint novo exige teste de contrato.");
   });
 
-  it("rodar a etapa de novo edita os comentários existentes em vez de criar novos", async () => {
+  it("rodar a etapa de novo depois de uma falha reaproveita a entrega: não chama o modelo nem troca a SPEC", async () => {
     const model = new FakeModel();
     model.respond = () => deliverSpec({ ...DEFAULT_SPEC, spec: `Versão ${model.calls.length}.` });
     factory = await startTestFactory({ cards: [card()], model });
     const source = factory.source;
     const addComment = source.addComment.bind(source);
     let failures = 1;
-    // Publicar os Tickets falha uma vez: a tarefa é tentada de novo e roda a etapa outra vez, com outra SPEC.
+    // Publicar os Tickets falha uma vez: a tarefa é tentada de novo e roda a etapa outra vez.
     source.addComment = async (key, body) => {
       if (body.startsWith(`${PREFIX} Tickets`) && failures-- > 0) throw new Error("Jira fora do ar");
       return addComment(key, body);
@@ -111,10 +111,28 @@ describe("etapas grill → SPEC → Tickets", () => {
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
 
-    expect(model.calls).toHaveLength(2);
+    expect(model.calls).toHaveLength(1);
     expect(commentsTitled(factory, "SPEC")).toHaveLength(1);
-    expect(commentsTitled(factory, "SPEC")[0]?.body).toContain("Versão 2.");
+    expect(commentsTitled(factory, "SPEC")[0]?.body).toContain("Versão 1.");
     expect(commentsTitled(factory, "Tickets")).toHaveLength(1);
+  });
+
+  it("um card muito grande é truncado para caber no contexto, sem perder o conhecimento e a descrição", async () => {
+    factory = await startTestFactory({
+      cards: [card({ description: "Descrição que precisa chegar." })],
+      knowledge: "Conhecimento que precisa chegar.",
+    });
+    factory.source.attach("PROJ-1", "dump.log", "x".repeat(2_000_000));
+    for (let i = 0; i < 50; i++) factory.source.humanComment("PROJ-1", "po", "y".repeat(20_000));
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+
+    const [call] = factory.model.calls;
+    expect(call?.context.length).toBeLessThan(250_000);
+    expect(call?.context).toContain("truncado");
+    expect(call?.context).toContain("Descrição que precisa chegar.");
+    expect(call?.context).toContain("Conhecimento que precisa chegar.");
   });
 
   it("retomar após reinício no meio da etapa não duplica os comentários nem chama o modelo de novo", async () => {

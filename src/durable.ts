@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineEntry, defineTask, type JsonObject, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import type { FactoryEvent } from "./events.js";
+import type { SpecDelivery } from "./spec-stage.js";
 
 /** Status de uma Tarefa na fila. */
 export type TaskStatus = "enfileirada" | "ativa" | "pausada" | "concluida" | "cancelada" | "bloqueada";
@@ -23,6 +24,11 @@ export type QueuedTask = {
   notBefore: number | null;
   attempts: number;
   reason: string | null;
+  /**
+   * Entrega do modelo na etapa SPEC, guardada antes de publicar. Uma nova tentativa da Tarefa (ex.: o Jira caiu entre
+   * a SPEC e os Tickets) republica a mesma entrega, sem chamar o modelo de novo nem trocar uma SPEC válida.
+   */
+  delivery?: SpecDelivery | null;
 };
 
 export type FactoryState = {

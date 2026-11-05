@@ -26,7 +26,7 @@ import {
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
-import { renderTickets, requestSpec, SpecExtension, specInput } from "./spec-stage.js";
+import { renderTickets, requestSpec, type SpecDelivery, SpecExtension, specInput } from "./spec-stage.js";
 
 export interface FactoryProject {
   config: ProjectConfig;
@@ -146,23 +146,39 @@ export async function startFactory(opts: {
       if (step === "comentar") return void (await writer.commentOnce(input.key, "Assumindo este card."));
       if (step === "transicionar") return writer.transition(input.key, "in_progress", { from: "todo" });
 
-      const card = await source.getCard(input.key);
-      if (!card) throw new Error(`card ${input.key} não existe mais`);
-      const delivery = await requestSpec({
-        harness,
-        commit: runtime.commit,
-        taskId: runtime.taskId,
-        model: project.config.roles.spec,
-        context: runtime.context,
-        input: specInput({
-          card,
-          comments: await source.listComments(input.key),
-          attachments: await source.listTextAttachments(input.key),
-          knowledge: await readKnowledge(project.knowledgeDir),
-        }),
+      // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
+      let delivery: SpecDelivery | undefined;
+      await runtime.commit(async (tx) => {
+        const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.delivery;
+        // Cópia: o rascunho do commit não pode ser usado depois que o commit termina.
+        delivery = stored ? (JSON.parse(JSON.stringify(stored)) as SpecDelivery) : undefined;
       });
+      if (!delivery) delivery = await requestDelivery();
       await writer.upsertComment(input.key, "SPEC", delivery.spec);
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
+
+      async function requestDelivery(): Promise<SpecDelivery> {
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        const delivered = await requestSpec({
+          harness,
+          commit: runtime.commit,
+          taskId: runtime.taskId,
+          model: project.config.roles.spec,
+          context: runtime.context,
+          input: specInput({
+            card,
+            comments: await source.listComments(input.key),
+            attachments: await source.listTextAttachments(input.key),
+            knowledge: await readKnowledge(project.knowledgeDir),
+          }),
+        });
+        await runtime.commit(async (tx) => {
+          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+          if (task) task.delivery = delivered;
+        });
+        return delivered;
+      }
     },
     classify: (err) =>
       err instanceof GuardrailViolation
@@ -226,6 +242,7 @@ export async function startFactory(opts: {
           notBefore: null,
           attempts: 0,
           reason: null,
+          delivery: null,
         });
       }
     }, context);
