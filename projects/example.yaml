@@ -12,6 +12,7 @@ source:
   # Chave do projeto na Fonte.
   project: PROJ
   # Seu identificador na Fonte: a fábrica só trabalha nos cards atribuídos a ele.
+  # No Jira, o seu accountId ou o seu e-mail; é com este valor que a fábrica reconhece os próprios comentários.
   assignee: seu-id-no-jira
 
 # Modelo fixado para cada papel (provedor e modelo como o pi-ai os conhece).
