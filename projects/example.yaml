@@ -1,0 +1,23 @@
+# Exemplo de config de projeto da Fábrica.
+# As configs reais ficam fora do repo, em ~/.config/software-factory/projects/<projeto>.yaml (ADR-0010).
+
+name: exemplo
+
+source:
+  type: jira
+  # Chave do projeto na Fonte.
+  project: PROJ
+  # Seu identificador na Fonte: a fábrica só trabalha nos cards atribuídos a ele.
+  assignee: seu-id-no-jira
+
+# Nome do status no workflow da Fonte -> estado que a fábrica entende.
+# Estados: backlog, todo, in_progress, waiting_test, waiting_validation, gmud, done.
+# A fábrica assume cards em todo e in_progress; status fora deste mapa são ignorados.
+statuses:
+  Backlog: backlog
+  A Fazer: todo
+  Em Andamento: in_progress
+  Aguardando Teste: waiting_test
+  Aguardando Validação: waiting_validation
+  GMUD: gmud
+  Concluído: done
