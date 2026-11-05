@@ -16,8 +16,11 @@ export interface EffectWriter {
   comment(cardKey: string, body: string): Promise<{ id: string }>;
   /** Edita um comentário criado pela própria fábrica. */
   editComment(cardKey: string, commentId: string, body: string): Promise<void>;
-  /** Move o card para o status mapeado para `state`, nunca além de `transitionLimit`. */
-  transition(cardKey: string, state: CardState): Promise<void>;
+  /**
+   * Move o card para o status mapeado para `state`, nunca além de `transitionLimit`.
+   * Com `from`, bloqueia se o card não estiver mais nesse estado (ex.: uma pessoa o moveu nesse meio-tempo).
+   */
+  transition(cardKey: string, state: CardState, opts?: { from?: CardState }): Promise<void>;
 }
 
 export function createEffectWriter(opts: {
@@ -94,7 +97,7 @@ export function createEffectWriter(opts: {
       );
     },
 
-    transition(cardKey, state) {
+    transition(cardKey, state, transitionOpts) {
       const status = statusFor(state) ?? "";
       return write(
         { target: cardKey, action: "transition", content: status || state },
@@ -103,7 +106,13 @@ export function createEffectWriter(opts: {
           if (STATE_ORDER.indexOf(state) > STATE_ORDER.indexOf(opts.transitionLimit))
             return `${state} está além do limite ${opts.transitionLimit} deste marco`;
           if (!status) return `nenhum status mapeado para ${state}`;
-          return cardNotOwned(cardKey);
+          const notOwned = await cardNotOwned(cardKey);
+          if (notOwned || !transitionOpts?.from) return notOwned;
+          const card = await source.getCard(cardKey);
+          const current = card && config.statuses[card.status];
+          if (current !== transitionOpts.from)
+            return `card ${cardKey} está em "${card?.status}", não mais em ${transitionOpts.from}`;
+          return undefined;
         },
         () => source.transition(cardKey, status),
         () => undefined,

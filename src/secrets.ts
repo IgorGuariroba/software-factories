@@ -13,20 +13,32 @@ const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
 ];
 
+const SECRET_KEY = String.raw`\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)`;
+const QUOTED = String.raw`"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'`;
+/** Uma palavra que começa outra atribuição (`chave:` ou `chave=`) encerra o valor anterior. */
+const WORD = String.raw`(?![A-Za-z0-9_-]+["']?\s*[:=])[^\s"',;}]+`;
+
 /**
- * `CHAVE=valor`, `chave: "valor"` ou `"chave": "valor"` (JSON) em que o nome da chave indica um segredo.
- * Valores entre aspas podem ter espaços e aspas escapadas; sem aspas, o valor vai até o próximo espaço.
+ * Atribuições em que o nome da chave indica um segredo:
+ * - `chave: valor` (YAML): o valor sem aspas pode ter espaços e vai até o fim da linha ou até a próxima atribuição;
+ * - `CHAVE=valor` (env): o valor sem aspas vai até o próximo espaço;
+ * - em ambos, e em JSON (`"chave": "valor"`), valores entre aspas podem ter espaços e aspas escapadas.
  */
-const SECRET_ASSIGNMENT =
-  /\b([A-Za-z0-9_]*(?:password|passwd|pwd|senha|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]*)(["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"']+)/gi;
+const SECRET_ASSIGNMENTS = [
+  new RegExp(String.raw`${SECRET_KEY}(["']?[ \t]*:[ \t]*)(?:${QUOTED}|[^\s"',;}]+(?:[ \t]+${WORD})*)`, "gi"),
+  new RegExp(String.raw`${SECRET_KEY}(["']?\s*=\s*)(?:${QUOTED}|[^\s"']+)`, "gi"),
+];
 
 /** Mascara segredos em qualquer texto que sai da fábrica. */
 export function redactSecrets(text: string): string {
   let out = text;
   for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, MASK);
-  return out.replace(SECRET_ASSIGNMENT, (match, key: string, sep: string) => {
-    const value = match.slice(key.length + sep.length);
-    const quote = value[0] === '"' || value[0] === "'" ? value[0] : "";
-    return `${key}${sep}${quote}${MASK}${quote}`;
-  });
+  for (const pattern of SECRET_ASSIGNMENTS) {
+    out = out.replace(pattern, (match, key: string, sep: string) => {
+      const value = match.slice(key.length + sep.length);
+      const quote = value[0] === '"' || value[0] === "'" ? value[0] : "";
+      return `${key}${sep}${quote}${MASK}${quote}`;
+    });
+  }
+  return out;
 }

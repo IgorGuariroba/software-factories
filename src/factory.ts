@@ -71,7 +71,7 @@ export async function startFactory(opts: {
           await project.writer.comment(item.key, "Assumindo este card.");
           commented.add(id);
         }
-        await project.writer.transition(item.key, "in_progress");
+        await project.writer.transition(item.key, "in_progress", { from: "todo" });
         assumed.add(id);
       } catch (err) {
         // Bloqueio de guardrail já fica registrado como evento; outros erros não impedem os demais cards.

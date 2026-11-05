@@ -81,6 +81,18 @@ describe("escritor de efeitos", () => {
       expect(events.list().map((e) => e.type)).toEqual(["blocked", "blocked"]);
     });
 
+    it("bloqueia a transição se o card não está mais no estado esperado", async () => {
+      const { source, events, writer } = setup();
+      await writer.comment("PROJ-1", "Assumindo este card.");
+      // Uma pessoa move o card enquanto a fábrica assumia.
+      if (source.cards[0]) source.cards[0].status = "Aguardando Teste";
+
+      await expect(writer.transition("PROJ-1", "in_progress", { from: "todo" })).rejects.toThrow(/guardrail/i);
+
+      expect(source.cards[0]?.status).toBe("Aguardando Teste");
+      expect(events.list().at(-1)).toMatchObject({ type: "blocked", action: "transition" });
+    });
+
     it("edita só os comentários da própria fábrica", async () => {
       const { source, events, writer } = setup();
       const own = await writer.comment("PROJ-1", "SPEC v1");
@@ -157,6 +169,19 @@ describe("escritor de efeitos", () => {
 
       expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
         `🤖 [fábrica] {"password":"[segredo removido]", "user": "igor"} senha='[segredo removido]' ok`,
+      );
+    });
+
+    it("mascara o valor YAML sem aspas inteiro, sem engolir a atribuição seguinte", async () => {
+      const { source, writer } = setup();
+
+      await writer.comment(
+        "PROJ-1",
+        `password: ${"correct"} horse battery staple api_key: ${"outra"} chave\nuser: igor\nDB_TOKEN=${"abc"}123 resto`,
+      );
+
+      expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
+        "🤖 [fábrica] password: [segredo removido] api_key: [segredo removido]\nuser: igor\nDB_TOKEN=[segredo removido] resto",
       );
     });
 
