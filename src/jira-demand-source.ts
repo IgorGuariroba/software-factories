@@ -40,6 +40,12 @@ export interface JiraDemandSourceOptions {
   fetch?: typeof fetch;
   /** Prazo de download de anexos em milissegundos. Padrão: 60 segundos. */
   timeoutMs?: number;
+  /**
+   * Origem HTTPS do site do Jira (ex.: `https://empresa.atlassian.net`). Com ela, os anexos são baixados por
+   * `<baseUrl>/rest/api/3/attachment/content/<id>`: a URL que o acli devolve pode apontar para um host interno da
+   * Atlassian, inalcançável de fora.
+   */
+  baseUrl?: string;
 }
 
 /**
@@ -81,7 +87,7 @@ const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_E
  * erro (a Tarefa é tentada de novo). O token nunca aparece na mensagem de erro.
  */
 function createHttpAttachmentReader(
-  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch; timeoutMs?: number } = {},
+  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch; timeoutMs?: number; baseUrl?: string } = {},
 ): AttachmentReader {
   return async (attachment) => {
     const env = opts.env ?? process.env;
@@ -89,11 +95,15 @@ function createHttpAttachmentReader(
     const token = env.ATLASSIAN_API_TOKEN;
     if (!email || !token) return MISSING_ATTACHMENT_CREDENTIALS;
     const what = `anexo ${attachment.filename} (id ${attachment.id})`;
-    if (!attachment.contentUrl) throw new Error(`Falha ao ler ${what}: o Jira não informou a URL do conteúdo`);
+    const url =
+      opts.baseUrl && attachment.id
+        ? `${opts.baseUrl.replace(/\/+$/, "")}/rest/api/3/attachment/content/${encodeURIComponent(attachment.id)}`
+        : attachment.contentUrl;
+    if (!url) throw new Error(`Falha ao ler ${what}: o Jira não informou a URL do conteúdo`);
     const doFetch = opts.fetch ?? fetch;
     let res: Response;
     try {
-      res = await doFetch(attachment.contentUrl, {
+      res = await doFetch(url, {
         headers: { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}` },
         signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
       });
@@ -202,7 +212,12 @@ export class JiraDemandSource implements DemandSource {
     this.project = opts.project;
     this.assignee = opts.assignee;
     this.runner = opts.runner ?? defaultAcliRunner;
-    this.readAttachment = createHttpAttachmentReader({ env: opts.env, fetch: opts.fetch, timeoutMs: opts.timeoutMs });
+    this.readAttachment = createHttpAttachmentReader({
+      env: opts.env,
+      fetch: opts.fetch,
+      timeoutMs: opts.timeoutMs,
+      baseUrl: opts.baseUrl,
+    });
   }
 
   private isKeyInProject(key: string): boolean {
