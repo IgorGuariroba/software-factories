@@ -15,12 +15,12 @@ export class GitError extends Error {
 /**
  * Variáveis que fazem o git agir em outro repositório (`git rev-parse --local-env-vars`). Um hook do git as exporta;
  * herdadas, o git da fábrica operaria no repositório do hook e não no `cwd` — inclusive dando push no remoto dele.
+ * Configuração passada pelo ambiente (`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, `GIT_CONFIG_PARAMETERS`, ex.:
+ * `safe.directory` na CI) não aponta para outro repositório e é preservada.
  */
 const REPO_ENV_VARS = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_CONFIG",
-  "GIT_CONFIG_PARAMETERS",
-  "GIT_CONFIG_COUNT",
   "GIT_OBJECT_DIRECTORY",
   "GIT_DIR",
   "GIT_WORK_TREE",

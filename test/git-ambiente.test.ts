@@ -30,4 +30,13 @@ describe("git ignora o repositório do ambiente", () => {
     expect(await testGit(alvo.user, "branch", "--show-current")).toBe("teste/fake");
     expect(await testGit(alheio.user, "branch", "--list", "fabrica/teste", "teste/fake")).toBe("");
   });
+
+  it("preserva a configuração passada pelo ambiente (GIT_CONFIG_COUNT), como safe.directory na CI", async () => {
+    root = await tempRoot();
+    const alvo = await createRemoteRepo(root, "alvo");
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "fabrica.marca";
+    process.env.GIT_CONFIG_VALUE_0 = "do-ambiente";
+    expect((await git(alvo.user, ["config", "fabrica.marca"])).trim()).toBe("do-ambiente");
+  });
 });
