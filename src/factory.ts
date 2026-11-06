@@ -1035,7 +1035,15 @@ export async function startFactory(opts: {
           return true;
         }, context);
         if (!reserved) return json(res, 409, { error: "lembrete mudou ou já foi enviado" });
-        await project.channel.remind(q.ref, text);
+        try {
+          await project.channel.remind(q.ref, text);
+        } catch (err) {
+          if (!(err instanceof GuardrailViolation)) throw err;
+          await markQuestion(id, n, (stored) => {
+            stored.reminder = "draft";
+          });
+          return json(res, 409, { error: `publicação barrada: ${err.message}` });
+        }
         await markQuestion(id, n, (stored) => {
           stored.reminder = "sent";
         });
@@ -1107,7 +1115,17 @@ export async function startFactory(opts: {
             return true;
           }, context);
           if (!reserved) return json(res, 409, { error: "pergunta mudou ou foi cancelada" });
-          const ref = await project.channel.ask({ card: cardKey, to: q.to, text: `Pergunta ${n}: ${q.text}` });
+          let ref: Awaited<ReturnType<Channel["ask"]>>;
+          try {
+            ref = await project.channel.ask({ card: cardKey, to: q.to, text: `Pergunta ${n}: ${q.text}` });
+          } catch (err) {
+            // Guardrail barra antes de escrever: nada saiu, a pergunta volta a rascunho. Outro erro é incerto.
+            if (!(err instanceof GuardrailViolation)) throw err;
+            await markQuestion(id, n, (stored) => {
+              stored.publication = "draft";
+            });
+            return json(res, 409, { error: `publicação barrada: ${err.message}` });
+          }
           const askedAt = clock.now();
           await markQuestion(id, n, (stored) => {
             stored.ref = ref;

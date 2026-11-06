@@ -157,6 +157,29 @@ describe("perguntas de negócio ao PO", () => {
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
   });
 
+  it("pergunta barrada por guardrail na aprovação volta a rascunho e pode ser aprovada depois", async () => {
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({ cards: [card("PROJ-1")], model, config: { questionApproval: true } });
+    const f = factory;
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    const preview = await api<{ revision: string }>(f, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    const stored = f.source.cards[0];
+    if (stored) stored.assignee = "maria";
+    const post = () =>
+      fetch(`${f.url}/tasks/exemplo/PROJ-1/questions/1/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision: preview.revision }),
+      });
+    expect((await post()).status).toBe(409);
+    expect(questionComments(f, "PROJ-1")).toEqual([]);
+    if (stored) stored.assignee = USER;
+    expect((await post()).status).toBe(200);
+    expect(questionComments(f, "PROJ-1")).toHaveLength(1);
+  });
+
   it("no ensaio não publica SPEC se o modelo não propuser uma pergunta", async () => {
     factory = await startTestFactory({ cards: [card("PROJ-1")], config: { questionApproval: true } });
     await poll(factory);
@@ -439,6 +462,41 @@ describe("escalonamento em horas úteis", () => {
     expect((await post(preview?.revision ?? "")).status).toBe(200);
     expect(reminders(f, "PROJ-1").map((c) => c.body)).toEqual([preview?.comment]);
     expect((await post(preview?.revision ?? "")).status).toBe(409);
+  });
+
+  it("lembrete barrado por guardrail na aprovação volta a rascunho e pode ser aprovado depois", async () => {
+    const clock = new FakeClock("2026-11-09T09:00:00-03:00");
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador do CSV?");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      clock,
+      config: { calendar: CALENDAR, questionApproval: true },
+    });
+    const f = factory;
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    const question = await api<{ revision: string }>(f, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    await api(f, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: question.revision });
+    clock.advanceTo("2026-11-09T13:00:00-03:00");
+    let preview: { revision: string } | undefined;
+    await eventually(async () => {
+      preview = await api(f, "GET", "/tasks/exemplo/PROJ-1/questions/1/reminder");
+    });
+    const stored = f.source.cards[0];
+    if (stored) stored.assignee = "maria";
+    const post = () =>
+      fetch(`${f.url}/tasks/exemplo/PROJ-1/questions/1/reminder/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision: preview?.revision }),
+      });
+    expect((await post()).status).toBe(409);
+    expect(reminders(f, "PROJ-1")).toEqual([]);
+    if (stored) stored.assignee = USER;
+    expect((await post()).status).toBe(200);
+    expect(reminders(f, "PROJ-1")).toHaveLength(1);
   });
 
   it("cruzando o fim de semana: lembrete ao PO após 4 h úteis e aviso ao usuário após 1 dia útil", async () => {

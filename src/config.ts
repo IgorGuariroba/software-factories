@@ -131,6 +131,7 @@ export const ProjectConfig = z.object({
       .string()
       .url()
       .refine((value) => {
+        if (!URL.canParse(value)) return false;
         const url = new URL(value);
         return (
           url.protocol === "https:" &&
