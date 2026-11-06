@@ -74,6 +74,21 @@ describe("config de projeto", () => {
     await expect(start).rejects.toThrow(/statuses\.A Fazer/);
   });
 
+  it("baseUrl inválida vira erro de config com arquivo e campo, não exceção solta", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    await writeFile(
+      join(dir, "url.yaml"),
+      example.replace("assignee: seu-id-no-jira", "assignee: seu-id-no-jira\n  baseUrl: jira"),
+    );
+    const start = startDaemon({
+      configDir: dir,
+      sources,
+      statePath: join(dir, "estado", "fabrica.sqlite"),
+      models: createModels(),
+    });
+    await expect(start).rejects.toThrow(/url\.yaml: source\.baseUrl/);
+  });
+
   it("aponta o arquivo com YAML malformado e continua validando os demais", async () => {
     await writeFile(join(dir, "a-malformado.yaml"), "name: [sem fechar\n");
     await writeFile(join(dir, "b-incompleto.yaml"), "name: b\n");

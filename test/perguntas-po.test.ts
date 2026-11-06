@@ -20,7 +20,7 @@ afterEach(async () => {
   factory = undefined;
 });
 
-const PREFIX = "\u{1F916} [fábrica]";
+const PREFIX = "\u{1F916} [mensagem automatizada]";
 const MENTION = `[~accountid:${PO}]`;
 const card = (key: string, extra: object = {}) => ({
   key,
@@ -41,11 +41,230 @@ function grillAsksAbout(model: FakeModel, key: string, question: string) {
 /** Deixa a fábrica reagir (ex.: ao que o relógio falso disparou) antes de conferir que algo *não* aconteceu. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
 const questionComments = (f: TestFactory, key: string) =>
-  f.source.commentsOf(key).filter((c) => c.author === USER && c.body.includes(MENTION));
+  f.source.commentsOf(key).filter((c) => c.author === USER && /pergunta \d+:/i.test(c.body));
 const specComments = (f: TestFactory, key: string) =>
   f.source.commentsOf(key).filter((c) => c.body.split("\n")[0] === `${PREFIX} SPEC`);
 
 describe("perguntas de negócio ao PO", () => {
+  it("permite revisar a pergunta antes de enviar ao Jira e avisar no Teams", async () => {
+    const sent: unknown[] = [];
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador? DB_PASSWORD=senha-ficticia");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      teams: {
+        send: async (message) => {
+          sent.push(message);
+        },
+      },
+      config: {
+        questionApproval: true,
+        source: { type: "jira", project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
+        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po" }],
+      },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    expect(questionComments(factory, "PROJ-1")).toEqual([]);
+    expect(sent).toEqual([]);
+    factory = await factory.restart();
+    await poll(factory);
+    expect(questionComments(factory, "PROJ-1")).toEqual([]);
+    expect(sent).toEqual([]);
+    const preview = await api<{ comment: string; teamsMessage: string; revision: string }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1/questions/1",
+    );
+    expect(preview.comment).toContain("Qual o separador?");
+    expect(preview.comment).not.toContain("senha-ficticia");
+    const url = `${factory.url}/tasks/exemplo/PROJ-1/questions/1/approve`;
+    const stale = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: "inválida" }),
+    });
+    expect(stale.status).toBe(409);
+    expect(questionComments(factory, "PROJ-1")).toEqual([]);
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: preview.revision });
+    expect(questionComments(factory, "PROJ-1")[0]?.body).toBe(preview.comment);
+    expect(sent).toEqual([expect.objectContaining({ text: preview.teamsMessage })]);
+    const repeat = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: preview.revision }),
+    });
+    expect(repeat.status).toBe(409);
+    expect(sent).toHaveLength(1);
+  });
+  it("um rascunho criado em dry-run pode ser revisto novamente e publicado após reiniciar em modo real", async () => {
+    const sent: unknown[] = [];
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    const config = {
+      dryRun: true,
+      questionApproval: true,
+      source: { type: "jira" as const, project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
+      people: [{ id: PO, role: "po" as const, teamsUserId: "8:orgid:po" }],
+    };
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      config,
+      teams: {
+        send: async (message) => {
+          sent.push(message);
+        },
+      },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    const dry = await api<{ revision: string }>(factory, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    config.dryRun = false;
+    factory = await factory.restart();
+    const live = await api<{ revision: string; comment: string }>(factory, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    expect(live.revision).not.toBe(dry.revision);
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: live.revision });
+    expect(questionComments(factory, "PROJ-1")[0]?.body).toBe(live.comment);
+    expect(sent).toHaveLength(1);
+    expect(factory.source.cards[0]?.status).toBe("A Fazer");
+  });
+
+  it("não publica pergunta aprovada quando a configuração está em dry-run", async () => {
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({
+      dryRun: true,
+      cards: [card("PROJ-1")],
+      model,
+      config: { questionApproval: true },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    const preview = await api<{ revision: string; dryRun: boolean }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1/questions/1",
+    );
+    expect(preview.dryRun).toBe(true);
+    const response = await fetch(`${factory.url}/tasks/exemplo/PROJ-1/questions/1/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: preview.revision }),
+    });
+    expect(response.status).toBe(409);
+    expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
+  });
+
+  it("pergunta barrada por guardrail na aprovação volta a rascunho e pode ser aprovada depois", async () => {
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({ cards: [card("PROJ-1")], model, config: { questionApproval: true } });
+    const f = factory;
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    const preview = await api<{ revision: string }>(f, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    const stored = f.source.cards[0];
+    if (stored) stored.assignee = "maria";
+    const post = () =>
+      fetch(`${f.url}/tasks/exemplo/PROJ-1/questions/1/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision: preview.revision }),
+      });
+    expect((await post()).status).toBe(409);
+    expect(questionComments(f, "PROJ-1")).toEqual([]);
+    if (stored) stored.assignee = USER;
+    expect((await post()).status).toBe(200);
+    expect(questionComments(f, "PROJ-1")).toHaveLength(1);
+  });
+
+  it("no ensaio não publica SPEC se o modelo não propuser uma pergunta", async () => {
+    factory = await startTestFactory({ cards: [card("PROJ-1")], config: { questionApproval: true } });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada");
+    expect(specComments(factory, "PROJ-1")).toEqual([]);
+  });
+
+  it("avisa o PO no Teams com link do card, uma única vez inclusive após reinício", async () => {
+    const sent: { userId: string; text: string }[] = [];
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      teams: {
+        send: async (message) => {
+          sent.push(message);
+        },
+      },
+      config: {
+        source: { type: "jira", project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
+        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po" }],
+      },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ userId: "8:orgid:po" });
+    expect(sent[0]?.text).toContain("https://jira.example.invalid/browse/PROJ-1");
+    factory = await factory.restart();
+    await poll(factory);
+    expect(sent).toHaveLength(1);
+  });
+  it("não envia aviso pelo Teams no dry-run", async () => {
+    const sent: unknown[] = [];
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({
+      dryRun: true,
+      cards: [card("PROJ-1")],
+      model,
+      teams: {
+        send: async (message) => {
+          sent.push(message);
+        },
+      },
+      config: {
+        source: { type: "jira", project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
+        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po" }],
+      },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    expect(sent).toEqual([]);
+  });
+
+  it("não repete envio Teams de resultado incerto após reinício", async () => {
+    let attempts = 0;
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      teams: {
+        send: async () => {
+          attempts++;
+          throw new Error("resposta perdida");
+        },
+      },
+      config: {
+        source: { type: "jira", project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
+        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po" }],
+      },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    expect(attempts).toBe(1);
+    expect(await events(factory)).toContainEqual(
+      expect.objectContaining({ type: "error", message: expect.stringContaining("aviso Teams não confirmado") }),
+    );
+    factory = await factory.restart();
+    await poll(factory);
+    expect(attempts).toBe(1);
+  });
+
   it("a pergunta do grill vira comentário no card mencionando o PO; a tarefa aguarda e a próxima avança", async () => {
     const model = new FakeModel();
     grillAsksAbout(model, "PROJ-1", "O CSV usa vírgula ou ponto e vírgula?");
@@ -58,7 +277,7 @@ describe("perguntas de negócio ao PO", () => {
     const [question] = questionComments(factory, "PROJ-1");
     expect(questionComments(factory, "PROJ-1")).toHaveLength(1);
     expect(question?.body.startsWith(PREFIX)).toBe(true);
-    expect(question?.body).toContain(MENTION);
+    expect(question?.body).not.toContain(MENTION);
     expect(question?.body).toContain("O CSV usa vírgula ou ponto e vírgula?");
     expect(specComments(factory, "PROJ-1")).toEqual([]);
     expect(await events(factory)).toContainEqual(
@@ -208,6 +427,78 @@ describe("escalonamento em horas úteis", () => {
     return { clock, f: factory };
   }
 
+  it("com revisão de perguntas, o lembrete vira rascunho e só é publicado após aprovação da prévia", async () => {
+    const clock = new FakeClock("2026-11-09T09:00:00-03:00");
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador do CSV?");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      clock,
+      config: { calendar: CALENDAR, questionApproval: true },
+    });
+    const f = factory;
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    const question = await api<{ revision: string }>(f, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    await api(f, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: question.revision });
+
+    clock.advanceTo("2026-11-09T13:00:00-03:00");
+    let preview: { comment: string; revision: string } | undefined;
+    await eventually(async () => {
+      preview = await api(f, "GET", "/tasks/exemplo/PROJ-1/questions/1/reminder");
+    });
+    expect(reminders(f, "PROJ-1")).toEqual([]);
+    expect(preview?.comment).toContain("Lembrete da pergunta 1");
+    const url = `${f.url}/tasks/exemplo/PROJ-1/questions/1/reminder/approve`;
+    const post = (revision: string) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision }),
+      });
+    expect((await post("inválida")).status).toBe(409);
+    expect(reminders(f, "PROJ-1")).toEqual([]);
+    expect((await post(preview?.revision ?? "")).status).toBe(200);
+    expect(reminders(f, "PROJ-1").map((c) => c.body)).toEqual([preview?.comment]);
+    expect((await post(preview?.revision ?? "")).status).toBe(409);
+  });
+
+  it("lembrete barrado por guardrail na aprovação volta a rascunho e pode ser aprovado depois", async () => {
+    const clock = new FakeClock("2026-11-09T09:00:00-03:00");
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador do CSV?");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      clock,
+      config: { calendar: CALENDAR, questionApproval: true },
+    });
+    const f = factory;
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    const question = await api<{ revision: string }>(f, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    await api(f, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: question.revision });
+    clock.advanceTo("2026-11-09T13:00:00-03:00");
+    let preview: { revision: string } | undefined;
+    await eventually(async () => {
+      preview = await api(f, "GET", "/tasks/exemplo/PROJ-1/questions/1/reminder");
+    });
+    const stored = f.source.cards[0];
+    if (stored) stored.assignee = "maria";
+    const post = () =>
+      fetch(`${f.url}/tasks/exemplo/PROJ-1/questions/1/reminder/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision: preview?.revision }),
+      });
+    expect((await post()).status).toBe(409);
+    expect(reminders(f, "PROJ-1")).toEqual([]);
+    if (stored) stored.assignee = USER;
+    expect((await post()).status).toBe(200);
+    expect(reminders(f, "PROJ-1")).toHaveLength(1);
+  });
+
   it("cruzando o fim de semana: lembrete ao PO após 4 h úteis e aviso ao usuário após 1 dia útil", async () => {
     // Sexta 16:00: restam 2 h úteis na sexta; segunda completa as 4 h às 11:00 e o dia útil (9 h) às 16:00.
     const { clock, f } = await askedAt("2026-11-06T16:00:00-03:00");
@@ -219,7 +510,7 @@ describe("escalonamento em horas úteis", () => {
 
     clock.advanceTo("2026-11-09T11:00:00-03:00");
     await eventually(() => expect(reminders(f, "PROJ-1")).toHaveLength(1));
-    expect(reminders(f, "PROJ-1")[0]?.body).toContain(MENTION);
+    expect(reminders(f, "PROJ-1")[0]?.body).not.toContain(MENTION);
     expect(await notices(f)).toEqual([]);
 
     clock.advanceTo("2026-11-09T15:59:00-03:00");
@@ -377,7 +668,7 @@ describe("guardrails e dry-run das perguntas", () => {
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
     const [question, reminder] = await mentions();
     expect(question).toMatchObject({ target: "PROJ-1", dryRun: true });
-    expect(String(question?.content)).toContain(MENTION);
+    expect(String(question?.content)).not.toContain(MENTION);
     expect(String(question?.content)).toContain("Qual o separador do CSV?");
     expect(String(reminder?.content)).toContain("Lembrete da pergunta 1");
 

@@ -5,6 +5,7 @@ import { expect } from "vitest";
 import type { ProjectConfig } from "../src/config.js";
 import type { Card } from "../src/demand-source.js";
 import { type RunningFactory, startFactory } from "../src/factory.js";
+import type { TeamsNotifier } from "../src/teams-mcp.js";
 import type { TestRunner } from "../src/test-runner.js";
 import type { FakeClock } from "./fakes/fake-clock.js";
 import { FakeCodeHost } from "./fakes/fake-code-host.js";
@@ -26,6 +27,8 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
   return {
     name: "exemplo",
     dryRun: false,
+    questionApproval: false,
+    specApproval: false,
     source: { type: "jira", project: "PROJ", assignee: USER },
     roles: { spec: { provider: FakeModel.PROVIDER, model: "spec-a" } },
     people: [{ id: PO, role: "po" }],
@@ -77,6 +80,7 @@ interface TestFactoryOptions {
   clock?: FakeClock;
   /** Telegram fake como interface de gestão, com o chat e o usuário autorizados de `fake-telegram.ts`. */
   telegram?: FakeTelegram;
+  teams?: TeamsNotifier;
   retroSink?: MemoryRetroSink;
   /** Repositório da fábrica para as issues de retrô; `null` desliga (como sem `FACTORY_RETRO_REPO`). */
   retroRepo?: string | null;
@@ -103,6 +107,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     testRunner: opts.testRunner,
     clock: opts.clock,
     management: opts.telegram && { port: opts.telegram, chat: TELEGRAM_CHAT, user: TELEGRAM_USER },
+    teams: opts.teams,
     retro: { sink: retroSink, repo: retroRepo ?? undefined },
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },

@@ -6,7 +6,20 @@ import { privateTerms, sanitizePublicText } from "./public-text.js";
 import type { RetroSink } from "./retro-sink.js";
 import { redactSecrets } from "./secrets.js";
 
-export const AUTOMATION_PREFIX = "🤖 [fábrica]";
+export const AUTOMATION_PREFIX = "\u{1F916} [mensagem automatizada]";
+/** Prefixo usado antes; reconhecido para não duplicar nem tratar como humano o que a fábrica já escreveu. */
+const LEGACY_PREFIXES = ["\u{1F916} [fábrica]"];
+
+/** Se o texto foi escrito pela fábrica (prefixo atual ou antigo). */
+export function isAutomationText(body: string): boolean {
+  return [AUTOMATION_PREFIX, ...LEGACY_PREFIXES].some((p) => body.startsWith(p));
+}
+
+/** Troca o prefixo antigo pelo atual, para comparar cabeçalhos. */
+const currentPrefix = (body: string) => {
+  const legacy = LEGACY_PREFIXES.find((p) => body.startsWith(p));
+  return legacy ? `${AUTOMATION_PREFIX}${body.slice(legacy.length)}` : body;
+};
 
 /** Uma escrita recusada por guardrail. Nunca chega à Fonte. */
 export class GuardrailViolation extends Error {
@@ -158,7 +171,7 @@ export function createEffectWriter(opts: {
   /** Toda mensagem sai sem segredos e com o prefixo de automação. */
   const outgoing = (body: string) => {
     const clean = redactSecrets(body);
-    return clean.startsWith(AUTOMATION_PREFIX) ? clean : `${AUTOMATION_PREFIX} ${clean}`;
+    return isAutomationText(clean) ? currentPrefix(clean) : `${AUTOMATION_PREFIX} ${clean}`;
   };
   /** Texto que vai ao repositório público: sem segredos e saneado dos valores do projeto e do card. */
   async function publicText(cardKey: string, raw: string) {
@@ -195,16 +208,21 @@ export function createEffectWriter(opts: {
     async commentOnce(cardKey, body) {
       if (!config.dryRun) {
         const content = outgoing(body);
-        const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
+        const existing = (await source.listComments(cardKey)).find(
+          (c) => c.author === user && currentPrefix(c.body) === content,
+        );
         if (existing) return { id: existing.id };
       }
       return addOwnComment(cardKey, body, true);
     },
 
     async mention(cardKey, personId, body) {
-      const content = outgoing(`${source.formatMention(personId)} ${body}`);
+      // Sem o token de menção: o acli grava texto puro e o Jira o mostraria literalmente. O aviso vai pelo Teams.
+      const content = outgoing(body);
       if (!config.dryRun) {
-        const existing = (await source.listComments(cardKey)).find((c) => c.author === user && c.body === content);
+        const existing = (await source.listComments(cardKey)).find(
+          (c) => c.author === user && currentPrefix(c.body) === content,
+        );
         if (existing) return { id: existing.id };
       }
       return write(
@@ -223,7 +241,7 @@ export function createEffectWriter(opts: {
       const content = outgoing(`${title}\n\n${body}`);
       const header = content.split("\n")[0];
       const existing = (await source.listComments(cardKey)).find(
-        (c) => c.author === user && c.body.split("\n")[0] === header,
+        (c) => c.author === user && currentPrefix(c.body).split("\n")[0] === header,
       );
       if (!existing) return addOwnComment(cardKey, content, true);
       if (existing.body !== content) await this.editComment(cardKey, existing.id, content);
@@ -239,7 +257,7 @@ export function createEffectWriter(opts: {
           if (notOwned || dryRunIds.has(commentId)) return notOwned;
           const comment = (await source.listComments(cardKey)).find((c) => c.id === commentId);
           if (!comment) return `comentário ${commentId} não existe em ${cardKey}`;
-          if (comment.author !== user || !comment.body.startsWith(AUTOMATION_PREFIX))
+          if (comment.author !== user || !isAutomationText(comment.body))
             return `comentário ${commentId} não foi escrito pela fábrica`;
           return undefined;
         },

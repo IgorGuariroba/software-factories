@@ -66,6 +66,11 @@ export const Person = z.object({
   role: z.enum(["po", "tech_lead"]),
   /** Nome para exibição, opcional. */
   name: z.string().min(1).optional(),
+  /** Identificador do usuário no Teams, quando houver aviso pelo MCP. */
+  teamsUserId: z
+    .string()
+    .regex(/^8:orgid:[a-zA-Z0-9-]+$/)
+    .optional(),
 });
 export type Person = z.infer<typeof Person>;
 
@@ -109,12 +114,35 @@ export const ProjectConfig = z.object({
   name: z.string().min(1),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
   dryRun: z.boolean().default(true),
+  /** No ensaio, segura a pergunta para aprovação e não publica uma SPEC sem pergunta. */
+  questionApproval: z.boolean().default(false),
+  /** Segura SPEC e Tickets até a aprovação da prévia exata na página local. */
+  specApproval: z.boolean().default(false),
   source: z.object({
     type: z.literal("jira"),
     /** Chave do projeto na Fonte (ex.: "PROJ"). */
     project: z.string().min(1),
     /** Identificador do usuário na Fonte; a fábrica só trabalha nos cards dele. */
     assignee: z.string().min(1),
+    /** Restrição opcional da busca a cards específicos; use estado novo para ensaios isolados. */
+    keys: z.array(z.string().min(1)).min(1).optional(),
+    /** Origem HTTPS do Jira para o link no aviso ao PO. */
+    baseUrl: z
+      .string()
+      .url()
+      .refine((value) => {
+        if (!URL.canParse(value)) return false;
+        const url = new URL(value);
+        return (
+          url.protocol === "https:" &&
+          !url.username &&
+          !url.password &&
+          url.pathname === "/" &&
+          !url.search &&
+          !url.hash
+        );
+      }, "use a origem HTTPS do Jira")
+      .optional(),
   }),
   /** Modelo fixado para cada Papel. A seleção por regras, com candidatos e allowlist, vem depois (M1-16). */
   roles: z.object({

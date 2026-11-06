@@ -20,7 +20,7 @@ afterEach(async () => {
   factory = undefined;
 });
 
-const PREFIX = "🤖 [fábrica]";
+const PREFIX = "🤖 [mensagem automatizada]";
 const card = (extra: object = {}) => ({
   key: "PROJ-1",
   title: "Exportar relatório em CSV",

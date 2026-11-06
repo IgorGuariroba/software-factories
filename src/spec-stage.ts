@@ -12,7 +12,7 @@ import { arr, obj, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
 import type { ModelRef } from "./config.js";
 import type { Card, CardComment, TextAttachment } from "./demand-source.js";
-import { AUTOMATION_PREFIX } from "./effect-writer.js";
+import { isAutomationText } from "./effect-writer.js";
 
 /** O que o modelo entrega na etapa: a SPEC e as fatias de implementação. */
 const Delivery = z.object({
@@ -78,7 +78,7 @@ export const SHALLOW_CARD_MIN_CHARS = 80;
 
 /** Se o card não tem conteúdo humano bastante para especificar (ver `SHALLOW_CARD_MIN_CHARS`). */
 export function isShallowCard(card: Card, comments: CardComment[], attachments: TextAttachment[]): boolean {
-  const human = comments.filter((c) => !c.body.startsWith(AUTOMATION_PREFIX)).map((c) => c.body);
+  const human = comments.filter((c) => !isAutomationText(c.body)).map((c) => c.body);
   const text = [card.description ?? "", ...human, ...attachments.map((a) => a.content)].join("");
   return text.replace(/\s/g, "").length < SHALLOW_CARD_MIN_CHARS;
 }
@@ -126,7 +126,7 @@ export function specInput(input: {
   answered?: AnsweredQuestion[];
 }): string {
   const { card, comments, attachments, knowledge, answered = [] } = input;
-  const human = comments.filter((c) => !c.body.startsWith(AUTOMATION_PREFIX));
+  const human = comments.filter((c) => !isAutomationText(c.body));
   const header = `# Card ${card.key}: ${card.title}\n\nStatus: ${card.status}`;
   const SEPARATOR = "\n\n";
   type Section = { heading: string; text: string };
