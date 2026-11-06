@@ -454,12 +454,14 @@ export async function startFactory(opts: {
 
       /**
        * Se cabe mais uma issue depois da triagem: `maxActive` conta só as Tarefas que já passaram dela. A triagem corre
-       * em todas, e uma issue à espera da sua revisão não segura as outras.
+       * em todas, e uma issue à espera da sua revisão não segura as outras. Cabendo, a vaga fica reservada no mesmo
+       * commit (a etapa sai de `triagem`): uma pausa antes do passo seguinte não a libera para outra Tarefa.
        */
       async function hasRoom(maxActive: number): Promise<boolean> {
         let busy = 0;
         await runtime.commit(async (tx) => {
-          busy = (await tx.doc(StateDoc)).tasks.filter(
+          const tasks = (await tx.doc(StateDoc)).tasks;
+          busy = tasks.filter(
             (t) =>
               t.project === input.project &&
               t.id !== input.id &&
@@ -467,6 +469,8 @@ export async function startFactory(opts: {
               t.stage != null &&
               t.stage !== "triagem",
           ).length;
+          const own = tasks.find((t) => t.id === input.id);
+          if (own && busy < maxActive) own.stage = "assumir";
         });
         return busy < maxActive;
       }
