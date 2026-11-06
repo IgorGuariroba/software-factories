@@ -137,17 +137,9 @@ export class GitHubDemandSource implements DemandSource {
     return login.toLowerCase() === this.opts.assignee.toLowerCase() ? this.opts.assignee : login;
   }
 
-  private account?: Promise<string>;
-
-  /** Toda escrita confere antes que o `gh` está autenticado como o dono; senão os comentários seriam de outra conta. */
+  /** Confere antes de cada escrita, sem cache: se a conta ativa do `gh` mudar, a escrita seguinte é recusada. */
   private async assertOwner(): Promise<void> {
-    this.account ??= this.api(["user"], "conta autenticada").then(
-      (out) => (JSON.parse(out) as { login: string }).login,
-    );
-    const login = await this.account.catch((error) => {
-      this.account = undefined;
-      throw error;
-    });
+    const login = (JSON.parse(await this.api(["user"], "conta autenticada")) as { login: string }).login;
     if (login.toLowerCase() !== this.opts.assignee.toLowerCase())
       throw new Error(`o gh está autenticado como ${login}, não como ${this.opts.assignee}: escrita recusada`);
   }
@@ -186,11 +178,22 @@ export class GitHubDemandSource implements DemandSource {
     const wanted = target === OPEN_STATUS || target === CLOSED_STATUS ? undefined : `${STATUS_LABEL}${target}`;
     // Só os labels da fábrica mudam, um a um: labels postos por outras pessoas no meio do caminho ficam intactos.
     for (const label of labelNames(issue).filter((l) => l.startsWith(STATUS_LABEL) && l !== wanted))
-      await this.api(["-X", "DELETE", `${path}/labels/${encodeURIComponent(label)}`], `tirar ${label} de ${key}`);
+      await this.removeLabel(path, label, key);
     if (wanted && !labelNames(issue).includes(wanted))
       await this.api(["-X", "POST", `${path}/labels`], `pôr ${wanted} em ${key}`, { labels: [wanted] });
     const state = target === CLOSED_STATUS ? "closed" : "open";
     if (issue.state !== state) await this.api(["-X", "PATCH", path], `mudar estado de ${key}`, { state });
+  }
+
+  /** Um 404 só é aceito se o label já não está na issue (outra pessoa o tirou); qualquer outro erro sobe. */
+  private async removeLabel(path: string, label: string, key: string): Promise<void> {
+    const res = await this.run(["api", "-X", "DELETE", `${path}/labels/${encodeURIComponent(label)}`]);
+    if ((res.exitCode ?? 0) === 0) return;
+    if (/HTTP 404/.test(res.stderr)) {
+      const now = JSON.parse(await this.api([path], `issue ${key}`)) as RawIssue;
+      if (!labelNames(now).includes(label)) return;
+    }
+    throw new Error(`gh api tirar ${label} de ${key} falhou: ${res.stderr.trim() || `código ${res.exitCode}`}`);
   }
 
   formatMention(personId: string): string {

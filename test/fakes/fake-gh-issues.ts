@@ -22,7 +22,7 @@ export class FakeGhIssues {
 
   constructor(
     readonly repo: string,
-    readonly me: string,
+    public me: string,
   ) {}
 
   addComment(number: number, login: string, body: string): number {
@@ -88,19 +88,25 @@ export class FakeGhIssues {
       if (!issue) return notFound;
       const current = issue.labels ?? [];
       if (method === "POST") issue.labels = [...current, ...body.labels.filter((l: string) => !current.includes(l))];
-      if (method === "DELETE") issue.labels = current.filter((l) => l !== decodeURIComponent(labels[2] ?? ""));
+      if (method === "DELETE") {
+        const name = decodeURIComponent(labels[2] ?? "");
+        if (!current.includes(name)) return { stdout: "", stderr: "gh: Label does not exist (HTTP 404)", exitCode: 1 };
+        issue.labels = current.filter((l) => l !== name);
+      }
       return ok((issue.labels ?? []).map((name) => ({ name })));
     }
     const one = /^issues\/(\d+)$/.exec(rest);
     if (one) {
       const issue = this.issues.find((i) => i.number === Number(one[1]));
       if (!issue) return notFound;
-      if (method === "GET") this.onRead?.();
       if (method === "PATCH") {
         if (body.state) issue.state = body.state;
         if (body.labels) issue.labels = body.labels;
       }
-      return ok(this.raw(issue));
+      const response = ok(this.raw(issue));
+      // Depois da resposta: a mudança alheia acontece entre a leitura e a próxima escrita.
+      if (method === "GET") this.onRead?.();
+      return response;
     }
     return notFound;
   };

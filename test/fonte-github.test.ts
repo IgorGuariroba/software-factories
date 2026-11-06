@@ -88,4 +88,24 @@ describe("Fonte GitHub: identidade e labels", () => {
     await source.transition("SF-7", "em-andamento");
     expect(gh.issues[0]?.labels).toEqual(["bug", "urgente", "fabrica:em-andamento"]);
   });
+
+  it("confere a conta a cada escrita: trocar de conta no gh depois da primeira escrita é recusado", async () => {
+    const gh = new FakeGhIssues("dono/repo", "dono");
+    gh.issues = [{ number: 7, title: "Bug" }];
+    const source = createGitHubDemandSource({ project: "SF", repo: "dono/repo", assignee: "dono", runner: gh.runner });
+    await source.addComment("SF-7", "primeiro");
+    gh.me = "outra-conta";
+    await expect(source.addComment("SF-7", "segundo")).rejects.toThrow(/outra-conta/);
+  });
+
+  it("label de status apagado por outra pessoa no meio (404 no DELETE) não impede a transição", async () => {
+    const { gh, source } = setup();
+    await source.transition("SF-7", "em-andamento");
+    gh.onRead = () => {
+      if (gh.issues[0]) gh.issues[0].labels = ["bug"];
+      gh.onRead = undefined;
+    };
+    await source.transition("SF-7", "fechada");
+    expect(gh.issues[0]).toMatchObject({ state: "closed", labels: ["bug"] });
+  });
 });
