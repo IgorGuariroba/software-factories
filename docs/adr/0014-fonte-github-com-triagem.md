@@ -9,3 +9,5 @@ O usuário conecta um repositório e a fábrica passa a monitorá-lo. Diferente 
   - `duvidosa` e risco alto vão ao usuário.
 - **Uma issue em andamento por repositório** no começo (`maxActive: 1`), para não tocar todas ao mesmo tempo.
 - Merge continua humano; a fábrica nunca dá push na branch padrão; o teste roda num container sem segredos.
+
+**Estado:** a Fonte GitHub existe, mas o daemon ainda não a registra; um projeto `type: github` falha ao carregar. Triagem, `triageApproval` e `maxActive` ainda não estão implementados, e só com eles a Fonte será ligada.

@@ -12,7 +12,8 @@ export type GhRunner = (args: string[], input?: string) => Promise<GhExecResult>
 
 export const defaultGhRunner: GhRunner = (args, input) =>
   new Promise((resolve) => {
-    const child = execFile("gh", args, { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    // Um `gh` travado não pode segurar o polling: depois do limite o processo é morto e a chamada falha.
+    const child = execFile("gh", args, { maxBuffer: 64 * 1024 * 1024, timeout: 60_000 }, (error, stdout, stderr) => {
       const code =
         error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 0;
       resolve({
@@ -122,13 +123,33 @@ export class GitHubDemandSource implements DemandSource {
       `repos/${this.opts.repo}/issues/${n}/comments?per_page=100`,
       `comentários de ${key}`,
     );
-    return raw.map((c) => ({ id: String(c.id), author: c.user?.login ?? "", body: c.body ?? "" }));
+    return raw.map((c) => ({ id: String(c.id), author: this.person(c.user?.login ?? ""), body: c.body ?? "" }));
   }
 
   /** Issues do GitHub não têm anexos como o Jira; a leitura ainda confere a issue, para falha não virar lista vazia. */
   async listTextAttachments(key: string): Promise<TextAttachment[]> {
     if (this.numberOf(key) !== undefined) await this.getCard(key);
     return [];
+  }
+
+  /** Login do GitHub não diferencia caixa: o dono volta exatamente como configurado. */
+  private person(login: string): string {
+    return login.toLowerCase() === this.opts.assignee.toLowerCase() ? this.opts.assignee : login;
+  }
+
+  private account?: Promise<string>;
+
+  /** Toda escrita confere antes que o `gh` está autenticado como o dono; senão os comentários seriam de outra conta. */
+  private async assertOwner(): Promise<void> {
+    this.account ??= this.api(["user"], "conta autenticada").then(
+      (out) => (JSON.parse(out) as { login: string }).login,
+    );
+    const login = await this.account.catch((error) => {
+      this.account = undefined;
+      throw error;
+    });
+    if (login.toLowerCase() !== this.opts.assignee.toLowerCase())
+      throw new Error(`o gh está autenticado como ${login}, não como ${this.opts.assignee}: escrita recusada`);
   }
 
   private issueNumber(key: string): number {
@@ -139,6 +160,7 @@ export class GitHubDemandSource implements DemandSource {
 
   async addComment(key: string, body: string): Promise<{ id: string }> {
     const n = this.issueNumber(key);
+    await this.assertOwner();
     const out = await this.api(["-X", "POST", `repos/${this.opts.repo}/issues/${n}/comments`], `comentar em ${key}`, {
       body,
     });
@@ -147,6 +169,7 @@ export class GitHubDemandSource implements DemandSource {
 
   async editComment(key: string, commentId: string, body: string): Promise<void> {
     this.issueNumber(key);
+    await this.assertOwner();
     await this.api(
       ["-X", "PATCH", `repos/${this.opts.repo}/issues/comments/${commentId}`],
       `editar comentário de ${key}`,
@@ -156,16 +179,18 @@ export class GitHubDemandSource implements DemandSource {
 
   async transition(key: string, status: string): Promise<void> {
     const n = this.issueNumber(key);
+    await this.assertOwner();
     const path = `repos/${this.opts.repo}/issues/${n}`;
     const issue = JSON.parse(await this.api([path], `issue ${key}`)) as RawIssue;
-    const kept = labelNames(issue).filter((l) => !l.startsWith(STATUS_LABEL));
     const target = status.toLowerCase();
-    if (target === CLOSED_STATUS) {
-      await this.api(["-X", "PATCH", path], `fechar ${key}`, { state: "closed", labels: kept });
-      return;
-    }
-    const labels = target === OPEN_STATUS ? kept : [...kept, `${STATUS_LABEL}${target}`];
-    await this.api(["-X", "PATCH", path], `mover ${key}`, { state: "open", labels });
+    const wanted = target === OPEN_STATUS || target === CLOSED_STATUS ? undefined : `${STATUS_LABEL}${target}`;
+    // Só os labels da fábrica mudam, um a um: labels postos por outras pessoas no meio do caminho ficam intactos.
+    for (const label of labelNames(issue).filter((l) => l.startsWith(STATUS_LABEL) && l !== wanted))
+      await this.api(["-X", "DELETE", `${path}/labels/${encodeURIComponent(label)}`], `tirar ${label} de ${key}`);
+    if (wanted && !labelNames(issue).includes(wanted))
+      await this.api(["-X", "POST", `${path}/labels`], `pôr ${wanted} em ${key}`, { labels: [wanted] });
+    const state = target === CLOSED_STATUS ? "closed" : "open";
+    if (issue.state !== state) await this.api(["-X", "PATCH", path], `mudar estado de ${key}`, { state });
   }
 
   formatMention(personId: string): string {

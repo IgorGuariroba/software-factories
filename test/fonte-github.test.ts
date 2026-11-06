@@ -62,3 +62,30 @@ describe("Config da Fonte GitHub", () => {
     expect(bad.success).toBe(false);
   });
 });
+
+describe("Fonte GitHub: identidade e labels", () => {
+  it("autor com outra caixa é reconhecido como o dono configurado", async () => {
+    const { gh, source } = setup();
+    gh.addComment(7, "DONO", "meu");
+    expect((await source.listComments("SF-7"))[0]?.author).toBe("dono");
+  });
+
+  it("recusa escrever quando a conta do gh não é o dono", async () => {
+    const gh = new FakeGhIssues("dono/repo", "outra-conta");
+    gh.issues = [{ number: 7, title: "Bug" }];
+    const source = createGitHubDemandSource({ project: "SF", repo: "dono/repo", assignee: "dono", runner: gh.runner });
+    await expect(source.addComment("SF-7", "x")).rejects.toThrow(/outra-conta/);
+    await expect(source.transition("SF-7", "em-andamento")).rejects.toThrow(/outra-conta/);
+    expect(gh.comments.get(7)).toBeUndefined();
+  });
+
+  it("a transição só mexe nos labels fabrica:*: um label adicionado por outra pessoa no meio é preservado", async () => {
+    const { gh, source } = setup();
+    gh.onRead = () => {
+      gh.issues[0]?.labels?.push("urgente");
+      gh.onRead = undefined;
+    };
+    await source.transition("SF-7", "em-andamento");
+    expect(gh.issues[0]?.labels).toEqual(["bug", "urgente", "fabrica:em-andamento"]);
+  });
+});

@@ -16,6 +16,8 @@ export class FakeGhIssues {
   comments = new Map<number, { id: number; body: string; user: { login: string } }[]>();
   calls: string[][] = [];
   failWith?: string;
+  /** Chamado em cada leitura de uma issue (simula outra pessoa mexendo entre a leitura e a escrita). */
+  onRead?: () => void;
   private nextId = 1000;
 
   constructor(
@@ -47,6 +49,7 @@ export class FakeGhIssues {
     const ok = (v: unknown): GhExecResult => ({ stdout: JSON.stringify(v), stderr: "", exitCode: 0 });
     const notFound: GhExecResult = { stdout: "", stderr: "gh: Not Found (HTTP 404)", exitCode: 1 };
     const method = args.includes("-X") ? args[args.indexOf("-X") + 1] : "GET";
+    if (args.includes("user")) return ok({ login: this.me });
     const path = args.find((a) => a.startsWith("repos/")) ?? "";
     const body = input ? JSON.parse(input) : {};
     const base = `repos/${this.repo}/`;
@@ -79,10 +82,20 @@ export class FakeGhIssues {
       }
       return ok([this.comments.get(n) ?? []]);
     }
+    const labels = /^issues\/(\d+)\/labels(?:\/(.+))?$/.exec(rest);
+    if (labels) {
+      const issue = this.issues.find((i) => i.number === Number(labels[1]));
+      if (!issue) return notFound;
+      const current = issue.labels ?? [];
+      if (method === "POST") issue.labels = [...current, ...body.labels.filter((l: string) => !current.includes(l))];
+      if (method === "DELETE") issue.labels = current.filter((l) => l !== decodeURIComponent(labels[2] ?? ""));
+      return ok((issue.labels ?? []).map((name) => ({ name })));
+    }
     const one = /^issues\/(\d+)$/.exec(rest);
     if (one) {
       const issue = this.issues.find((i) => i.number === Number(one[1]));
       if (!issue) return notFound;
+      if (method === "GET") this.onRead?.();
       if (method === "PATCH") {
         if (body.state) issue.state = body.state;
         if (body.labels) issue.labels = body.labels;

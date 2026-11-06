@@ -38,6 +38,23 @@ describe("config de projeto", () => {
     expect(queue.map((c) => c.key)).toEqual(["PROJ-7"]);
   });
 
+  it("projeto github não sobe enquanto a Fonte não estiver registrada (sem triagem, ADR-0014)", async () => {
+    const example = await readFile("projects/example.yaml", "utf8");
+    const github = example.replace(
+      /source:\n(?: {2}.*\n)+/,
+      "source:\n  type: github\n  project: SF\n  repo: dono/repo\n  assignee: dono\n",
+    );
+    await writeFile(join(dir, "gh.yaml"), github);
+    await expect(
+      startDaemon({
+        configDir: dir,
+        sources,
+        statePath: join(dir, "estado", "fabrica.sqlite"),
+        models: createModels(),
+      }),
+    ).rejects.toThrow(/Fonte "github" não disponível/);
+  });
+
   it("prioriza o prefixo específico no exemplo, antes do prefixo genérico da chave", async () => {
     const example = parse(await readFile("projects/example.yaml", "utf8")) as { repositories: { prefix: string }[] };
     expect(example.repositories.map((r) => r.prefix)).toEqual(["[mobile]", "PROJ"]);
