@@ -115,6 +115,27 @@ function createHttpAttachmentReader(
   };
 }
 
+/**
+ * Texto da fábrica em ADF: linha em branco separa parágrafos, quebra simples vira `hardBreak` e um parágrafo inteiro
+ * entre asteriscos (a marca de automação) sai em itálico.
+ */
+export function textToAdf(text: string): object {
+  const paragraphs = text
+    .split(/\n[ \t]*\n+/)
+    .map((p) => p.replace(/^\n+|\n+$/g, ""))
+    .filter((p) => p !== "")
+    .map((p) => {
+      const italic = /^\*([^*\n]+)\*$/.exec(p);
+      if (italic) return { type: "paragraph", content: [{ type: "text", text: italic[1], marks: [{ type: "em" }] }] };
+      const content = p.split("\n").flatMap((line, i) => {
+        const parts: object[] = i > 0 ? [{ type: "hardBreak" }] : [];
+        return line ? [...parts, { type: "text", text: line }] : parts;
+      });
+      return { type: "paragraph", content };
+    });
+  return { type: "doc", version: 1, content: paragraphs };
+}
+
 /** Nós ADF que terminam numa quebra de linha. */
 const BLOCK_TYPES = new Set(["paragraph", "heading", "codeBlock", "listItem", "blockquote"]);
 
@@ -130,9 +151,10 @@ function adfToText(node: unknown): string {
     text?: string;
     content?: unknown[];
     attrs?: { text?: string; id?: string };
+    marks?: { type?: string }[];
   };
 
-  if (typeof n.text === "string") return n.text;
+  if (typeof n.text === "string") return n.marks?.some((m) => m.type === "em") ? `*${n.text}*` : n.text;
   if (n.type === "hardBreak" || n.type === "rule") return "\n";
   if (n.type === "mention") return n.attrs?.text ?? (n.attrs?.id ? `[~accountid:${n.attrs.id}]` : "");
 
@@ -208,7 +230,10 @@ export class JiraDemandSource implements DemandSource {
   private readonly runner: AcliRunner;
   private readonly readAttachment: AttachmentReader;
 
+  private readonly opts: JiraDemandSourceOptions;
+
   constructor(opts: JiraDemandSourceOptions) {
+    this.opts = opts;
     this.project = opts.project;
     this.assignee = opts.assignee;
     this.runner = opts.runner ?? defaultAcliRunner;
@@ -346,18 +371,48 @@ export class JiraDemandSource implements DemandSource {
     return attachments;
   }
 
+  /**
+   * Escrita de comentário em ADF pela API REST (o `acli` grava texto puro e ignora ADF na edição). Só com `baseUrl` e
+   * credenciais; sem elas, `undefined` e a escrita segue pelo `acli`.
+   */
+  private async restComment(method: "POST" | "PUT", path: string, body: string): Promise<{ id?: string } | undefined> {
+    const env = this.opts.env ?? process.env;
+    const email = env.ATLASSIAN_EMAIL;
+    const token = env.ATLASSIAN_API_TOKEN;
+    if (!this.opts.baseUrl || !email || !token) return undefined;
+    const url = `${this.opts.baseUrl.replace(/\/+$/, "")}/rest/api/3/${path}`;
+    const doFetch = this.opts.fetch ?? fetch;
+    const res = await doFetch(url, {
+      method,
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ body: textToAdf(body) }),
+      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 60_000),
+    });
+    if (!res.ok) throw new Error(`Jira REST ${method} ${path} falhou: HTTP ${res.status}`);
+    const parsed = (await res.json().catch(() => ({}))) as { id?: unknown };
+    return { id: parsed.id === undefined ? undefined : String(parsed.id) };
+  }
+
   async addComment(key: string, body: string): Promise<{ id: string }> {
     const command = `jira workitem comment create --key ${key}`;
-    const args = ["jira", "workitem", "comment", "create", "--key", key, "--body", body, "--json"];
-    const stdout = (await this.run(args, command, key)) ?? "";
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      parsed = undefined;
+    const viaRest = await this.restComment("POST", `issue/${encodeURIComponent(key)}/comment`, body);
+    if (viaRest?.id) return { id: viaRest.id };
+    if (!viaRest) {
+      const args = ["jira", "workitem", "comment", "create", "--key", key, "--body", body, "--json"];
+      const stdout = (await this.run(args, command, key)) ?? "";
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        parsed = undefined;
+      }
+      const id = findCommentId(parsed);
+      if (id) return { id };
     }
-    const id = findCommentId(parsed);
-    if (id) return { id };
 
     // A resposta não trouxe o id: o comentário criado é o meu mais recente que começa com a primeira linha do corpo.
     const firstLine = body.trim().split("\n")[0];
@@ -370,6 +425,8 @@ export class JiraDemandSource implements DemandSource {
   }
 
   async editComment(key: string, commentId: string, body: string): Promise<void> {
+    const path = `issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(commentId)}`;
+    if (await this.restComment("PUT", path, body)) return;
     const args = ["jira", "workitem", "comment", "update", "--key", key, "--id", commentId, "--body", body];
     await this.run(args, `jira workitem comment update --key ${key} --id ${commentId}`, key);
   }

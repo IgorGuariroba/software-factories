@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isAutomationText } from "../src/effect-writer.js";
 import { type AcliRunner, createJiraDemandSource } from "../src/jira-demand-source.js";
 import { FakeAcli, type FakeJiraPerson } from "./fakes/fake-acli.js";
 
@@ -254,5 +255,64 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
       expect(err?.message).not.toContain(basic);
     }
     await expect(notOk.listTextAttachments("PROJ-1")).rejects.toThrow(/403/);
+  });
+});
+
+describe("Fonte Jira: comentários da fábrica em ADF pela API REST", () => {
+  const creds = { ATLASSIAN_EMAIL: "eu@exemplo.invalid", ATLASSIAN_API_TOKEN: "token-super-secreto" };
+  const MARKED = "SPEC\n\nlinha 1\nlinha 2\n\n*mensagem automatizada*";
+  const ADF = {
+    type: "doc",
+    version: 1,
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "SPEC" }] },
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "linha 1" }, { type: "hardBreak" }, { type: "text", text: "linha 2" }],
+      },
+      { type: "paragraph", content: [{ type: "text", text: "mensagem automatizada", marks: [{ type: "em" }] }] },
+    ],
+  };
+
+  function rest() {
+    const acli = new FakeAcli(me);
+    acli.issues = [{ key: "PROJ-1", summary: "x", status: "A Fazer", assignee: me }];
+    const calls: { method: string; url: string; body: unknown }[] = [];
+    const source = createJiraDemandSource({
+      project: "PROJ",
+      assignee: me.accountId,
+      runner: acli.runner,
+      env: creds,
+      baseUrl: "https://empresa.atlassian.net",
+      fetch: async (url, init) => {
+        calls.push({ method: init?.method ?? "GET", url: String(url), body: JSON.parse(String(init?.body)) });
+        return Response.json({ id: "900" });
+      },
+    });
+    return { acli, calls, source };
+  }
+
+  it("cria o comentário em ADF: parágrafos, quebras de linha e a marca de automação em itálico", async () => {
+    const { calls, source } = rest();
+    expect(await source.addComment("PROJ-1", MARKED)).toEqual({ id: "900" });
+    expect(calls).toEqual([
+      { method: "POST", url: "https://empresa.atlassian.net/rest/api/3/issue/PROJ-1/comment", body: { body: ADF } },
+    ]);
+  });
+
+  it("edita o comentário em ADF", async () => {
+    const { calls, source } = rest();
+    await source.editComment("PROJ-1", "55", MARKED);
+    expect(calls).toEqual([
+      { method: "PUT", url: "https://empresa.atlassian.net/rest/api/3/issue/PROJ-1/comment/55", body: { body: ADF } },
+    ]);
+  });
+
+  it("lê o itálico de volta como *texto*: a fábrica reconhece o próprio comentário", async () => {
+    const { acli, source } = rest();
+    acli.addHumanComment("PROJ-1", me, ADF);
+    const [comment] = await source.listComments("PROJ-1");
+    expect(comment?.body).toBe("SPEC\nlinha 1\nlinha 2\n*mensagem automatizada*");
+    expect(isAutomationText(comment?.body ?? "")).toBe(true);
   });
 });
