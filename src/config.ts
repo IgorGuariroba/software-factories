@@ -118,6 +118,8 @@ export const ProjectConfig = z.object({
   questionApproval: z.boolean().default(false),
   /** Segura SPEC e Tickets até a aprovação da prévia exata na página local. */
   specApproval: z.boolean().default(false),
+  /** Pausa a Tarefa depois da retrô de cada etapa (SPEC, implementação) até o usuário retomá-la. */
+  retroApproval: z.boolean().default(false),
   source: z.object({
     type: z.literal("jira"),
     /** Chave do projeto na Fonte (ex.: "PROJ"). */
