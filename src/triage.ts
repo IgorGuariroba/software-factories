@@ -78,7 +78,7 @@ export const looksLikeInjection = (text: string) => INJECTION.test(text);
  */
 export function trustedContext(others: Card[], recentCommits: string[]): { others: Card[]; recentCommits: string[] } {
   return {
-    others: others.filter((o) => !looksLikeInjection(o.title)),
+    others: others.filter((o) => !looksLikeInjection(`${o.title}\n${o.description ?? ""}`)),
     recentCommits: recentCommits.filter((c) => !looksLikeInjection(c)),
   };
 }
@@ -354,6 +354,8 @@ export async function requestTriage(opts: {
 export const INJECTION_THRESHOLD = 0.5;
 /** Confiança mínima da decisão e da categoria; abaixo dela, a issue vai ao usuário. */
 export const CONFIDENCE_MIN = 0.6;
+/** Máximo de caracteres da descrição de cada outra issue enviada ao classificador. */
+const OTHER_TEXT_MAX = 1_500;
 /** Máximo de outras issues oferecidas como opção de duplicata. */
 const DUPLICATE_OPTIONS_MAX = 100;
 
@@ -432,7 +434,12 @@ export async function classifyTriage(input: {
         texto: input.card.description ?? "",
         comentarios: human.map((c) => ({ autor: c.author, texto: c.body })),
       },
-      outras_issues: others.map((o) => ({ chave: o.key, titulo: o.title })),
+      // Com a descrição (cortada): títulos genéricos não bastam para distinguir uma duplicata.
+      outras_issues: others.map((o) => ({
+        chave: o.key,
+        titulo: o.title,
+        texto: cut(o.description?.trim() ?? "", OTHER_TEXT_MAX),
+      })),
       commits_recentes: input.recentCommits,
       ...(input.knowledge?.trim() ? { conhecimento: input.knowledge.trim() } : {}),
     },
@@ -484,7 +491,14 @@ export async function classifyTriage(input: {
   if (decisao.confidence < CONFIDENCE_MIN || categoria.confidence < CONFIDENCE_MIN)
     return { verdict: "duvidosa", category, by: "modelo", reason };
   const verdict = decisao.choice as TriageVerdict;
-  if (verdict === "aceita" && category !== "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
+  if (verdict === "aceita" && category !== "ok")
+    return {
+      verdict: "duvidosa",
+      category,
+      by: "modelo",
+      reason,
+      ...(category === "duplicata" && duplicateOf ? { duplicateOf } : {}),
+    };
   // Aceita, mas parecida com outra issue aberta: o usuário confere antes de a fábrica trabalhar duas vezes.
   if (verdict === "aceita" && duplicateOf)
     return { verdict: "duvidosa", category: "duplicata", by: "modelo", reason, duplicateOf };

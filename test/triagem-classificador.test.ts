@@ -118,6 +118,25 @@ describe("triagem por classificador (System One, ex.: Jev)", () => {
     expect(noisy.reason).not.toMatch(/duplicata/);
   });
 
+  it("categoria duplicata numa aceita: vai ao usuário e mantém a referência", async () => {
+    const r = await classifyTriage({
+      ...input,
+      others: [card(3, "Planilha")],
+      classify: classifier({ decisao: ["aceita", 0.9], categoria: ["duplicata", 0.9], duplicata: "SF-3" }).classify,
+    });
+    expect(r).toMatchObject({ verdict: "duvidosa", category: "duplicata", duplicateOf: "SF-3" });
+  });
+
+  it("as outras issues vão com a descrição: títulos genéricos não bastam para comparar", async () => {
+    const c = classifier({ decisao: ["aceita", 0.9] });
+    const a = { ...card(3, "Melhorias"), description: "Exportar o relatório em PDF." };
+    const b = { ...card(4, "Melhorias"), description: "Trocar a cor do botão de login." };
+    await classifyTriage({ ...input, others: [a, b], classify: c.classify });
+    const sent = JSON.stringify(c.seen[0]?.state);
+    expect(sent).toContain("Exportar o relatório em PDF.");
+    expect(sent).toContain("Trocar a cor do botão de login.");
+  });
+
   it("a categoria segurança é para ação perigosa, não para issue que só trata do tema", async () => {
     const c = classifier({ decisao: ["aceita", 0.9] });
     await classifyTriage({ ...input, classify: c.classify });
