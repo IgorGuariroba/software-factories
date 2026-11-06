@@ -721,13 +721,14 @@ export async function startFactory(opts: {
       if (!config.people.some((p) => p.role === "po" && p.id === q.to && p.teamsUserId === q.teamsNotice?.userId))
         return undefined;
       q.teamsNotice.status = "attempted";
-      return { userId: q.teamsNotice.userId, link: q.teamsNotice.link };
+      const po = config.people.find((p) => p.role === "po" && p.id === q.to);
+      return { userId: q.teamsNotice.userId, link: q.teamsNotice.link, title: task.title, name: po?.name };
     }, context);
     if (!notice) return;
     try {
       await opts.teams.send({
         userId: notice.userId,
-        text: teamsQuestionMessage(key, notice.link),
+        text: teamsQuestionMessage({ card: key, title: notice.title, link: notice.link, name: notice.name }),
       });
       await markQuestion(id, n, (q) => {
         if (q.teamsNotice) q.teamsNotice.status = "sent";
@@ -1165,7 +1166,10 @@ export async function startFactory(opts: {
             to: q.to,
             comment: withAutomationMark(redactSecrets(`Pergunta ${n}: ${q.text}`)),
             teamsUserId: po.teamsUserId ?? null,
-            teamsMessage: po.teamsUserId && link ? teamsQuestionMessage(cardKey, link) : null,
+            teamsMessage:
+              po.teamsUserId && link
+                ? teamsQuestionMessage({ card: cardKey, title: task?.title ?? "", link, name: po.name })
+                : null,
             dryRun: project.config.dryRun,
           };
           const revision = questionRevision(preview);

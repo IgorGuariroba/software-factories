@@ -201,14 +201,18 @@ describe("perguntas de negócio ao PO", () => {
       },
       config: {
         source: { type: "jira", project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
-        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po" }],
+        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po", name: "Maria Souza" }],
       },
     });
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "aguardando-humano");
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ userId: "8:orgid:po" });
-    expect(sent[0]?.text).toContain("https://jira.example.invalid/browse/PROJ-1");
+    const title = factory.source.cards[0]?.title ?? "";
+    expect(sent[0]?.text).toBe(
+      `Olá, Maria! Aguardamos a sua resposta à pergunta feita no card PROJ-1 (${title}). ` +
+        "Pode responder direto no card: https://jira.example.invalid/browse/PROJ-1\n\n*mensagem automatizada*",
+    );
     factory = await factory.restart();
     await poll(factory);
     expect(sent).toHaveLength(1);
