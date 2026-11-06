@@ -147,6 +147,8 @@ const GitHubSourceConfig = z.object({
   triageApproval: z.boolean().default(true),
   /** Quantas issues deste repositório a fábrica toca ao mesmo tempo (Tarefas não terminadas). */
   maxActive: z.number().int().positive().default(1),
+  /** Issues com algum destes labels ficam fora da fila; issues com sub-issues (épicos) também. */
+  ignoreLabels: z.array(z.string().min(1)).default(["epic"]),
 });
 
 export const ProjectConfig = z.object({

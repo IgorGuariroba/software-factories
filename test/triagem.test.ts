@@ -40,6 +40,7 @@ function github(over: { triageApproval?: boolean; maxActive?: number } = {}): Pa
       assignee: USER,
       triageApproval: over.triageApproval ?? true,
       maxActive: over.maxActive ?? 1,
+      ignoreLabels: ["epic"],
     },
     statuses: { aberta: "todo", "em-andamento": "in_progress", "aguardando-teste": "waiting_test", fechada: "done" },
   };
@@ -153,21 +154,28 @@ describe("triagem das issues do GitHub (ADR-0014)", () => {
     expect(triageCalls(factory)).toHaveLength(1);
   });
 
-  it("maxActive: só a issue mais antiga vira Tarefa; a próxima entra quando ela termina", async () => {
+  it("maxActive vale depois da triagem: todas são triadas, só a mais antiga segue; a próxima segue quando ela termina", async () => {
     const source = new MemoryGitHubSource([issue(9), issue(2), issue(4)]);
     factory = await startTestFactory({ source, model: accept(), config: { ...github(), specApproval: true } });
     await poll(factory);
     await waitForStatus(factory, "SF-2", "aguardando-humano");
-    await poll(factory);
-    expect((await tasks(factory)).map((t) => t.key)).toEqual(["SF-2"]);
+    await eventually(() => expect(triageCalls(factory as TestFactory)).toHaveLength(3));
+    const waiting = (await tasks(factory)).filter((t) => t.key !== "SF-2");
+    expect(waiting.map((t) => [t.key, t.status, t.stage])).toEqual(
+      [
+        ["SF-4", "enfileirada", "triagem"],
+        ["SF-9", "enfileirada", "triagem"],
+      ].sort() as never,
+    );
 
     const spec = await api<{ revision: string }>(factory, "GET", "/tasks/exemplo/SF-2/spec");
     await api(factory, "POST", "/tasks/exemplo/SF-2/spec/approve", { revision: spec.revision });
     await waitForStatus(factory, "SF-2", "concluida");
-    await poll(factory);
-    await eventually(async () =>
-      expect((await tasks(factory as TestFactory)).map((t) => t.key)).toEqual(["SF-2", "SF-4"]),
-    );
+    await eventually(async () => {
+      const t = await tasks(factory as TestFactory);
+      expect(t.filter((x) => x.stage !== "triagem" && x.key !== "SF-2").map((x) => x.key)).toEqual(["SF-4"]);
+    });
+    expect(triageCalls(factory)).toHaveLength(3);
   });
 
   it("no dry-run a recusa aprovada não é publicada", async () => {
@@ -238,5 +246,47 @@ describe("triagem das issues do GitHub (ADR-0014)", () => {
       await factory.close();
       factory = undefined;
     }
+  });
+
+  it("uma issue em dúvida, à espera da sua revisão, não segura a triagem nem a SPEC das outras", async () => {
+    const source = new MemoryGitHubSource([issue(1, "Ajuda?"), issue(2)]);
+    const model = triaging((i) =>
+      i.includes("Título: Ajuda?")
+        ? { decisao: "duvidosa", categoria: "clareza", motivo: "vago" }
+        : { decisao: "aceita", categoria: "ok", motivo: "claro" },
+    );
+    factory = await startTestFactory({ source, model, config: github() });
+    await poll(factory);
+    await waitForStatus(factory, "SF-1", "aguardando-humano");
+    await eventually(async () =>
+      expect((await tasks(factory as TestFactory)).find((t) => t.key === "SF-2")).toMatchObject({
+        status: "concluida",
+      }),
+    );
+  });
+
+  it("a vaga fica reservada na aceitação: pausada logo depois, a Tarefa ainda conta para maxActive", async () => {
+    const source = new MemoryGitHubSource([issue(1), issue(2)]);
+    let running: TestFactory | undefined;
+    // Pede a pausa da SF-1 enquanto ela é triada: ela para antes do passo seguinte, já aceita.
+    const model = accept();
+    const base = model.respond;
+    model.respond = async (call) => {
+      if (call.input.includes("Issue SF-1") && running) await api(running, "POST", "/tasks/exemplo/SF-1/pause");
+      return base(call);
+    };
+    factory = running = await startTestFactory({ source, model, config: { ...github(), specApproval: true } });
+    await poll(factory);
+    await waitForStatus(factory, "SF-1", "pausada");
+    await eventually(async () => {
+      const t = await tasks(factory as TestFactory);
+      expect(
+        t.find((x) => x.key === "SF-2"),
+        JSON.stringify(t),
+      ).toMatchObject({
+        reason: expect.stringMatching(/espera vaga/),
+      });
+    });
+    expect((await tasks(factory)).find((x) => x.key === "SF-1")?.stage).not.toBe("triagem");
   });
 });

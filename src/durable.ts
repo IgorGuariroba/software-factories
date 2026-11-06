@@ -303,9 +303,10 @@ export interface StepRuntime {
 export interface TarefaSteps {
   /**
    * Executa um passo. `"aguardar"`: a Tarefa espera uma pessoa (pergunta, prévia) e dorme sem ocupar a fila.
-   * `"recusada"`: a triagem deu baixa na issue; a Tarefa termina aí.
+   * `"recusada"`: a triagem deu baixa na issue; a Tarefa termina aí. `"adiar"`: aceita na triagem, mas sem vaga
+   * (`maxActive`); volta à fila, no mesmo lugar, e tenta de novo depois.
    */
-  run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | "recusada" | undefined>;
+  run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | "recusada" | "adiar" | undefined>;
   /**
    * Inspeção de um card que já estava em andamento, no lugar do prazo de veto: `"seguir"` (nada feito antes no
    * repositório), `"bloquear"` (já implementado) ou `"veto"` (sem repositório para inspecionar: espera o prazo).
@@ -487,13 +488,31 @@ export function createTarefaTask(steps: TarefaSteps) {
     }, context);
     if (gated) return;
 
-    let outcome: "aguardar" | "recusada" | undefined;
+    let outcome: "aguardar" | "recusada" | "adiar" | undefined;
     try {
       outcome = await abortable(steps.run(task.input, step, stepRuntimeOf(task, runtime, context)), runtime.signal);
     } catch (err) {
       return fail(task, err, runtime, context);
     }
 
+    if (outcome === "adiar") {
+      // Sem vaga (maxActive): volta à fila no mesmo lugar (a mais antiga segue primeiro), sem contar tentativa.
+      await runtime.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        const queued = findTask(state, task.input.id);
+        const later: QueuedTask = {
+          ...copyOutOfCommit(queued),
+          status: "enfileirada",
+          durableId: null,
+          gateId: null,
+          notBefore: runtime.now() + steps.retryDelayMs,
+          reason: "aceita na triagem; espera vaga (maxActive)",
+        };
+        state.tasks = state.tasks.map((t) => (t.id === later.id ? later : t));
+        return { status: "terminal", outcome: { status: "completed", result: null } };
+      }, context);
+      return;
+    }
     const next = outcome === "aguardar" ? { phase: "aguardar" as const } : outcome === "recusada" ? "fim" : NEXT[step];
     await runtime.commit(async (tx) => {
       if (next !== "fim") return { status: "running", checkpoint: next };

@@ -10,6 +10,8 @@ export interface FakeIssue {
   labels?: string[];
   author?: string;
   pull_request?: boolean;
+  /** Quantas sub-issues a issue tem (épico). */
+  subIssues?: number;
 }
 
 /** `gh api` em memória para um único repositório, com paginação no formato `--paginate --slurp`. */
@@ -44,6 +46,7 @@ export class FakeGhIssues {
       labels: (i.labels ?? []).map((name) => ({ name })),
       user: { login: i.author ?? "estranho" },
       ...(i.pull_request ? { pull_request: { url: "x" } } : {}),
+      sub_issues_summary: { total: i.subIssues ?? 0 },
     };
   }
 

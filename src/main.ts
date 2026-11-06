@@ -78,6 +78,7 @@ try {
           project: config.source.project,
           repo: config.source.repo,
           assignee: config.source.assignee,
+          ignoreLabels: config.source.ignoreLabels,
         });
       },
     },
