@@ -54,6 +54,8 @@ export type Question = {
   answer: string | null;
   /** Rascunho de ensaio; `sending` indica resultado potencialmente incerto após uma interrupção. */
   publication?: "draft" | "sending" | "sent";
+  /** Lembrete em revisão: rascunho aguardando aprovação, em envio (incerto se interrompido) ou enviado. */
+  reminder?: "draft" | "sending" | "sent";
   /** A reserva antecede o envio; resultado incerto nunca é reenviado automaticamente. */
   teamsNotice?: { userId: string; link: string; status: "pending" | "attempted" | "sent" | "uncertain" };
 };

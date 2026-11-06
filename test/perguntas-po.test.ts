@@ -404,6 +404,43 @@ describe("escalonamento em horas úteis", () => {
     return { clock, f: factory };
   }
 
+  it("com revisão de perguntas, o lembrete vira rascunho e só é publicado após aprovação da prévia", async () => {
+    const clock = new FakeClock("2026-11-09T09:00:00-03:00");
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador do CSV?");
+    factory = await startTestFactory({
+      cards: [card("PROJ-1")],
+      model,
+      clock,
+      config: { calendar: CALENDAR, questionApproval: true },
+    });
+    const f = factory;
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    const question = await api<{ revision: string }>(f, "GET", "/tasks/exemplo/PROJ-1/questions/1");
+    await api(f, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: question.revision });
+
+    clock.advanceTo("2026-11-09T13:00:00-03:00");
+    let preview: { comment: string; revision: string } | undefined;
+    await eventually(async () => {
+      preview = await api(f, "GET", "/tasks/exemplo/PROJ-1/questions/1/reminder");
+    });
+    expect(reminders(f, "PROJ-1")).toEqual([]);
+    expect(preview?.comment).toContain("Lembrete da pergunta 1");
+    const url = `${f.url}/tasks/exemplo/PROJ-1/questions/1/reminder/approve`;
+    const post = (revision: string) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision }),
+      });
+    expect((await post("inválida")).status).toBe(409);
+    expect(reminders(f, "PROJ-1")).toEqual([]);
+    expect((await post(preview?.revision ?? "")).status).toBe(200);
+    expect(reminders(f, "PROJ-1").map((c) => c.body)).toEqual([preview?.comment]);
+    expect((await post(preview?.revision ?? "")).status).toBe(409);
+  });
+
   it("cruzando o fim de semana: lembrete ao PO após 4 h úteis e aviso ao usuário após 1 dia útil", async () => {
     // Sexta 16:00: restam 2 h úteis na sexta; segunda completa as 4 h às 11:00 e o dia útil (9 h) às 16:00.
     const { clock, f } = await askedAt("2026-11-06T16:00:00-03:00");

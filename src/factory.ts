@@ -116,6 +116,9 @@ const ELIGIBLE: ReadonlySet<CardState> = new Set(["todo", "in_progress"]);
 /** Estado mais avançado para onde a fábrica move cards no M1. */
 const TRANSITION_LIMIT: CardState = "in_progress";
 
+/** Texto do lembrete de uma pergunta sem resposta. */
+const reminderText = (q: Question) => `Lembrete da pergunta ${q.n}: ainda aguardo a sua resposta neste card. ${q.text}`;
+
 /** Horas úteis sem resposta até o lembrete à pessoa perguntada. */
 export const REMINDER_BUSINESS_HOURS = 4;
 
@@ -523,11 +526,23 @@ export async function startFactory(opts: {
       if (await checkAnswer(input, q)) return null;
 
       const now = runtime.now();
+      if (!q.reminded && now >= q.remindAt && project.config.questionApproval) {
+        // Com revisão, o lembrete não sai sozinho: vira rascunho e o usuário o aprova pela página.
+        await markQuestion(input.id, q.n, (stored) => {
+          stored.reminded = true;
+          stored.reminder ??= "draft";
+        });
+        await events.append({
+          type: "notify",
+          project: input.project,
+          target: input.key,
+          reason: "pergunta-sem-resposta",
+          message: `O lembrete da pergunta ${q.n} no card ${input.key} aguarda a sua revisão antes de ser publicado.`,
+        });
+        q.reminded = true;
+      }
       if (!q.reminded && now >= q.remindAt) {
-        await project.channel.remind(
-          q.ref,
-          `Lembrete da pergunta ${q.n}: ainda aguardo a sua resposta neste card. ${q.text}`,
-        );
+        await project.channel.remind(q.ref, reminderText(q));
         await markQuestion(input.id, q.n, (stored) => {
           stored.reminded = true;
         });
@@ -982,6 +997,58 @@ export async function startFactory(opts: {
           return true;
         }, context);
         return approved ? json(res, 200, { ok: true }) : json(res, 409, { error: "SPEC mudou ou foi cancelada" });
+      }
+      const reminderRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)\/reminder(\/approve)?$/);
+      if (reminderRoute && (req.method === "GET" || req.method === "POST")) {
+        const [, encodedProject, encodedKey, number, approval] = reminderRoute;
+        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
+        const projectName = decodeURIComponent(encodedProject as string);
+        const cardKey = decodeURIComponent(encodedKey as string);
+        const id = `${projectName}/${cardKey}`;
+        const n = Number(number);
+        const state = await readState();
+        const task = state.tasks.find((t) => t.id === id);
+        const q = task?.questions?.find((item) => item.n === n);
+        if (!q) return json(res, 404, { error: "pergunta não encontrada" });
+        if (q.reminder !== "draft" || q.answer !== null || task?.status !== "aguardando-humano")
+          return json(res, 409, { error: "lembrete não está disponível para aprovação" });
+        const project = projectOf(projectName);
+        const text = reminderText(q);
+        const preview = {
+          card: cardKey,
+          to: q.to,
+          comment: `${AUTOMATION_PREFIX} ${redactSecrets(text)}`,
+          dryRun: project.config.dryRun,
+        };
+        const revision = reviewRevision(preview);
+        if (req.method === "GET") return json(res, 200, { ...preview, revision });
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { revision?: unknown } | undefined;
+        if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
+        if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
+        const reserved = await harness.commit(async (tx) => {
+          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          const stored = current?.questions?.find((item) => item.n === n);
+          if (current?.status !== "aguardando-humano" || stored?.reminder !== "draft" || stored.answer !== null)
+            return false;
+          stored.reminder = "sending";
+          return true;
+        }, context);
+        if (!reserved) return json(res, 409, { error: "lembrete mudou ou já foi enviado" });
+        await project.channel.remind(q.ref, text);
+        await markQuestion(id, n, (stored) => {
+          stored.reminder = "sent";
+        });
+        await events.append({
+          type: "question",
+          project: projectName,
+          target: cardKey,
+          n,
+          to: q.to,
+          text: q.text,
+          status: "lembrete",
+        });
+        return json(res, 200, { ok: true });
       }
       const questionRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)(\/approve)?$/);
       if (questionRoute && (req.method === "GET" || req.method === "POST")) {

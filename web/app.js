@@ -2,6 +2,7 @@
 // O DOM é montado com createElement e textContent: conteúdo do card e do modelo nunca vira HTML.
 import {
   approveQuestion,
+  approveReminder,
   approveRetro,
   approveSpec,
   cancelTask,
@@ -9,6 +10,7 @@ import {
   getDaemon,
   getQuestionPreview,
   getQueue,
+  getReminderPreview,
   getRetroPreview,
   getSpecPreview,
   getTask,
@@ -83,6 +85,38 @@ async function run(command) {
     showError(err);
   }
   await refresh();
+}
+
+function reviewReminderButton(task, question) {
+  const container = el("div");
+  const button = el("button", {
+    text: "Revisar lembrete",
+    attrs: { type: "button" },
+    onClick: async () => {
+      button.disabled = true;
+      try {
+        const preview = await getReminderPreview(task.project, task.key, question.n);
+        if (!container.isConnected) return;
+        container.replaceChildren(
+          el("p", { text: `Lembrete no Jira (${preview.card}):` }),
+          el("pre", { className: "texto", text: preview.comment }),
+          preview.dryRun
+            ? el("p", { text: "Dry-run: a publicação real está desativada." })
+            : el("button", {
+                text: "Aprovar lembrete",
+                attrs: { type: "button" },
+                onClick: () => run(() => approveReminder(task.project, task.key, question.n, preview.revision)),
+              }),
+        );
+        clearError();
+      } catch (err) {
+        button.disabled = false;
+        showError(err);
+      }
+    },
+  });
+  container.append(button);
+  return container;
 }
 
 function reviewSpecButton(task) {
@@ -322,6 +356,8 @@ function renderDetail(task) {
                       : `Resposta: ${q.answer}`,
             }),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
+            ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),
+            ...(q.reminder === "sending" ? [el("p", { text: "Lembrete não confirmado; verifique o Jira." })] : []),
             ...(q.teamsNotice === "uncertain" || q.teamsNotice === "attempted"
               ? [el("p", { text: "Aviso Teams não confirmado; verifique o chat antes de reenviar." })]
               : []),

@@ -115,6 +115,62 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/questions/{n}/reminder": {
+      get: {
+        summary: "Prévia exata do lembrete ao PO aguardando aprovação",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        responses: {
+          "200": {
+            description: "Prévia vinculada à revisão",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["card", "to", "comment", "dryRun", "revision"],
+                  properties: {
+                    card: { type: "string" },
+                    to: { type: "string" },
+                    comment: { type: "string" },
+                    dryRun: { type: "boolean" },
+                    revision: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Lembrete indisponível" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/questions/{n}/reminder/approve": {
+      post: {
+        summary: "Aprova a revisão exata e publica o lembrete no card",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", required: ["revision"], properties: { revision: { type: "string" } } },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Prévia mudou, indisponível ou dry-run" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/questions/{n}": {
       get: {
         summary: "Prévia exata da pergunta e do aviso ao PO",
@@ -377,6 +433,10 @@ export const API_SCHEMA = {
                     text: { type: "string" },
                     askedAt: { type: "string" },
                     answer: { type: ["string", "null"], description: "null enquanto pendente" },
+                    reminder: {
+                      enum: ["draft", "sending", "sent", null],
+                      description: "Lembrete em revisão; sending indica resultado incerto",
+                    },
                     publication: {
                       enum: ["draft", "sending", "sent"],
                       description: "Situação da publicação da pergunta",
