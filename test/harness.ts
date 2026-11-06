@@ -64,7 +64,8 @@ export interface TestFactory extends RunningFactory {
   /** Diretório do estado durável (e dos clones da fábrica, em `worktrees/`). */
   stateDir: string;
   /** Fecha a fábrica e sobe outra sobre o mesmo estado durável e a mesma Fonte: um reinício do daemon. */
-  restart(): Promise<TestFactory>;
+  /** `overrides` muda as opções do novo daemon (ex.: a config do projeto), mantendo estado, Fonte e modelo. */
+  restart(overrides?: Partial<TestFactoryOptions>): Promise<TestFactory>;
 }
 
 interface TestFactoryOptions {
@@ -126,9 +127,9 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
       await factory.close();
       await rm(dir, { recursive: true, force: true });
     },
-    restart: async () => {
+    restart: async (overrides = {}) => {
       await factory.close();
-      return startTestFactory({ ...opts, source, model, codeHost, retroSink, knowledge: undefined }, dir);
+      return startTestFactory({ ...opts, source, model, codeHost, retroSink, knowledge: undefined, ...overrides }, dir);
     },
   };
 }

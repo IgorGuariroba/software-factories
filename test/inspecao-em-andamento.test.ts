@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES } from "../src/config.js";
 import { createRemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
-import { api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
+import { api, events, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
 
 let factory: TestFactory | undefined;
 let root: string | undefined;
@@ -20,7 +20,7 @@ async function startWithRepo(commits: string[]) {
   const repo = await createRemoteRepo(root, "app", { commits });
   factory = await startTestFactory({
     cards: [card],
-    config: { repositories: [{ path: repo.user, prefix: "PROJ", test: NODE_TEST }] },
+    config: { retroApproval: true, repositories: [{ path: repo.user, prefix: "PROJ", test: NODE_TEST }] },
   });
   return factory;
 }
@@ -29,9 +29,8 @@ describe("card 'Em Andamento' com repositório mapeado: inspeção no lugar do v
   it("sem trabalho anterior no repositório, segue direto, sem prazo de veto", async () => {
     const f = await startWithRepo(["feat(PROJ-10): outra coisa"]);
     await poll(f);
-    await eventually(async () =>
-      expect((await api<{ stage: string }>(f, "GET", "/tasks/exemplo/PROJ-1")).stage).toBe("implementacao"),
-    );
+    // Parada antes da implementação pelo portão da retrô: passou do veto e da SPEC sem esperar o prazo.
+    await waitForStatus(f, "PROJ-1", "pausada");
 
     const all = await events(f);
     expect(all.some((e) => e.type === "notify" && e.reason === "aguardando-veto")).toBe(false);
@@ -46,5 +45,20 @@ describe("card 'Em Andamento' com repositório mapeado: inspeção no lugar do v
     const task = await api<{ reason: string | null }>(f, "GET", "/tasks/exemplo/PROJ-1");
     expect(task.reason).toMatch(/já implementado/);
     expect(f.model.retroCalls).toHaveLength(0);
+  });
+
+  it("ao reiniciar, uma Tarefa que já esperava o veto é reinspecionada e segue sem esperar o prazo", async () => {
+    factory = await startTestFactory({ cards: [card] });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-veto");
+
+    root = await tempRoot();
+    const repo = await createRemoteRepo(root, "app");
+    factory = await factory.restart({
+      config: { retroApproval: true, repositories: [{ path: repo.user, prefix: "PROJ", test: NODE_TEST }] },
+    });
+    const f = factory;
+    // Parada antes da implementação pelo portão da retrô: passou do veto e da SPEC sem esperar o prazo.
+    await waitForStatus(f, "PROJ-1", "pausada");
   });
 });

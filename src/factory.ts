@@ -604,18 +604,7 @@ export async function startFactory(opts: {
       const next = [!q.reminded ? q.remindAt : null, !q.notified ? q.notifyAt : null].filter((t) => t !== null);
       return next.length > 0 ? Math.min(...next) : null;
     },
-    async inspect(input) {
-      const project = projectOf(input.project);
-      const card = await project.source.getCard(input.key);
-      const mapping = card && resolveRepository(project.config.repositories, card);
-      if (!mapping) return { kind: "veto" };
-      const merged = await findMergedWork(resolvePath(mapping.path), input.key);
-      if (!merged) return { kind: "seguir" };
-      return {
-        kind: "bloquear",
-        reason: `card já implementado: o commit ${merged.sha} ("${merged.subject}") da branch padrão cita ${input.key}`,
-      };
-    },
+    inspect: (input) => inspectCard(input),
     vetoMs: (input) => projectOf(input.project).config.vetoMinutes * 60_000,
     async announceVeto(input, until) {
       const { vetoMinutes } = projectOf(input.project).config;
@@ -636,6 +625,23 @@ export async function startFactory(opts: {
         : { kind: "error", message: err instanceof Error ? err.message : String(err) },
     onError: (input, message) => events.append({ type: "error", project: input.project, target: input.key, message }),
   });
+
+  /** Inspeção do repositório de um card que já estava em andamento (ADR-0013). */
+  async function inspectCard(input: {
+    project: string;
+    key: string;
+  }): Promise<{ kind: "seguir" } | { kind: "bloquear"; reason: string } | { kind: "veto" }> {
+    const project = projectOf(input.project);
+    const card = await project.source.getCard(input.key);
+    const mapping = card && resolveRepository(project.config.repositories, card);
+    if (!mapping) return { kind: "veto" };
+    const merged = await findMergedWork(resolvePath(mapping.path), input.key);
+    if (!merged) return { kind: "seguir" };
+    return {
+      kind: "bloquear",
+      reason: `card já implementado: o commit ${merged.sha} ("${merged.subject}") da branch padrão cita ${input.key}`,
+    };
+  }
 
   const registry = createRegistry();
   registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask, DeadlineGateTask] }));
@@ -661,6 +667,35 @@ export async function startFactory(opts: {
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
+  await reinspectPendingVetoes();
+
+  /**
+   * Tarefas que já dormiam no prazo de veto quando o daemon subiu (ex.: assumidas antes da ADR-0013): reinspeciona o
+   * repositório e, sem trabalho anterior, encerra o prazo agora; a Tarefa acorda, volta à fila e segue para a SPEC.
+   */
+  async function reinspectPendingVetoes(): Promise<void> {
+    const waiting = (await readState()).tasks.filter(
+      (t) => t.status === "aguardando-veto" && t.veto && !t.veto.expired && clock.now() < t.veto.until,
+    );
+    for (const t of waiting) {
+      let inspection: Awaited<ReturnType<typeof inspectCard>>;
+      try {
+        inspection = await inspectCard(t);
+      } catch (err) {
+        console.error(`[fábrica] reinspeção de ${t.id} falhou; o prazo de veto continua:`, err);
+        continue;
+      }
+      if (inspection.kind !== "seguir") continue;
+      let gate: number | null = null;
+      await harness.commit(async (tx) => {
+        const task = (await tx.doc(StateDoc)).tasks.find((x) => x.id === t.id);
+        if (task?.status !== "aguardando-veto" || !task.veto) return;
+        task.veto.until = clock.now();
+        gate = task.gateId;
+      }, context);
+      if (gate !== null) await harness.abortTask(gate as TaskId, context);
+    }
+  }
 
   // --- Perguntas -------------------------------------------------------------------------------
 
