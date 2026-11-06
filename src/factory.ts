@@ -71,6 +71,7 @@ import {
   TriageExtension,
   type TriageResult,
   triageInput,
+  trustedContext,
 } from "./triage.js";
 import { webFile } from "./web.js";
 
@@ -470,6 +471,8 @@ export async function startFactory(opts: {
           mergedCommit: repoPath ? await findClosingCommit(repoPath, input.key, n) : null,
         });
         if (decided) return decided;
+        // Só o contexto sem frases de injeção vai ao modelo (classificador ou LLM).
+        const context = trustedContext(others, repoPath ? await recentSubjects(repoPath) : []);
         const role = project.config.roles.triage ?? project.config.roles.spec;
         const classifier = opts.models
           .getModelsOfType("classifier", role.provider)
@@ -478,8 +481,8 @@ export async function startFactory(opts: {
           return classifyTriage({
             card,
             comments,
-            others,
-            recentCommits: repoPath ? await recentSubjects(repoPath) : [],
+            others: context.others,
+            recentCommits: context.recentCommits,
             knowledge: await readKnowledge(project.knowledgeDir),
             classify: (ctx) => opts.models.classify(classifier, ctx),
           });
@@ -488,7 +491,7 @@ export async function startFactory(opts: {
           commit: runtime.commit,
           taskId: runtime.taskId,
           model: role,
-          others,
+          others: context.others,
           context: runtime.context,
           conversationId: conversation,
           remember: async (tx, id) => {
@@ -498,8 +501,8 @@ export async function startFactory(opts: {
           input: triageInput({
             card,
             comments,
-            others,
-            recentCommits: repoPath ? await recentSubjects(repoPath) : [],
+            others: context.others,
+            recentCommits: context.recentCommits,
             knowledge: await readKnowledge(project.knowledgeDir),
           }),
         });

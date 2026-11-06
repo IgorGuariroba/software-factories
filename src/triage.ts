@@ -69,6 +69,20 @@ const INJECTION =
 const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim();
 const issueNumber = (key: string) => Number(key.slice(key.lastIndexOf("-") + 1));
 
+/** Se o texto tem frases típicas de prompt injection. */
+export const looksLikeInjection = (text: string) => INJECTION.test(text);
+
+/**
+ * O contexto que acompanha a issue (as outras issues abertas, os commits recentes) também é dado não confiável: o que
+ * tiver frase de injeção fica de fora, nos dois caminhos (classificador e LLM).
+ */
+export function trustedContext(others: Card[], recentCommits: string[]): { others: Card[]; recentCommits: string[] } {
+  return {
+    others: others.filter((o) => !looksLikeInjection(o.title)),
+    recentCommits: recentCommits.filter((c) => !looksLikeInjection(c)),
+  };
+}
+
 /** Checagens determinísticas, antes de qualquer modelo. `undefined`: nada conclusivo, a issue vai ao modelo. */
 export function deterministicTriage(s: TriageSignals): TriageResult | undefined {
   const text = `${s.card.title}\n${s.card.description ?? ""}`;
@@ -432,6 +446,7 @@ export async function classifyTriage(input: {
     return { verdict: "duvidosa", category, by: "modelo", reason };
   const verdict = decisao.choice as TriageVerdict;
   if (verdict === "aceita" && category !== "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
+  if (verdict === "recusa" && category === "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
   if (verdict === "recusa" && category === "duplicata") {
     if (!duplicateOf) return { verdict: "duvidosa", category, by: "modelo", reason };
     return { verdict, category, by: "modelo", reason, duplicateOf, closeAs: "duplicate" };

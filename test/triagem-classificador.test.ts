@@ -76,6 +76,11 @@ describe("triagem por classificador (System One, ex.: Jev)", () => {
     expect(contradicts).toMatchObject({ verdict: "duvidosa", category: "escopo" });
   });
 
+  it("recusa com categoria ok é contraditória: vai ao usuário", async () => {
+    const r = await classifyTriage({ ...input, classify: classifier({ decisao: ["recusa", 0.9] }).classify });
+    expect(r.verdict).toBe("duvidosa");
+  });
+
   it("duplicata semântica: pergunta entre as outras issues abertas e aponta a escolhida", async () => {
     const c = classifier({ decisao: ["recusa", 0.9], categoria: ["duplicata", 0.9], duplicata: "SF-3" });
     const r = await classifyTriage({
