@@ -253,7 +253,19 @@ export function triageInput(input: {
  * Confere a entrega do LLM: decisão e categoria precisam concordar, e uma duplicata precisa apontar uma das outras
  * issues abertas. O que não confere vai ao usuário como duvidosa.
  */
-export function validateDelivery(d: z.infer<typeof Delivery>, others: Card[]): TriageResult {
+/** Número de uma chave (`SF-7` → 7). */
+const keyNumber = (key: string) => Number(/(\d+)$/.exec(key)?.[1] ?? Number.NaN);
+
+/**
+ * Uma duplicata só fecha sozinha se apontar uma issue aberta **mais antiga**: com a mais nova, duas tarefas poderiam
+ * fechar uma à outra.
+ */
+const olderOpen = (others: Card[], card: Card, key: string | undefined) => {
+  const original = others.find((o) => o.key === key?.trim());
+  return original && keyNumber(original.key) < keyNumber(card.key) ? original : undefined;
+};
+
+export function validateDelivery(d: z.infer<typeof Delivery>, others: Card[], card: Card): TriageResult {
   const doubt = (why: string): TriageResult => ({
     verdict: "duvidosa",
     category: d.categoria,
@@ -263,8 +275,8 @@ export function validateDelivery(d: z.infer<typeof Delivery>, others: Card[]): T
   if (d.decisao === "aceita" && d.categoria !== "ok") return doubt("aceita com categoria de problema");
   if (d.decisao === "recusa" && d.categoria === "ok") return doubt("recusa sem motivo de recusa");
   if (d.categoria === "duplicata") {
-    const original = others.find((o) => o.key === d.duplicata_de?.trim());
-    if (!original) return doubt("duplicata sem uma issue aberta conhecida");
+    const original = olderOpen(others, card, d.duplicata_de);
+    if (!original) return doubt("duplicata sem uma issue aberta mais antiga conhecida");
     return {
       verdict: d.decisao,
       category: d.categoria,
@@ -288,6 +300,8 @@ export async function requestTriage(opts: {
   model: ModelRef;
   input: string;
   /** As outras issues abertas: uma duplicata só vale se apontar uma delas. */
+  /** A issue em triagem. */
+  card: Card;
   others: Card[];
   context: Context;
   /** Conversa já criada numa tentativa anterior. */
@@ -329,7 +343,7 @@ export async function requestTriage(opts: {
     const parsed = Delivery.safeParse(call.arguments);
     if (!parsed.success)
       return { verdict: "duvidosa", category: "ok", by: "modelo", reason: "entrega inválida do modelo na triagem" };
-    return validateDelivery(parsed.data, opts.others);
+    return validateDelivery(parsed.data, opts.others, opts.card);
   }
   throw new Error(`o modelo não entregou a triagem pela ferramenta ${DELIVER_TOOL}`);
 }
@@ -423,16 +437,33 @@ export async function classifyTriage(input: {
   if (result.stopReason !== "stop")
     throw new Error(`o classificador da triagem falhou: ${result.errorMessage ?? result.stopReason}`);
 
+  const unit = (p: unknown): p is number => typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 1;
+  /** Resposta de escolha válida: uma das opções perguntadas, com confiança entre 0 e 1. */
   const choice = (name: string) => {
     const a = result.answers[name];
-    return a?.type === "choice" ? a : undefined;
+    const asked = questions[name];
+    return a?.type === "choice" && asked?.type === "choice" && a.choice in asked.criteria && unit(a.confidence)
+      ? a
+      : undefined;
   };
   const decisao = choice("decisao");
   const categoria = choice("categoria");
   const injecao = result.answers.injecao;
-  if (!decisao || !categoria || injecao?.type !== "bool")
-    throw new Error("o classificador da triagem não respondeu todas as perguntas");
   const duplicate = choice("duplicata");
+  // Resposta fora das opções ou com número inválido vai ao usuário, nunca decide sozinha.
+  if (
+    !decisao ||
+    !categoria ||
+    injecao?.type !== "bool" ||
+    !unit(injecao.probability) ||
+    (questions.duplicata && !duplicate)
+  )
+    return {
+      verdict: "duvidosa",
+      category: "clareza",
+      by: "modelo",
+      reason: `${result.model}: resposta inválida do classificador`,
+    };
   const duplicateOf = duplicate && duplicate.choice !== "nenhuma" ? duplicate.choice : undefined;
 
   const reason =
@@ -448,7 +479,7 @@ export async function classifyTriage(input: {
   if (verdict === "aceita" && category !== "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
   if (verdict === "recusa" && category === "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
   if (verdict === "recusa" && category === "duplicata") {
-    if (!duplicateOf) return { verdict: "duvidosa", category, by: "modelo", reason };
+    if (!olderOpen(others, input.card, duplicateOf)) return { verdict: "duvidosa", category, by: "modelo", reason };
     return { verdict, category, by: "modelo", reason, duplicateOf, closeAs: "duplicate" };
   }
   return { verdict, category, by: "modelo", reason };

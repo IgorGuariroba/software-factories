@@ -50,6 +50,36 @@ describe("sinais de trabalho já feito: só uma referência que fecha conta como
     expect(await findMergedWork(path, "SF-7")).toBeNull();
   });
 
+  it("revert e negação não provam a resolução; o commit original revertido também não", async () => {
+    expect(await findClosingCommit(await repoWith(["isto não fixes #7"]), "SF-7", 7)).toMatchObject({ closes: false });
+    await removeTempRoot(root as string);
+    expect(await findClosingCommit(await repoWith(['Revert "fix: exporta csv (fixes #7)"']), "SF-7", 7)).toMatchObject({
+      closes: false,
+    });
+    await removeTempRoot(root as string);
+    root = await tempRoot();
+    const repo = await createRemoteRepo(root, "app", { commits: ["fix: exporta csv (fixes #7)"] });
+    const { git } = await import("./fakes/git-repos.js");
+    await git(repo.user, "revert", "--no-edit", "--no-commit", "HEAD");
+    const sha = await git(repo.user, "rev-parse", "--short", "HEAD");
+    await git(
+      repo.user,
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      "volta o csv",
+      "-m",
+      `This reverts commit ${sha}.`,
+    );
+    await git(repo.user, "commit", "--quiet", "--allow-empty", "-m", "chore: depois (fixes #7)");
+    await git(repo.user, "push", "--quiet", "origin", "main");
+    expect(await findClosingCommit(repo.user, "SF-7", 7)).toMatchObject({
+      closes: true,
+      subject: "chore: depois (fixes #7)",
+    });
+  });
+
   it("referências válidas: verbo de fechamento e chave isolada", async () => {
     expect(await findClosingCommit(await repoWith(["fix: exporta csv (fixes #7)"]), "SF-7", 7)).toMatchObject({
       closes: true,
@@ -105,20 +135,30 @@ describe("contexto da issue (outras issues, commits) também é dado não confi�
 describe("validação da entrega do LLM", () => {
   const others = [card(3)];
   it("recusa com categoria ok é contraditória: vai ao usuário", () => {
-    expect(validateDelivery({ decisao: "recusa", categoria: "ok", motivo: "x" }, others)).toMatchObject({
+    expect(validateDelivery({ decisao: "recusa", categoria: "ok", motivo: "x" }, others, card(7))).toMatchObject({
       verdict: "duvidosa",
     });
   });
 
+  it("duplicata de uma issue mais nova vai ao usuário", () => {
+    expect(
+      validateDelivery(
+        { decisao: "recusa", categoria: "duplicata", motivo: "x", duplicata_de: "SF-9" },
+        [card(9)],
+        card(7),
+      ).verdict,
+    ).toBe("duvidosa");
+  });
+
   it("duplicata só de uma issue aberta conhecida; chave inexistente ou ausente vai ao usuário", () => {
     const dup = { decisao: "recusa", categoria: "duplicata", motivo: "x" } as const;
-    expect(validateDelivery({ ...dup, duplicata_de: "SF-3" }, others)).toMatchObject({
+    expect(validateDelivery({ ...dup, duplicata_de: "SF-3" }, others, card(7))).toMatchObject({
       verdict: "recusa",
       duplicateOf: "SF-3",
       closeAs: "duplicate",
     });
-    expect(validateDelivery({ ...dup, duplicata_de: "SF-99" }, others).verdict).toBe("duvidosa");
-    expect(validateDelivery({ ...dup, duplicata_de: "veja a outra" }, others).verdict).toBe("duvidosa");
-    expect(validateDelivery(dup, others).verdict).toBe("duvidosa");
+    expect(validateDelivery({ ...dup, duplicata_de: "SF-99" }, others, card(7)).verdict).toBe("duvidosa");
+    expect(validateDelivery({ ...dup, duplicata_de: "veja a outra" }, others, card(7)).verdict).toBe("duvidosa");
+    expect(validateDelivery(dup, others, card(7)).verdict).toBe("duvidosa");
   });
 });

@@ -57,7 +57,22 @@ export async function findClosingCommit(
     )?.trim();
     if (found) {
       const [sha = "", subject = ""] = found.split("\t");
-      return { sha, subject, closes: true };
+      // Revert, negação ou um revert posterior do commit: inconclusivo, vai ao usuário.
+      const reverted = (
+        await gitMaybe(repoPath, [
+          "log",
+          ref,
+          "-1",
+          "-i",
+          "-F",
+          `--grep=revert`,
+          `--grep=${sha}`,
+          "--all-match",
+          "--format=%h",
+        ])
+      )?.trim();
+      const doubtful = /(^|[^a-z])(revert|não|nao|not|never|nunca|sem)([^a-z]|$)/i.test(subject) || Boolean(reverted);
+      return { sha, subject, closes: !doubtful };
     }
   }
   const mention = await findMergedWork(repoPath, cardKey);

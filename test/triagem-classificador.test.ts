@@ -76,6 +76,28 @@ describe("triagem por classificador (System One, ex.: Jev)", () => {
     expect(contradicts).toMatchObject({ verdict: "duvidosa", category: "escopo" });
   });
 
+  it("resposta fora das opções ou com número inválido vai ao usuário", async () => {
+    for (const decisao of [
+      ["fechar", 0.99],
+      ["recusa", Number.NaN],
+    ] as [string, number][]) {
+      const r = await classifyTriage({
+        ...input,
+        classify: classifier({ decisao, categoria: ["escopo", 0.9] }).classify,
+      });
+      expect(r.verdict).toBe("duvidosa");
+    }
+  });
+
+  it("duplicata de uma issue mais nova vai ao usuário", async () => {
+    const r = await classifyTriage({
+      ...input,
+      others: [card(9, "Planilha")],
+      classify: classifier({ decisao: ["recusa", 0.9], categoria: ["duplicata", 0.9], duplicata: "SF-9" }).classify,
+    });
+    expect(r.verdict).toBe("duvidosa");
+  });
+
   it("recusa com categoria ok é contraditória: vai ao usuário", async () => {
     const r = await classifyTriage({ ...input, classify: classifier({ decisao: ["recusa", 0.9] }).classify });
     expect(r.verdict).toBe("duvidosa");

@@ -491,6 +491,7 @@ export async function startFactory(opts: {
           commit: runtime.commit,
           taskId: runtime.taskId,
           model: role,
+          card,
           others: context.others,
           context: runtime.context,
           conversationId: conversation,
