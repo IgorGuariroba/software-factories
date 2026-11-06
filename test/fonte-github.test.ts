@@ -105,7 +105,10 @@ describe("Fonte GitHub: identidade e labels", () => {
       if (gh.issues[0]) gh.issues[0].labels = ["bug"];
       gh.onRead = undefined;
     };
+    gh.calls.length = 0;
     await source.transition("SF-7", "fechada");
     expect(gh.issues[0]).toMatchObject({ state: "closed", labels: ["bug"] });
+    // O caminho do 404 foi de fato exercitado: houve o DELETE do label já removido.
+    expect(gh.calls).toContainEqual(["api", "-X", "DELETE", "repos/dono/repo/issues/7/labels/fabrica%3Aem-andamento"]);
   });
 });
