@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ConfigError, startDaemon } from "./daemon.js";
 import { createFactoryModels } from "./factory-models.js";
+import { createGitHubDemandSource } from "./github-demand-source.js";
 import { createJiraDemandSource } from "./jira-demand-source.js";
 import { createGhRetroSink } from "./retro-sink.js";
 import { createTeamsMcpNotifier } from "./teams-mcp.js";
@@ -70,7 +71,15 @@ try {
           assignee: config.source.assignee,
           baseUrl: config.source.baseUrl,
         }),
-      // A Fonte GitHub só é registrada quando a triagem existir (ADR-0014): sem ela, issue pública chegaria à SPEC.
+      // Repositório monitorado (ADR-0014): toda issue aberta passa pela triagem antes da SPEC.
+      github: (config) => {
+        if (config.source.type !== "github") throw new Error(`projeto ${config.name} não é github`);
+        return createGitHubDemandSource({
+          project: config.source.project,
+          repo: config.source.repo,
+          assignee: config.source.assignee,
+        });
+      },
     },
     // Credenciais do pi e chaves do ambiente; seleção por regras e allowlist vêm na M1-16.
     models: await createFactoryModels(),

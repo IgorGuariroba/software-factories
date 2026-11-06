@@ -10,4 +10,8 @@ O usuário conecta um repositório e a fábrica passa a monitorá-lo. Diferente 
 - **Uma issue em andamento por repositório** no começo (`maxActive: 1`), para não tocar todas ao mesmo tempo.
 - Merge continua humano; a fábrica nunca dá push na branch padrão; o teste roda num container sem segredos.
 
-**Estado:** a Fonte GitHub existe, mas o daemon ainda não a registra; um projeto `type: github` falha ao carregar. Triagem, `triageApproval` e `maxActive` ainda não estão implementados, e só com eles a Fonte será ligada.
+**Estado:** implementado. O daemon registra a Fonte GitHub. A triagem é o primeiro passo da Tarefa (`triar`, só em projeto `type: github`):
+- as regras decidem primeiro: PR mergeado ou commit que fecha a issue (recusa, `completed`), PR aberto (duvidosa), duplicata exata de issue mais antiga (recusa, `duplicate`), texto acima de 40 mil caracteres ou com frases de prompt injection (duvidosa, sem passar pelo modelo);
+- sem decisão das regras, o modelo (`roles.triage`, ou o de `spec`) recebe a issue delimitada como dado, as outras issues abertas e os commits recentes, e entrega pela ferramenta `entregar_triagem`;
+- a prévia fica em `GET /tasks/<projeto>/<card>/triage`, com o comentário exato e o motivo do fechamento; a decisão vai em `POST .../triage/decide` (`aceitar` ou `recusar`). A Tarefa recusada termina como `recusada`;
+- `source.triageApproval` (padrão `true`) e `source.maxActive` (padrão 1). As issues entram em ordem de número, das mais antigas para as mais novas.

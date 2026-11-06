@@ -5,6 +5,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
+  type ConversationId,
   createRegistry,
   defineExtension,
   Harness,
@@ -36,13 +37,14 @@ import {
   type RetroStage,
   recordAnswer,
   StateDoc,
+  type TriageRecord,
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
-import { findMergedWork } from "./prior-work.js";
+import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { resolveRepository } from "./repo-resolver.js";
 import type { RetroSink } from "./retro-sink.js";
@@ -61,6 +63,14 @@ import {
 import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
+import {
+  deterministicTriage,
+  refusalComment,
+  requestTriage,
+  TriageExtension,
+  type TriageResult,
+  triageInput,
+} from "./triage.js";
 import { webFile } from "./web.js";
 
 export interface FactoryProject {
@@ -307,6 +317,7 @@ export async function startFactory(opts: {
     async run(input, step, runtime) {
       const project = projectOf(input.project);
       const { writer, source } = project;
+      if (step === "triar") return triage();
       if (step === "comentar") {
         if (project.config.announceAssume) await writer.commentOnce(input.key, "Assumindo este card.");
         // Uma nova tentativa recomeça deste passo; o aviso de que assumiu sai uma vez só.
@@ -389,6 +400,94 @@ export async function startFactory(opts: {
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
       return undefined;
 
+      /**
+       * Triagem da issue (ADR-0014), só nos repositórios monitorados: checagens determinísticas e, sem decisão, o
+       * modelo. `aceita` segue; `recusa` dá baixa (com prévia se `triageApproval`); `duvidosa` espera o usuário.
+       */
+      async function triage(): Promise<"aguardar" | "recusada" | undefined> {
+        const { source: sourceConfig } = project.config;
+        if (sourceConfig.type !== "github") return undefined;
+        let record: TriageRecord | null = null;
+        let conversation: ConversationId | null = null;
+        await runtime.commit(async (tx) => {
+          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+          record = task?.triage ? copyOutOfCommit(task.triage) : null;
+          conversation = task?.triageConversation ?? null;
+        });
+        if (!record) {
+          const result = await evaluate(conversation);
+          const fresh: TriageRecord = { result, review: null };
+          await runtime.commit(async (tx) => {
+            const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+            if (task && !task.triage) task.triage = fresh;
+          });
+          record = fresh;
+        }
+        const { result, review } = record as TriageRecord;
+        const needsUser = result.verdict === "duvidosa" || (result.verdict === "recusa" && sourceConfig.triageApproval);
+        const decision = !needsUser ? (result.verdict === "aceita" ? "aceitar" : "recusar") : review;
+        if (decision === null || decision === "draft") {
+          if (decision === null) {
+            await runtime.commit(async (tx) => {
+              const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+              if (task?.triage && task.triage.review === null) task.triage.review = "draft";
+            });
+            await events.append({
+              type: "notify",
+              project: input.project,
+              target: input.key,
+              reason: "triagem",
+              message:
+                `A triagem da issue ${input.key} ${result.verdict === "recusa" ? "propõe recusar" : "ficou em dúvida"}` +
+                ` (${result.reason}). Revise e decida na página da Tarefa.`,
+            });
+          }
+          return "aguardar";
+        }
+        if (decision === "aceitar") return undefined;
+        await writer.commentOnce(input.key, refusalComment(result, duplicateRef(result)));
+        await writer.dismiss(input.key, closeReason(result));
+        return "recusada";
+      }
+
+      /** Junta os sinais da issue e decide: pelas regras ou, sem decisão, pelo modelo. */
+      async function evaluate(conversation: ConversationId | null): Promise<TriageResult> {
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        const others = (await source.listAssignedCards(project.config.source.assignee)).filter(
+          (c) => c.key !== card.key,
+        );
+        const mapping = resolveRepository(project.config.repositories, card);
+        const repoPath = mapping && resolvePath(mapping.path);
+        const n = Number(input.key.slice(input.key.lastIndexOf("-") + 1));
+        const decided = deterministicTriage({
+          card,
+          others,
+          pullRequests: (await source.linkedPullRequests?.(input.key)) ?? [],
+          mergedCommit: repoPath ? await findClosingCommit(repoPath, input.key, n) : null,
+        });
+        if (decided) return decided;
+        return requestTriage({
+          harness,
+          commit: runtime.commit,
+          taskId: runtime.taskId,
+          model: project.config.roles.triage ?? project.config.roles.spec,
+          context: runtime.context,
+          conversationId: conversation,
+          remember: async (tx, id) => {
+            const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+            if (task) task.triageConversation = id;
+          },
+          input: triageInput({
+            card,
+            comments: await source.listComments(input.key),
+            others,
+            recentCommits: repoPath ? await recentSubjects(repoPath) : [],
+            knowledge: await readKnowledge(project.knowledgeDir),
+          }),
+        });
+      }
+
       /** Grill → SPEC. Devolve a entrega, ou `"aguardar"` depois de levar uma pergunta ao PO. */
       async function grill(): Promise<SpecDelivery | "aguardar"> {
         let questions: Question[] = [];
@@ -417,6 +516,7 @@ export async function startFactory(opts: {
           model: project.config.roles.spec,
           context: runtime.context,
           requestId: `spec-${questions.length}`,
+          exclude: await triageConversations(),
           input: specInput({
             card,
             comments,
@@ -438,6 +538,12 @@ export async function startFactory(opts: {
           if (task) task.delivery = delivered;
         });
         return delivered;
+      }
+
+      /** A conversa da triagem desta Tarefa, que a SPEC não pode reaproveitar. */
+      async function triageConversations(): Promise<string[]> {
+        const conversation = (await readState()).tasks.find((t) => t.id === input.id)?.triageConversation;
+        return conversation ? [String(conversation)] : [];
       }
 
       /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
@@ -626,6 +732,20 @@ export async function startFactory(opts: {
     onError: (input, message) => events.append({ type: "error", project: input.project, target: input.key, message }),
   });
 
+  /** Referência do GitHub (`#n`) à issue de que esta é duplicata. */
+  function duplicateRef(result: TriageResult): string | undefined {
+    const key = result.duplicateOf;
+    return key && /-\d+$/.test(key) ? `#${key.slice(key.lastIndexOf("-") + 1)}` : undefined;
+  }
+
+  /** Como fechar a issue recusada. */
+  function closeReason(result: TriageResult): "completed" | "not_planned" | "duplicate" {
+    if (result.closeAs) return result.closeAs;
+    if (result.category === "duplicata") return "duplicate";
+    if (result.category === "ja-feito" || result.category === "resolvida") return "completed";
+    return "not_planned";
+  }
+
   /** Inspeção do repositório de um card que já estava em andamento (ADR-0013). */
   async function inspectCard(input: {
     project: string;
@@ -646,6 +766,7 @@ export async function startFactory(opts: {
   const registry = createRegistry();
   registry.install(defineExtension({ name: "fabrica", tasks: [Tarefa, GateTask, DeadlineGateTask] }));
   registry.install(SpecExtension);
+  registry.install(TriageExtension);
   registry.install(RetroExtension);
   registry.install(implementationTools.extension);
   await mkdir(dirname(opts.statePath), { recursive: true });
@@ -788,11 +909,13 @@ export async function startFactory(opts: {
 
   // --- Fila ------------------------------------------------------------------------------------
 
-  /** Cards elegíveis na Fonte agora. */
+  /** Cards elegíveis na Fonte agora. Num repositório monitorado, as issues mais antigas primeiro. */
   async function queue(): Promise<QueueItem[]> {
     const items: QueueItem[] = [];
     for (const { config, source } of projects.values()) {
-      for (const card of await source.listAssignedCards(config.source.assignee)) {
+      const cards = await source.listAssignedCards(config.source.assignee);
+      if (config.source.type === "github") cards.sort((a, b) => issueOrder(a.key) - issueOrder(b.key));
+      for (const card of cards) {
         const state = config.statuses[card.status];
         if (card.assignee !== config.source.assignee || !state || !ELIGIBLE.has(state)) continue;
         if (config.source.keys && !config.source.keys.includes(card.key)) continue;
@@ -802,7 +925,13 @@ export async function startFactory(opts: {
     return items;
   }
 
-  /** Busca na Fonte: enfileira os cards elegíveis que ainda não viraram Tarefa e confere as respostas esperadas. */
+  /** Número da issue na chave `<projeto>-<n>`, para ordenar das mais antigas para as mais novas. */
+  const issueOrder = (key: string) => Number(key.slice(key.lastIndexOf("-") + 1)) || 0;
+
+  /**
+   * Busca na Fonte: enfileira os cards elegíveis que ainda não viraram Tarefa e confere as respostas esperadas. Num
+   * repositório monitorado, no máximo `maxActive` Tarefas não terminadas por vez.
+   */
   async function poll(): Promise<void> {
     await checkAnswers();
     const eligible = await queue();
@@ -811,6 +940,9 @@ export async function startFactory(opts: {
       for (const item of eligible) {
         const id = `${item.project}/${item.key}`;
         if (state.tasks.some((t) => t.id === id)) continue;
+        const { source: sourceConfig } = projectOf(item.project).config;
+        const open = state.tasks.filter((t) => t.project === item.project && !TERMINAL.has(t.status)).length;
+        if (sourceConfig.type === "github" && open >= sourceConfig.maxActive) continue;
         state.tasks.push({
           id,
           project: item.project,
@@ -929,7 +1061,7 @@ export async function startFactory(opts: {
     }, context);
   }
 
-  const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada"]);
+  const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada", "recusada"]);
   const commands: FactoryCommands = {
     pause: (id: string) =>
       updateTask(id, (task) => {
@@ -1042,6 +1174,50 @@ export async function startFactory(opts: {
         return task
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
+      }
+      const triageRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/triage(\/decide)?$/);
+      if (triageRoute && (req.method === "GET" || req.method === "POST")) {
+        const [, encodedProject, encodedKey, deciding] = triageRoute;
+        if ((req.method === "POST") !== (deciding !== undefined)) return json(res, 404, { error: "rota inexistente" });
+        const projectName = decodeURIComponent(encodedProject as string);
+        const cardKey = decodeURIComponent(encodedKey as string);
+        const id = `${projectName}/${cardKey}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task?.triage) return json(res, 404, { error: "triagem não encontrada" });
+        if (task.triage.review !== "draft" || task.status !== "aguardando-humano")
+          return json(res, 409, { error: "triagem não está aguardando decisão" });
+        const project = projectOf(projectName);
+        const { result } = task.triage;
+        const preview = {
+          card: cardKey,
+          verdict: result.verdict,
+          category: result.category,
+          reason: result.reason,
+          by: result.by,
+          duplicateOf: result.duplicateOf ?? null,
+          // O que sai na issue se o usuário recusar: o comentário exato e o motivo do fechamento.
+          comment: withAutomationMark(redactSecrets(refusalComment(result, duplicateRef(result)))),
+          closeAs: closeReason(result),
+          dryRun: project.config.dryRun,
+        };
+        const revision = reviewRevision(preview);
+        if (req.method === "GET") return json(res, 200, { ...preview, revision });
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { revision?: unknown; decision?: unknown } | undefined;
+        if (body?.decision !== "aceitar" && body?.decision !== "recusar")
+          return json(res, 400, { error: 'decision deve ser "aceitar" ou "recusar"' });
+        if (body.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
+        if (project.config.dryRun && body.decision === "recusar")
+          return json(res, 409, { error: "publicação real desativada no dry-run" });
+        const decision = body.decision;
+        const decided = await harness.commit(async (tx) => {
+          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          if (current?.status !== "aguardando-humano" || current.triage?.review !== "draft") return false;
+          current.triage.review = decision;
+          current.status = current.pauseRequested ? "pausada" : "enfileirada";
+          return true;
+        }, context);
+        return decided ? json(res, 200, { ok: true }) : json(res, 409, { error: "triagem mudou ou foi cancelada" });
       }
       const specRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/spec(\/approve)?$/);
       if (specRoute && (req.method === "GET" || req.method === "POST")) {

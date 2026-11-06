@@ -68,6 +68,8 @@ export interface EffectWriter {
    * Com `from`, bloqueia se o card não estiver mais nesse estado (ex.: uma pessoa o moveu nesse meio-tempo).
    */
   transition(cardKey: string, state: CardState, opts?: { from?: CardState }): Promise<void>;
+  /** Baixa da triagem: fecha o card com o motivo, pela Fonte (só as que têm triagem). Idempotente. */
+  dismiss(cardKey: string, reason: "completed" | "not_planned" | "duplicate"): Promise<void>;
   /**
    * Envia `branch` do clone em `repoPath` para o remoto, pelo CodeHost. Nunca em `main`/`master`/`develop`;
    * force-push só numa branch da fábrica (criada por ela e registrada no estado durável de uma Tarefa;
@@ -296,6 +298,19 @@ export function createEffectWriter(opts: {
           return undefined;
         },
         () => source.transition(cardKey, status),
+        () => undefined,
+      );
+    },
+
+    async dismiss(cardKey, reason) {
+      if (!config.dryRun) {
+        const card = await source.getCard(cardKey);
+        if (card && card.assignee === user && config.statuses[card.status] === "done") return;
+      }
+      return write(
+        { target: cardKey, action: "dismiss", content: reason },
+        async () => (source.dismiss ? cardNotOwned(cardKey) : `a Fonte de ${config.name} não dá baixa em cards`),
+        () => (source.dismiss as NonNullable<typeof source.dismiss>).call(source, cardKey, reason),
         () => undefined,
       );
     },

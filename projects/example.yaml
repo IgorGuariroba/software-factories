@@ -14,6 +14,15 @@ source:
   # Seu identificador na Fonte: a fábrica só trabalha nos cards atribuídos a ele.
   # No Jira, o seu accountId ou o seu e-mail; é com este valor que a fábrica reconhece os próprios comentários.
   assignee: seu-id-no-jira
+# Repositório GitHub monitorado (ADR-0014), no lugar do Jira: toda issue aberta passa pela triagem.
+# source:
+#   type: github
+#   project: SF            # prefixo das chaves (SF-12 = issue #12)
+#   repo: dono/nome
+#   assignee: seu-login    # a fábrica age com esta conta do gh
+#   triageApproval: true   # toda recusa passa por prévia na página local
+#   maxActive: 1           # issues tocadas ao mesmo tempo
+# statuses: { aberta: todo, em-andamento: in_progress, aguardando-teste: waiting_test, fechada: done }
 
 # Modelo fixado para cada papel (provedor e modelo como o pi-ai os conhece).
 # spec: grill, SPEC e Tickets. implementer: implementação com TDD (opcional; sem ele, usa o de spec).

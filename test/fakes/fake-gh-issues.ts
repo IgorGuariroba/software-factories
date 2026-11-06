@@ -5,6 +5,8 @@ export interface FakeIssue {
   title: string;
   body?: string;
   state?: "open" | "closed";
+  /** Motivo do fechamento (`state_reason`). */
+  stateReason?: string;
   labels?: string[];
   author?: string;
   pull_request?: boolean;
@@ -15,6 +17,8 @@ export class FakeGhIssues {
   issues: FakeIssue[] = [];
   comments = new Map<number, { id: number; body: string; user: { login: string } }[]>();
   calls: string[][] = [];
+  /** PRs que citam cada issue (eventos `cross-referenced` da timeline). */
+  references = new Map<number, { number: number; state: "open" | "closed"; merged?: boolean; repo?: string }[]>();
   failWith?: string;
   /** Chamado em cada leitura de uma issue (simula outra pessoa mexendo entre a leitura e a escrita). */
   onRead?: () => void;
@@ -95,12 +99,31 @@ export class FakeGhIssues {
       }
       return ok((issue.labels ?? []).map((name) => ({ name })));
     }
+    const timeline = /^issues\/(\d+)\/timeline$/.exec(rest);
+    if (timeline) {
+      const n = Number(timeline[1]);
+      if (!this.issues.some((i) => i.number === n)) return notFound;
+      const events = (this.references.get(n) ?? []).map((pr) => ({
+        event: "cross-referenced",
+        source: {
+          type: "issue",
+          issue: {
+            number: pr.number,
+            state: pr.state,
+            pull_request: { merged_at: pr.merged ? "2026-01-01T00:00:00Z" : null },
+            repository: { full_name: pr.repo ?? this.repo },
+          },
+        },
+      }));
+      return ok([[{ event: "labeled" }, ...events]]);
+    }
     const one = /^issues\/(\d+)$/.exec(rest);
     if (one) {
       const issue = this.issues.find((i) => i.number === Number(one[1]));
       if (!issue) return notFound;
       if (method === "PATCH") {
         if (body.state) issue.state = body.state;
+        if (body.state_reason) issue.stateReason = body.state_reason;
         if (body.labels) issue.labels = body.labels;
       }
       const response = ok(this.raw(issue));

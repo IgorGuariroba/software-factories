@@ -189,11 +189,16 @@ export async function requestSpec(opts: {
   followUp?: string;
   requestId: string;
   context: Context;
+  /** Conversas da Tarefa que não são da SPEC (ex.: a da triagem). */
+  exclude?: readonly string[];
 }): Promise<GrillOutcome> {
   const { harness, context } = opts;
   let conversationId: ConversationId | undefined;
   await opts.commit(async (tx) => {
-    const existing = (await tx.scanConversations({ ownerTaskId: opts.taskId }, 1)).items[0];
+    const exclude = new Set<string>(opts.exclude ?? []);
+    const existing = (await tx.scanConversations({ ownerTaskId: opts.taskId }, exclude.size + 1)).items.find(
+      (c) => !exclude.has(String(c.id)),
+    );
     if (existing) {
       conversationId = existing.id;
       return;
