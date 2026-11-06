@@ -82,7 +82,7 @@ describe("triagem das issues do GitHub (ADR-0014)", () => {
     await poll(factory);
     await waitForStatus(factory, "SF-7", "concluida");
     expect(triageCalls(factory)).toHaveLength(1);
-    expect(triageCalls(factory)[0]?.input).toMatch(/<issue>[\s\S]*Exportar CSV[\s\S]*<\/issue>/);
+    expect(triageCalls(factory)[0]?.input).toMatch(/<dados>[\s\S]*Exportar CSV[\s\S]*<\/dados>/);
     expect(specComments(factory, "SF-7")).toHaveLength(1);
     expect(source.dismissed).toEqual([]);
   });
@@ -136,7 +136,7 @@ describe("triagem das issues do GitHub (ADR-0014)", () => {
     expect(source.dismissed).toEqual([]);
   });
 
-  it("duplicata exata e PR mergeado são decididos sem o modelo", async () => {
+  it("duplicata exata e PR mergeado são decididos sem o modelo (o PR só vai ao usuário)", async () => {
     const source = new MemoryGitHubSource([issue(9, "Exportar CSV"), issue(3, "Exportar CSV"), issue(5)]);
     source.pullRequests.set("SF-5", [{ number: 40, state: "merged" }]);
     factory = await startTestFactory({
@@ -146,14 +146,9 @@ describe("triagem das issues do GitHub (ADR-0014)", () => {
     });
     await poll(factory);
     await waitForStatus(factory, "SF-9", "recusada");
-    await waitForStatus(factory, "SF-5", "recusada");
+    await waitForStatus(factory, "SF-5", "aguardando-humano");
     await waitForStatus(factory, "SF-3", "concluida");
-    expect(source.dismissed).toEqual(
-      expect.arrayContaining([
-        { key: "SF-9", reason: "duplicate" },
-        { key: "SF-5", reason: "completed" },
-      ]),
-    );
+    expect(source.dismissed).toEqual([{ key: "SF-9", reason: "duplicate" }]);
     expect(source.commentsOf("SF-9")[0]?.body).toContain("#3");
     expect(triageCalls(factory)).toHaveLength(1);
   });

@@ -13,7 +13,16 @@ export async function findMergedWork(
   const key = cardKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const ref of candidates) {
     const found = (
-      await gitMaybe(repoPath, ["log", ref, "-1", "-i", "-E", `--grep=${key}([^0-9]|$)`, "--format=%h%x09%s"])
+      await gitMaybe(repoPath, [
+        "log",
+        ref,
+        "-1",
+        "-i",
+        "-E",
+        // A chave isolada: `XSF-7` não é `SF-7`, nem `SF-70`.
+        `--grep=(^|[^a-z0-9])${key}([^0-9]|$)`,
+        "--format=%h%x09%s",
+      ])
     )?.trim();
     if (found) {
       const [sha = "", subject = ""] = found.split("\t");
@@ -24,16 +33,14 @@ export async function findMergedWork(
 }
 
 /**
- * Commit da branch padrão (cópia local, sem fetch) que fecha a issue `n` pelo GitHub ("fixes #n", "closes #n",
- * "resolves #n") ou cita a chave do card. Sinal de trabalho já feito, para a triagem.
+ * Commit da branch padrão (cópia local, sem fetch) que cita a issue `n`. `closes: true` só com um verbo de fechamento do
+ * GitHub ("fixes #n", "closes #n", "resolves #n"), que prova a resolução; uma menção à chave do card dá `closes: false`.
  */
 export async function findClosingCommit(
   repoPath: string,
   cardKey: string,
   n: number,
-): Promise<{ sha: string; subject: string } | null> {
-  const byKey = await findMergedWork(repoPath, cardKey);
-  if (byKey) return byKey;
+): Promise<{ sha: string; subject: string; closes: boolean } | null> {
   const head = (await gitMaybe(repoPath, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]))?.trim();
   for (const ref of head ? [head] : ["refs/remotes/origin/main", "refs/remotes/origin/master"]) {
     const found = (
@@ -43,16 +50,18 @@ export async function findClosingCommit(
         "-1",
         "-i",
         "-E",
-        `--grep=(close[sd]?|fix(e[sd])?|resolve[sd]?):? #${n}([^0-9]|$)`,
+        // O verbo isolado: `prefix #7` não é `fix #7`.
+        `--grep=(^|[^a-z0-9])(close[sd]?|fix(e[sd])?|resolve[sd]?):? #${n}([^0-9]|$)`,
         "--format=%h%x09%s",
       ])
     )?.trim();
     if (found) {
       const [sha = "", subject = ""] = found.split("\t");
-      return { sha, subject };
+      return { sha, subject, closes: true };
     }
   }
-  return null;
+  const mention = await findMergedWork(repoPath, cardKey);
+  return mention && { ...mention, closes: false };
 }
 
 /** Assuntos dos últimos `limit` commits da branch padrão (cópia local), para a triagem ver o que já foi feito. */

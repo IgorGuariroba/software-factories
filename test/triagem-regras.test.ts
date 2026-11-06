@@ -12,6 +12,7 @@ const card = (n: number, title: string, description = "Descrição com detalhe s
 const signals = (over: Partial<TriageSignals> = {}): TriageSignals => ({
   card: card(7, "Exportar CSV"),
   others: [],
+  comments: [],
   pullRequests: [],
   mergedCommit: null,
   ...over,
@@ -22,14 +23,16 @@ describe("triagem: checagens determinísticas", () => {
     expect(deterministicTriage(signals())).toBeUndefined();
   });
 
-  it("PR mergeado que cita a issue: já feito, recusa como concluída", () => {
+  it("PR mergeado que cita a issue: pode estar feito, vai ao usuário", () => {
     const r = deterministicTriage(signals({ pullRequests: [{ number: 12, state: "merged" }] }));
-    expect(r).toMatchObject({ verdict: "recusa", category: "ja-feito", closeAs: "completed", by: "regra" });
+    expect(r).toMatchObject({ verdict: "duvidosa", category: "ja-feito", by: "regra" });
     expect(r?.reason).toContain("#12");
   });
 
-  it("commit da branch padrão que cita a issue: já feito", () => {
-    const r = deterministicTriage(signals({ mergedCommit: { sha: "abc1234", subject: "fix: exporta CSV (#7)" } }));
+  it("commit da branch padrão que fecha a issue: já feito", () => {
+    const r = deterministicTriage(
+      signals({ mergedCommit: { sha: "abc1234", subject: "fix: exporta CSV (fixes #7)", closes: true } }),
+    );
     expect(r).toMatchObject({ verdict: "recusa", category: "ja-feito", closeAs: "completed" });
     expect(r?.reason).toContain("abc1234");
   });

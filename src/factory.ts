@@ -461,9 +461,11 @@ export async function startFactory(opts: {
         const mapping = resolveRepository(project.config.repositories, card);
         const repoPath = mapping && resolvePath(mapping.path);
         const n = Number(input.key.slice(input.key.lastIndexOf("-") + 1));
+        const comments = await source.listComments(input.key);
         const decided = deterministicTriage({
           card,
           others,
+          comments,
           pullRequests: (await source.linkedPullRequests?.(input.key)) ?? [],
           mergedCommit: repoPath ? await findClosingCommit(repoPath, input.key, n) : null,
         });
@@ -475,7 +477,7 @@ export async function startFactory(opts: {
         if (classifier)
           return classifyTriage({
             card,
-            comments: await source.listComments(input.key),
+            comments,
             others,
             recentCommits: repoPath ? await recentSubjects(repoPath) : [],
             knowledge: await readKnowledge(project.knowledgeDir),
@@ -486,6 +488,7 @@ export async function startFactory(opts: {
           commit: runtime.commit,
           taskId: runtime.taskId,
           model: role,
+          others,
           context: runtime.context,
           conversationId: conversation,
           remember: async (tx, id) => {
@@ -494,7 +497,7 @@ export async function startFactory(opts: {
           },
           input: triageInput({
             card,
-            comments: await source.listComments(input.key),
+            comments,
             others,
             recentCommits: repoPath ? await recentSubjects(repoPath) : [],
             knowledge: await readKnowledge(project.knowledgeDir),
