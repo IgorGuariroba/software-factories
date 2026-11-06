@@ -120,6 +120,8 @@ export const ProjectConfig = z.object({
   specApproval: z.boolean().default(false),
   /** Pausa a Tarefa depois da retrô de cada etapa (SPEC, implementação) até o usuário retomá-la. */
   retroApproval: z.boolean().default(false),
+  /** Comenta "Assumindo este card." ao assumir. Desligue quando o card atribuído ao usuário já basta como sinal. */
+  announceAssume: z.boolean().default(true),
   source: z.object({
     type: z.literal("jira"),
     /** Chave do projeto na Fonte (ex.: "PROJ"). */
