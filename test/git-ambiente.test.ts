@@ -55,7 +55,10 @@ describe("git ignora o repositório do ambiente", () => {
   it("a suíte não enxerga a configuração git global nem a do sistema da máquina", async () => {
     root = await tempRoot();
     const alvo = await createRemoteRepo(root, "alvo");
-    expect(await git(alvo.user, ["config", "--global", "--list"]).catch(() => "")).toBe("");
-    expect(await git(alvo.user, ["config", "--system", "--list"]).catch(() => "")).toBe("");
+    // A configuração efetiva, com o escopo de cada entrada: nada pode vir de `global` nem de `system`.
+    const scopes = (await git(alvo.user, ["config", "--list", "--show-scope"]))
+      .split("\n")
+      .map((l) => l.split("\t")[0]);
+    expect(scopes.filter((s) => s === "global" || s === "system")).toEqual([]);
   });
 });
