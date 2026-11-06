@@ -31,12 +31,24 @@ describe("git ignora o repositório do ambiente", () => {
     expect(await testGit(alheio.user, "branch", "--list", "fabrica/teste", "teste/fake")).toBe("");
   });
 
-  it("preserva a configuração passada pelo ambiente (GIT_CONFIG_COUNT), como safe.directory na CI", async () => {
+  it("descarta da configuração herdada o que redireciona o git (core.worktree, pushurl), por COUNT e PARAMETERS", async () => {
     root = await tempRoot();
     const alvo = await createRemoteRepo(root, "alvo");
-    process.env.GIT_CONFIG_COUNT = "1";
-    process.env.GIT_CONFIG_KEY_0 = "fabrica.marca";
-    process.env.GIT_CONFIG_VALUE_0 = "do-ambiente";
-    expect((await git(alvo.user, ["config", "fabrica.marca"])).trim()).toBe("do-ambiente");
+    const alheio = await createRemoteRepo(root, "alheio");
+    process.env.GIT_CONFIG_COUNT = "2";
+    process.env.GIT_CONFIG_KEY_0 = "core.worktree";
+    process.env.GIT_CONFIG_VALUE_0 = alheio.user;
+    process.env.GIT_CONFIG_KEY_1 = "safe.directory";
+    process.env.GIT_CONFIG_VALUE_1 = "*";
+    process.env.GIT_CONFIG_PARAMETERS = `'remote.origin.pushurl'='${alheio.bare}'`;
+
+    expect(await git(alvo.user, ["config", "--get-all", "safe.directory"]).catch(() => "")).toContain("*");
+    expect(await git(alvo.user, ["config", "core.worktree"]).catch(() => "")).toBe("");
+    expect(await git(alvo.user, ["config", "remote.origin.pushurl"]).catch(() => "")).toBe("");
+    await git(alvo.user, ["switch", "-c", "teste/push"]);
+    await git(alvo.user, ["commit", "--allow-empty", "-m", "teste"]);
+    await git(alvo.user, ["push", "-q", "origin", "teste/push"]);
+    expect(await alheio.branches()).not.toContain("teste/push");
+    expect(await alvo.branches()).toContain("teste/push");
   });
 });

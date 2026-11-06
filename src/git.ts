@@ -15,12 +15,11 @@ export class GitError extends Error {
 /**
  * Variáveis que fazem o git agir em outro repositório (`git rev-parse --local-env-vars`). Um hook do git as exporta;
  * herdadas, o git da fábrica operaria no repositório do hook e não no `cwd` — inclusive dando push no remoto dele.
- * Configuração passada pelo ambiente (`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, `GIT_CONFIG_PARAMETERS`, ex.:
- * `safe.directory` na CI) não aponta para outro repositório e é preservada.
  */
 const REPO_ENV_VARS = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
   "GIT_OBJECT_DIRECTORY",
   "GIT_DIR",
   "GIT_WORK_TREE",
@@ -34,10 +33,30 @@ const REPO_ENV_VARS = [
   "GIT_COMMON_DIR",
 ];
 
+/**
+ * Da configuração passada pelo ambiente só passa o que não redireciona o git: `safe.directory` (ex.: na CI).
+ * `core.worktree`, `remote.*.pushurl`, `url.*.insteadOf` e afins mandariam leitura ou push para outro lugar.
+ */
+const INHERITED_CONFIG_ALLOWED = new Set(["safe.directory"]);
+
 /** O ambiente do processo sem as variáveis que apontam o git para outro repositório. */
 export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extra };
   for (const name of REPO_ENV_VARS) delete env[name];
+  const kept: [string, string][] = [];
+  const count = Number(env.GIT_CONFIG_COUNT ?? 0);
+  for (let i = 0; i < (Number.isInteger(count) ? count : 0); i++) {
+    const key = env[`GIT_CONFIG_KEY_${i}`];
+    if (key && INHERITED_CONFIG_ALLOWED.has(key.toLowerCase())) kept.push([key, env[`GIT_CONFIG_VALUE_${i}`] ?? ""]);
+  }
+  for (const name of Object.keys(env)) if (/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name)) delete env[name];
+  if (kept.length) {
+    env.GIT_CONFIG_COUNT = String(kept.length);
+    kept.forEach(([key, value], i) => {
+      env[`GIT_CONFIG_KEY_${i}`] = key;
+      env[`GIT_CONFIG_VALUE_${i}`] = value;
+    });
+  }
   return env;
 }
 
