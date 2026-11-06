@@ -52,6 +52,10 @@ export type Question = {
   reminded: boolean;
   notified: boolean;
   answer: string | null;
+  /** Rascunho de ensaio; `sending` indica resultado potencialmente incerto após uma interrupção. */
+  publication?: "draft" | "sending" | "sent";
+  /** A reserva antecede o envio; resultado incerto nunca é reenviado automaticamente. */
+  teamsNotice?: { userId: string; link: string; status: "pending" | "attempted" | "sent" | "uncertain" };
 };
 
 /** Etapa em que a Tarefa está (ou a última em que esteve), para as interfaces de gestão. */
@@ -143,6 +147,8 @@ export type QueuedTask = {
   delivery?: SpecDelivery | null;
   /** Perguntas ao PO, na ordem; a última sem resposta é a que a Tarefa aguarda. */
   questions?: Question[];
+  /** Revisão da SPEC/Tickets antes de publicar: rascunho aguardando aprovação, ou aprovada. */
+  specReview?: "draft" | "approved";
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
   /**
@@ -356,6 +362,10 @@ export function recordAnswer(state: FactoryState, id: string, n: number, answer:
   return true;
 }
 
+/** Se a Tarefa espera uma pessoa: resposta de pergunta ou aprovação da SPEC. */
+export const awaitsHuman = (task: QueuedTask): boolean =>
+  pendingQuestion(task) !== undefined || task.specReview === "draft";
+
 /** A pergunta que a Tarefa aguarda: a última, se ainda não tem resposta. */
 export const pendingQuestion = (task: QueuedTask): Question | undefined => {
   const last = task.questions?.at(-1);
@@ -469,7 +479,7 @@ export function createTarefaTask(steps: TarefaSteps) {
     let waiting = false;
     await runtime.commit(async (tx) => {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
-      first = queued.status === "ativa" && pendingQuestion(queued) !== undefined;
+      first = queued.status === "ativa" && awaitsHuman(queued);
       waiting = queued.status === "aguardando-humano" && pendingQuestion(queued) !== undefined;
       return undefined;
     }, context);
@@ -493,7 +503,7 @@ export function createTarefaTask(steps: TarefaSteps) {
     await runtime.commit(async (tx) => {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
       // A resposta chegou e é a vez desta Tarefa: volta à SPEC.
-      if (queued.status === "ativa" && !pendingQuestion(queued))
+      if (queued.status === "ativa" && !awaitsHuman(queued))
         return { status: "running", checkpoint: { phase: "spec" } };
       if (queued.status === "ativa") queued.status = "aguardando-humano";
       const until = pendingQuestion(queued) && wakeAt !== null ? wakeAt : runtime.now() + TEN_YEARS_MS;

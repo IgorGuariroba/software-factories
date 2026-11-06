@@ -1,5 +1,5 @@
 import type { DemandSource } from "./demand-source.js";
-import { AUTOMATION_PREFIX, type EffectWriter } from "./effect-writer.js";
+import { type EffectWriter, isAutomationText } from "./effect-writer.js";
 
 /**
  * Onde uma pergunta foi feita, para lembrar e achar a resposta depois (inclusive após um reinício). A fábrica guarda
@@ -24,7 +24,7 @@ export interface Channel {
 }
 
 /**
- * O Canal do M1: a pergunta é um comentário no card que menciona a pessoa, e a resposta é qualquer comentário dela no
+ * O Canal do M1: a pergunta é um comentário no card (sem token de menção, que o Jira mostraria como texto; o aviso vai pelo Teams), e a resposta é qualquer comentário dela no
  * card depois da pergunta. Toda escrita passa pelo escritor de efeitos (guardrails, prefixo, filtro de segredos e
  * dry-run); a leitura das respostas é real também no dry-run.
  */
@@ -43,7 +43,7 @@ export function createCardCommentChannel(opts: { source: DemandSource; writer: E
 
     async answer(ref) {
       const replies = (await source.listComments(ref.card)).filter(
-        (c) => c.author === ref.to && !ref.before.includes(c.id) && !c.body.startsWith(AUTOMATION_PREFIX),
+        (c) => c.author === ref.to && !ref.before.includes(c.id) && !isAutomationText(c.body),
       );
       return replies.length > 0 ? replies.map((c) => c.body).join("\n\n") : undefined;
     },

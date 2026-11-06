@@ -62,6 +62,117 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/spec": {
+      get: {
+        summary: "Prévia exata dos comentários SPEC e Tickets aguardando aprovação",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          "200": {
+            description: "Prévia vinculada à revisão",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["card", "spec", "tickets", "dryRun", "revision"],
+                  properties: {
+                    card: { type: "string" },
+                    spec: { type: "string" },
+                    tickets: { type: "string" },
+                    dryRun: { type: "boolean" },
+                    revision: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "404": { description: "SPEC inexistente" },
+          "409": { description: "SPEC indisponível para aprovação" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/spec/approve": {
+      post: {
+        summary: "Aprova a revisão exata; a Tarefa publica SPEC e Tickets quando voltar a rodar",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", required: ["revision"], properties: { revision: { type: "string" } } },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "409": { description: "Prévia mudou, indisponível ou dry-run" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/questions/{n}": {
+      get: {
+        summary: "Prévia exata da pergunta e do aviso ao PO",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        responses: {
+          "200": {
+            description: "Prévia vinculada à revisão",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["card", "to", "comment", "teamsUserId", "teamsMessage", "dryRun", "revision"],
+                  properties: {
+                    card: { type: "string" },
+                    to: { type: "string" },
+                    comment: { type: "string" },
+                    teamsUserId: { type: ["string", "null"] },
+                    teamsMessage: { type: ["string", "null"] },
+                    dryRun: { type: "boolean" },
+                    revision: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Pergunta indisponível" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/questions/{n}/approve": {
+      post: {
+        summary: "Aprova a revisão exata e envia a pergunta e o aviso",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", required: ["revision"], properties: { revision: { type: "string" } } },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Prévia mudou, indisponível ou dry-run" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/retros/{stage}/{n}": {
       get: {
         summary: "Prévia do conteúdo público de uma proposta pendente",
@@ -266,10 +377,19 @@ export const API_SCHEMA = {
                     text: { type: "string" },
                     askedAt: { type: "string" },
                     answer: { type: ["string", "null"], description: "null enquanto pendente" },
+                    publication: {
+                      enum: ["draft", "sending", "sent"],
+                      description: "Situação da publicação da pergunta",
+                    },
+                    teamsNotice: {
+                      enum: ["pending", "attempted", "sent", "uncertain", null],
+                      description: "Situação do aviso Teams; attempted ou uncertain requerem verificação manual",
+                    },
                   },
                 },
               },
               spec: { type: ["string", "null"] },
+              specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
               tickets: {
                 type: "array",
                 items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },

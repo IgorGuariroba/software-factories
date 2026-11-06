@@ -36,13 +36,15 @@ import {
   recordAnswer,
   StateDoc,
 } from "./durable.js";
-import { createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
+import { AUTOMATION_PREFIX, createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
+import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
+import { redactSecrets } from "./secrets.js";
 import {
   answerFollowUp,
   isShallowCard,
@@ -54,6 +56,7 @@ import {
   specInput,
 } from "./spec-stage.js";
 import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
+import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
 import { webFile } from "./web.js";
 
@@ -231,6 +234,8 @@ export async function startFactory(opts: {
   testRunner?: TestRunner;
   /** Relógio da fábrica. Padrão: o relógio do sistema. */
   clock?: FactoryClock;
+  /** Canal de aviso ao PO; nunca é chamado no dry-run. */
+  teams?: TeamsNotifier;
   /** Interface de gestão (Telegram) e a conversa/usuário de onde ela aceita comandos. Sem ela, a fábrica só tem a API. */
   management?: { port: ManagementInterface; chat: string; user?: string };
   /**
@@ -358,6 +363,16 @@ export async function startFactory(opts: {
         if (outcome === "aguardar") return "aguardar";
         delivery = outcome;
       }
+      if (project.config.specApproval) {
+        let approved = false;
+        await runtime.commit(async (tx) => {
+          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+          if (!task) return;
+          approved = task.specReview === "approved";
+          if (!approved) task.specReview = "draft";
+        });
+        if (!approved) return "aguardar";
+      }
       await writer.upsertComment(input.key, "SPEC", delivery.spec);
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
       return undefined;
@@ -403,6 +418,8 @@ export async function startFactory(opts: {
           await ask(questions, outcome.text, "grill");
           return "aguardar";
         }
+        if (project.config.questionApproval && !project.config.specApproval)
+          throw new StageBlocked("ensaio de revisão: modelo não propôs pergunta; SPEC não publicada");
         const delivered = outcome.delivery;
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
@@ -440,12 +457,16 @@ export async function startFactory(opts: {
         const po = project.config.people.find((p) => p.role === "po");
         if (!po)
           throw new StageBlocked(`o grill precisa perguntar ao PO, mas o projeto ${input.project} não declara um`);
+        if (po.teamsUserId && (!project.config.source.baseUrl || !opts.teams))
+          throw new StageBlocked("aviso ao PO no Teams configurado sem origem Jira ou conexão MCP");
         if (previous.length >= MAX_PO_QUESTIONS)
           throw new StageBlocked(
             `o grill já fez ${MAX_PO_QUESTIONS} perguntas ao PO e ainda quer perguntar: "${text}"`,
           );
         const n = previous.length + 1;
-        const ref = await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
+        const ref = project.config.questionApproval
+          ? { card: input.key, to: po.id, before: [] }
+          : await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
         const askedAt = clock.now();
         const { calendar } = project.config;
         const question: Question = {
@@ -460,11 +481,23 @@ export async function startFactory(opts: {
           reminded: false,
           notified: false,
           answer: null,
+          ...(project.config.questionApproval ? { publication: "draft" as const } : {}),
+          ...(po.teamsUserId && project.config.source.baseUrl && !project.config.dryRun
+            ? {
+                teamsNotice: {
+                  userId: po.teamsUserId,
+                  link: `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(input.key)}`,
+                  status: "pending" as const,
+                },
+              }
+            : {}),
         };
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
           if (task && !task.questions?.some((q) => q.n === n)) task.questions = [...(task.questions ?? []), question];
         });
+        if (project.config.questionApproval) return;
+        await sendTeamsNotice(input.id, input.project, input.key, n);
         await events.append({
           type: "question",
           project: input.project,
@@ -486,6 +519,7 @@ export async function startFactory(opts: {
       });
       if (!question) return null;
       const q = question;
+      if (q.publication === "draft" || q.publication === "sending") return runtime.now() + 60_000;
       if (await checkAnswer(input, q)) return null;
 
       const now = runtime.now();
@@ -580,6 +614,44 @@ export async function startFactory(opts: {
     }, context);
   }
 
+  /** Reserva antes de enviar: uma falha ambígua ou reinício nunca repetem automaticamente uma mensagem. */
+  async function sendTeamsNotice(id: string, project: string, key: string, n: number): Promise<void> {
+    const config = projectOf(project).config;
+    if (!opts.teams || config.dryRun || (config.source.keys && !config.source.keys.includes(key))) return;
+    const notice = await harness.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      const task = state.tasks.find((t) => t.id === id);
+      if (state.daemonPaused || !task || task.pauseRequested || !["ativa", "aguardando-humano"].includes(task.status))
+        return undefined;
+      const q = task.questions?.find((item) => item.n === n);
+      if (q?.teamsNotice?.status !== "pending" || q.answer !== null) return undefined;
+      if (!config.people.some((p) => p.role === "po" && p.id === q.to && p.teamsUserId === q.teamsNotice?.userId))
+        return undefined;
+      q.teamsNotice.status = "attempted";
+      return { userId: q.teamsNotice.userId, link: q.teamsNotice.link };
+    }, context);
+    if (!notice) return;
+    try {
+      await opts.teams.send({
+        userId: notice.userId,
+        text: teamsQuestionMessage(key, notice.link),
+      });
+      await markQuestion(id, n, (q) => {
+        if (q.teamsNotice) q.teamsNotice.status = "sent";
+      });
+    } catch {
+      await markQuestion(id, n, (q) => {
+        if (q.teamsNotice) q.teamsNotice.status = "uncertain";
+      });
+      await events.append({
+        type: "error",
+        project,
+        target: key,
+        message: "aviso Teams não confirmado; verifique o chat antes de tentar novamente",
+      });
+    }
+  }
+
   /** Lê a resposta pelo Canal; se chegou, registra e devolve a Tarefa à fila. */
   async function checkAnswer(task: { id: string; project: string; key: string }, q: Question): Promise<boolean> {
     const answer = await projectOf(task.project).channel.answer(q.ref);
@@ -605,8 +677,9 @@ export async function startFactory(opts: {
   async function checkAnswers(): Promise<void> {
     for (const task of (await readState()).tasks) {
       const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
-      if (!pending) continue;
+      if (!pending || pending.publication === "draft" || pending.publication === "sending") continue;
       try {
+        await sendTeamsNotice(task.id, task.project, task.key, pending.n);
         await checkAnswer(task, pending);
       } catch (err) {
         await events.append({
@@ -628,6 +701,7 @@ export async function startFactory(opts: {
       for (const card of await source.listAssignedCards(config.source.assignee)) {
         const state = config.statuses[card.status];
         if (card.assignee !== config.source.assignee || !state || !ELIGIBLE.has(state)) continue;
+        if (config.source.keys && !config.source.keys.includes(card.key)) continue;
         items.push({ project: config.name, key: card.key, title: card.title, status: card.status, state });
       }
     }
@@ -837,6 +911,7 @@ export async function startFactory(opts: {
   };
   const streams = new Set<ServerResponse>();
   const approvingRetros = new Set<string>();
+  const approvingQuestions = new Set<string>();
 
   /**
    * Só clientes locais: Host precisa ser localhost/127.0.0.1 na porta do servidor (barra DNS rebinding) e um POST com
@@ -873,6 +948,123 @@ export async function startFactory(opts: {
         return task
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
+      }
+      const specRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/spec(\/approve)?$/);
+      if (specRoute && (req.method === "GET" || req.method === "POST")) {
+        const [, encodedProject, encodedKey, approval] = specRoute;
+        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
+        const projectName = decodeURIComponent(encodedProject as string);
+        const cardKey = decodeURIComponent(encodedKey as string);
+        const id = `${projectName}/${cardKey}`;
+        const state = await readState();
+        const task = state.tasks.find((t) => t.id === id);
+        if (!task?.delivery) return json(res, 404, { error: "SPEC não encontrada" });
+        if (task.specReview !== "draft" || task.status !== "aguardando-humano")
+          return json(res, 409, { error: "SPEC não está disponível para aprovação" });
+        const project = projectOf(projectName);
+        const preview = {
+          card: cardKey,
+          spec: `${AUTOMATION_PREFIX} ${redactSecrets(`SPEC\n\n${task.delivery.spec}`)}`,
+          tickets: `${AUTOMATION_PREFIX} ${redactSecrets(`Tickets\n\n${renderTickets(task.delivery.tickets)}`)}`,
+          dryRun: project.config.dryRun,
+        };
+        const revision = reviewRevision(preview);
+        if (req.method === "GET") return json(res, 200, { ...preview, revision });
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { revision?: unknown } | undefined;
+        if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
+        if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
+        const approved = await harness.commit(async (tx) => {
+          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
+          current.specReview = "approved";
+          current.status = current.pauseRequested ? "pausada" : "enfileirada";
+          return true;
+        }, context);
+        return approved ? json(res, 200, { ok: true }) : json(res, 409, { error: "SPEC mudou ou foi cancelada" });
+      }
+      const questionRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)(\/approve)?$/);
+      if (questionRoute && (req.method === "GET" || req.method === "POST")) {
+        const [, encodedProject, encodedKey, number, approval] = questionRoute;
+        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
+        const projectName = decodeURIComponent(encodedProject as string);
+        const cardKey = decodeURIComponent(encodedKey as string);
+        const id = `${projectName}/${cardKey}`;
+        const n = Number(number);
+        const lock = `${id}/${n}`;
+        if (approvingQuestions.has(lock)) return json(res, 409, { error: "pergunta já está sendo publicada" });
+        if (req.method === "POST") approvingQuestions.add(lock);
+        try {
+          const state = await readState();
+          const task = state.tasks.find((t) => t.id === id);
+          const q = task?.questions?.find((item) => item.n === n);
+          if (!q) return json(res, 404, { error: "pergunta não encontrada" });
+          if (q.publication !== "draft" || task?.status !== "aguardando-humano")
+            return json(res, 409, { error: "pergunta não está disponível para aprovação" });
+          const project = projectOf(projectName);
+          const po = project.config.people.find((p) => p.role === "po" && p.id === q.to);
+          if (!po) return json(res, 409, { error: "destinatário não está configurado" });
+          const link = project.config.source.baseUrl
+            ? `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(cardKey)}`
+            : undefined;
+          const preview = {
+            card: cardKey,
+            to: q.to,
+            comment: `${AUTOMATION_PREFIX} ${redactSecrets(`Pergunta ${n}: ${q.text}`)}`,
+            teamsUserId: po.teamsUserId ?? null,
+            teamsMessage: po.teamsUserId && link ? teamsQuestionMessage(cardKey, link) : null,
+            dryRun: project.config.dryRun,
+          };
+          const revision = questionRevision(preview);
+          if (req.method === "GET") return json(res, 200, { ...preview, revision });
+          if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+          const body = (await readBody(req)) as { revision?: unknown } | undefined;
+          if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
+          if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
+          if (state.daemonPaused || task.pauseRequested) return json(res, 409, { error: "tarefa ou daemon pausado" });
+          if (po.teamsUserId && (!link || !opts.teams)) return json(res, 409, { error: "Teams indisponível" });
+          const reserved = await harness.commit(async (tx) => {
+            const currentState = await tx.doc(StateDoc);
+            const current = currentState.tasks.find((t) => t.id === id);
+            const currentQuestion = current?.questions?.find((item) => item.n === n);
+            if (
+              currentState.daemonPaused ||
+              current?.status !== "aguardando-humano" ||
+              current.pauseRequested ||
+              currentQuestion?.publication !== "draft" ||
+              currentQuestion.text !== q.text ||
+              currentQuestion.to !== q.to
+            )
+              return false;
+            currentQuestion.publication = "sending";
+            return true;
+          }, context);
+          if (!reserved) return json(res, 409, { error: "pergunta mudou ou foi cancelada" });
+          const ref = await project.channel.ask({ card: cardKey, to: q.to, text: `Pergunta ${n}: ${q.text}` });
+          const askedAt = clock.now();
+          await markQuestion(id, n, (stored) => {
+            stored.ref = ref;
+            stored.askedAt = askedAt;
+            stored.remindAt = addBusinessHours(project.config.calendar, askedAt, REMINDER_BUSINESS_HOURS);
+            stored.notifyAt = addBusinessHours(project.config.calendar, askedAt, workdayHours(project.config.calendar));
+            stored.teamsNotice =
+              po.teamsUserId && link ? { userId: po.teamsUserId, link, status: "pending" } : undefined;
+            stored.publication = "sent";
+          });
+          await sendTeamsNotice(id, projectName, cardKey, n);
+          await events.append({
+            type: "question",
+            project: projectName,
+            target: cardKey,
+            n,
+            to: q.to,
+            text: q.text,
+            status: "enviada",
+          });
+          return json(res, 200, { ok: true });
+        } finally {
+          if (req.method === "POST") approvingQuestions.delete(lock);
+        }
       }
       const retroRoute = url.pathname.match(
         /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(spec|implementacao|tarefa)\/(\d+)(\/approve)?$/,

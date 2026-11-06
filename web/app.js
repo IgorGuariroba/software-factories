@@ -1,12 +1,16 @@
 // Página de gestão: lê e comanda a fábrica só pela API local, e se atualiza pelo stream de eventos (SSE).
 // O DOM é montado com createElement e textContent: conteúdo do card e do modelo nunca vira HTML.
 import {
+  approveQuestion,
   approveRetro,
+  approveSpec,
   cancelTask,
   eventStream,
   getDaemon,
+  getQuestionPreview,
   getQueue,
   getRetroPreview,
+  getSpecPreview,
   getTask,
   getTasks,
   pauseDaemon,
@@ -79,6 +83,75 @@ async function run(command) {
     showError(err);
   }
   await refresh();
+}
+
+function reviewSpecButton(task) {
+  const container = el("div");
+  const button = el("button", {
+    text: "Revisar SPEC e Tickets",
+    attrs: { type: "button" },
+    onClick: async () => {
+      button.disabled = true;
+      try {
+        const preview = await getSpecPreview(task.project, task.key);
+        if (!container.isConnected) return;
+        container.replaceChildren(
+          el("p", { text: `Comentários no Jira (${preview.card}):` }),
+          el("pre", { className: "texto", text: preview.spec }),
+          el("pre", { className: "texto", text: preview.tickets }),
+          preview.dryRun
+            ? el("p", { text: "Dry-run: a publicação real está desativada." })
+            : el("button", {
+                text: "Aprovar SPEC e Tickets",
+                attrs: { type: "button" },
+                onClick: () => run(() => approveSpec(task.project, task.key, preview.revision)),
+              }),
+        );
+        clearError();
+      } catch (err) {
+        button.disabled = false;
+        showError(err);
+      }
+    },
+  });
+  container.append(button);
+  return container;
+}
+
+function reviewQuestionButton(task, question) {
+  const container = el("div");
+  const button = el("button", {
+    text: "Revisar pergunta e aviso",
+    attrs: { type: "button" },
+    onClick: async () => {
+      button.disabled = true;
+      try {
+        const preview = await getQuestionPreview(task.project, task.key, question.n);
+        if (!container.isConnected) return;
+        container.replaceChildren(
+          el("p", { text: `Comentário no Jira (${preview.card}):` }),
+          el("pre", { className: "texto", text: preview.comment }),
+          el("p", {
+            text: preview.teamsUserId ? `Aviso Teams para ${preview.teamsUserId}:` : "Sem aviso Teams configurado.",
+          }),
+          ...(preview.teamsMessage ? [el("pre", { className: "texto", text: preview.teamsMessage })] : []),
+          preview.dryRun
+            ? el("p", { text: "Dry-run: a publicação real está desativada." })
+            : el("button", {
+                text: "Aprovar pergunta e aviso",
+                attrs: { type: "button" },
+                onClick: () => run(() => approveQuestion(task.project, task.key, question.n, preview.revision)),
+              }),
+        );
+        clearError();
+      } catch (err) {
+        button.disabled = false;
+        showError(err);
+      }
+    },
+  });
+  container.append(button);
+  return container;
 }
 
 function reviewRetroButton(task, retro, proposal) {
@@ -238,12 +311,30 @@ function renderDetail(task) {
             {},
             el("span", { className: "quando", text: formatTime(q.askedAt) }),
             `${q.n}. para ${q.to}: ${q.text} `,
-            el("strong", { text: q.answer === null ? "(pendente)" : `Resposta: ${q.answer}` }),
+            el("strong", {
+              text:
+                q.publication === "draft"
+                  ? "(aguarda revisão)"
+                  : q.publication === "sending"
+                    ? "(publicação não confirmada; verifique o Jira)"
+                    : q.answer === null
+                      ? "(pendente)"
+                      : `Resposta: ${q.answer}`,
+            }),
+            ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
+            ...(q.teamsNotice === "uncertain" || q.teamsNotice === "attempted"
+              ? [el("p", { text: "Aviso Teams não confirmado; verifique o chat antes de reenviar." })]
+              : []),
           ),
         )),
   );
 
   $("detalhe-spec").textContent = task.spec ?? "Ainda não entregue.";
+  $("detalhe-spec-revisao").replaceChildren(
+    ...(task.specReview === "draft"
+      ? [el("p", { text: "SPEC e Tickets aguardam revisão." }), reviewSpecButton(task)]
+      : []),
+  );
   $("detalhe-tickets").replaceChildren(
     ...task.tickets.map((t) => el("li", {}, el("strong", { text: t.titulo }), `: ${t.aceite}`)),
   );

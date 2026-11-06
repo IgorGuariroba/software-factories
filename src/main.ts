@@ -1,9 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ConfigError, startDaemon } from "./daemon.js";
+import { createFactoryModels } from "./factory-models.js";
 import { createJiraDemandSource } from "./jira-demand-source.js";
 import { createGhRetroSink } from "./retro-sink.js";
+import { createTeamsMcpNotifier } from "./teams-mcp.js";
 import { createTelegramBot } from "./telegram.js";
 
 const configDir = process.env.FACTORY_CONFIG_DIR ?? join(homedir(), ".config", "software-factory", "projects");
@@ -46,7 +49,15 @@ if (retroRepo && !/^[\w.-]+\/[\w.-]+$/.test(retroRepo)) {
   process.exit(1);
 }
 
+let teamsClient: Client | undefined;
 try {
+  const teamsCommand = process.env.FACTORY_TEAMS_MCP_COMMAND;
+  if (teamsCommand) {
+    teamsClient = new Client({ name: "software-factory", version: "1" });
+    await teamsClient.connect(new StdioClientTransport({ command: teamsCommand, stderr: "ignore" }), {
+      timeout: 30_000,
+    });
+  }
   const daemon = await startDaemon({
     configDir,
     port,
@@ -59,16 +70,22 @@ try {
           assignee: config.source.assignee,
         }),
     },
-    // Provedores com as chaves do ambiente; a seleção por regras e a allowlist vêm na M1-16.
-    models: builtinModels(),
+    // Credenciais do pi e chaves do ambiente; seleção por regras e allowlist vêm na M1-16.
+    models: await createFactoryModels(),
     management: telegramFromEnv(),
+    teams: teamsClient && createTeamsMcpNotifier(teamsClient),
     retro: { sink: createGhRetroSink(), repo: retroRepo },
   });
   console.log(`[fábrica] API local em ${daemon.url}`);
-  const stop = () => void daemon.close().then(() => process.exit(0));
+  const stop = () =>
+    void daemon
+      .close()
+      .then(() => teamsClient?.close())
+      .then(() => process.exit(0));
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 } catch (err) {
+  await teamsClient?.close().catch(() => {});
   console.error(err instanceof ConfigError ? err.message : err);
   process.exit(1);
 }

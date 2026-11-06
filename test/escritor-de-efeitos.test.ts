@@ -23,7 +23,7 @@ describe("escritor de efeitos", () => {
 
     await writer.comment("PROJ-1", "Assumindo este card.");
 
-    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [fábrica] Assumindo este card."]);
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [mensagem automatizada] Assumindo este card."]);
     expect(events.list()).toMatchObject([
       { type: "write", project: "exemplo", target: "PROJ-1", action: "comment", dryRun: false },
     ]);
@@ -42,7 +42,7 @@ describe("escritor de efeitos", () => {
         type: "write",
         target: "PROJ-1",
         action: "comment",
-        content: "🤖 [fábrica] Assumindo este card.",
+        content: "🤖 [mensagem automatizada] Assumindo este card.",
         dryRun: true,
       },
       { type: "write", target: "PROJ-1", action: "transition", content: "Em Andamento", dryRun: true },
@@ -71,13 +71,13 @@ describe("escritor de efeitos", () => {
     await again.comment("PROJ-1", "Oi.");
 
     expect(events.list().map((e) => (e.type === "write" ? `${e.action}: ${e.content}` : e.type))).toEqual([
-      "comment: \u{1F916} [fábrica] Assumindo este card.",
+      "comment: \u{1F916} [mensagem automatizada] Assumindo este card.",
       "transition: Em Andamento",
-      "comment: \u{1F916} [fábrica] SPEC\n\nEntregar o CSV.",
-      "mention: \u{1F916} [fábrica] [~accountid:po-ficticio] Pergunta 1: qual o separador?",
-      "comment: \u{1F916} [fábrica] SPEC\n\nEntregar o CSV com cabeçalho.",
-      "comment: \u{1F916} [fábrica] Oi.",
-      "comment: \u{1F916} [fábrica] Oi.",
+      "comment: \u{1F916} [mensagem automatizada] SPEC\n\nEntregar o CSV.",
+      "mention: \u{1F916} [mensagem automatizada] Pergunta 1: qual o separador?",
+      "comment: \u{1F916} [mensagem automatizada] SPEC\n\nEntregar o CSV com cabeçalho.",
+      "comment: \u{1F916} [mensagem automatizada] Oi.",
+      "comment: \u{1F916} [mensagem automatizada] Oi.",
     ]);
   });
 
@@ -137,7 +137,7 @@ describe("escritor de efeitos", () => {
       await expect(writer.editComment("PROJ-1", mine.id, "x")).rejects.toThrow(/guardrail/i);
 
       expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual([
-        "🤖 [fábrica] SPEC v2",
+        "🤖 [mensagem automatizada] SPEC v2",
         "comentário da maria",
         "comentário meu, escrito à mão",
       ]);
@@ -168,7 +168,7 @@ describe("escritor de efeitos", () => {
       const [written] = source.commentsOf("PROJ-1");
       expect(written?.body).not.toContain(secret);
       expect(written?.body).toContain("[segredo removido]");
-      expect(written?.body).toMatch(/^🤖 \[fábrica\] log do build: .* fim$/s);
+      expect(written?.body).toMatch(/^🤖 \[mensagem automatizada\] log do build: .* fim$/s);
       expect(JSON.stringify(events.list())).not.toContain(secret);
     });
 
@@ -178,7 +178,7 @@ describe("escritor de efeitos", () => {
       await writer.comment("PROJ-1", `DB_PASSWORD=${"hunter"}2xyz e api_key: "${"abc"}123def456"`);
 
       expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
-        '🤖 [fábrica] DB_PASSWORD=[segredo removido] e api_key: "[segredo removido]"',
+        '🤖 [mensagem automatizada] DB_PASSWORD=[segredo removido] e api_key: "[segredo removido]"',
       );
     });
 
@@ -188,7 +188,7 @@ describe("escritor de efeitos", () => {
       await writer.comment("PROJ-1", `{"password":"${"hunter"}2xyz", "api_key": "${"abc"}123def456", "user": "igor"}`);
 
       expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
-        '🤖 [fábrica] {"password":"[segredo removido]", "api_key": "[segredo removido]", "user": "igor"}',
+        '🤖 [mensagem automatizada] {"password":"[segredo removido]", "api_key": "[segredo removido]", "user": "igor"}',
       );
     });
 
@@ -201,7 +201,7 @@ describe("escritor de efeitos", () => {
       );
 
       expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
-        `🤖 [fábrica] {"password":"[segredo removido]", "user": "igor"} senha='[segredo removido]' ok`,
+        `🤖 [mensagem automatizada] {"password":"[segredo removido]", "user": "igor"} senha='[segredo removido]' ok`,
       );
     });
 
@@ -214,7 +214,7 @@ describe("escritor de efeitos", () => {
       );
 
       expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
-        "🤖 [fábrica] password: [segredo removido] api_key: [segredo removido]\nuser: igor\nDB_TOKEN=[segredo removido] resto",
+        "🤖 [mensagem automatizada] password: [segredo removido] api_key: [segredo removido]\nuser: igor\nDB_TOKEN=[segredo removido] resto",
       );
     });
 
@@ -224,7 +224,7 @@ describe("escritor de efeitos", () => {
       await writer.comment("PROJ-1", `password: ${"correct"} horse) battery staple\nuser: igor`);
 
       const body = source.commentsOf("PROJ-1")[0]?.body ?? "";
-      expect(body).toBe("\u{1F916} [fábrica] password: [segredo removido]\nuser: igor");
+      expect(body).toBe("\u{1F916} [mensagem automatizada] password: [segredo removido]\nuser: igor");
       expect(body).not.toContain("battery");
     });
 
@@ -234,13 +234,23 @@ describe("escritor de efeitos", () => {
       await writer.comment("PROJ-1", "A senha do usuário deve ter 8 caracteres; token de sessão expira em 1h.");
 
       expect(source.commentsOf("PROJ-1")[0]?.body).toBe(
-        "🤖 [fábrica] A senha do usuário deve ter 8 caracteres; token de sessão expira em 1h.",
+        "🤖 [mensagem automatizada] A senha do usuário deve ter 8 caracteres; token de sessão expira em 1h.",
       );
     });
   });
 });
 
 describe("comentário com título, editado no lugar (upsertComment)", () => {
+  it("reconhece o comentário da fábrica com o prefixo antigo e o edita para o novo, sem duplicar", async () => {
+    const { source, writer } = setup();
+    const legacy = await source.addComment("PROJ-1", "\u{1F916} [fábrica] SPEC\n\nv1");
+
+    const result = await writer.upsertComment("PROJ-1", "SPEC", "v2");
+
+    expect(result.id).toBe(legacy.id);
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["\u{1F916} [mensagem automatizada] SPEC\n\nv2"]);
+  });
+
   const header = (body: string) => body.split("\n")[0];
 
   it("cria o comentário na primeira vez, com o título na primeira linha depois do prefixo", async () => {
@@ -248,7 +258,7 @@ describe("comentário com título, editado no lugar (upsertComment)", () => {
 
     await writer.upsertComment("PROJ-1", "SPEC", "conteúdo");
 
-    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [fábrica] SPEC\n\nconteúdo"]);
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [mensagem automatizada] SPEC\n\nconteúdo"]);
   });
 
   it("na segunda vez edita o mesmo comentário", async () => {
@@ -258,7 +268,7 @@ describe("comentário com título, editado no lugar (upsertComment)", () => {
     const second = await writer.upsertComment("PROJ-1", "SPEC", "v2");
 
     expect(second.id).toBe(first.id);
-    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [fábrica] SPEC\n\nv2"]);
+    expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual(["🤖 [mensagem automatizada] SPEC\n\nv2"]);
     expect(events.list().map((e) => (e.type === "write" ? e.action : e.type))).toEqual(["comment", "edit-comment"]);
   });
 
@@ -278,18 +288,20 @@ describe("comentário com título, editado no lugar (upsertComment)", () => {
     await writer.upsertComment("PROJ-1", "Tickets", "t");
 
     expect(source.commentsOf("PROJ-1").map((c) => header(c.body))).toEqual([
-      "🤖 [fábrica] SPEC",
-      "🤖 [fábrica] Tickets",
+      "🤖 [mensagem automatizada] SPEC",
+      "🤖 [mensagem automatizada] Tickets",
     ]);
   });
 
   it("nunca edita um comentário de outra pessoa com o mesmo título", async () => {
     const { source, writer } = setup();
-    const human = source.humanComment("PROJ-1", "po", "🤖 [fábrica] SPEC\n\nà mão");
+    const human = source.humanComment("PROJ-1", "po", "🤖 [mensagem automatizada] SPEC\n\nà mão");
 
     await writer.upsertComment("PROJ-1", "SPEC", "da fábrica");
 
-    expect(source.commentsOf("PROJ-1").find((c) => c.id === human.id)?.body).toBe("🤖 [fábrica] SPEC\n\nà mão");
+    expect(source.commentsOf("PROJ-1").find((c) => c.id === human.id)?.body).toBe(
+      "🤖 [mensagem automatizada] SPEC\n\nà mão",
+    );
     expect(source.commentsOf("PROJ-1")).toHaveLength(2);
   });
 
@@ -310,7 +322,7 @@ describe("menção a uma pessoa do projeto (mention)", () => {
     await writer.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
 
     expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual([
-      `\u{1F916} [fábrica] [~accountid:${PO}] Pergunta 1: qual o separador?`,
+      `\u{1F916} [mensagem automatizada] Pergunta 1: qual o separador?`,
     ]);
   });
 
@@ -377,7 +389,12 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     const created = await writer.openRetroIssue("PROJ-1", REPO, { title: "Melhorar o grill", body: "Corpo." });
 
     expect(sink.issuesOf(REPO)).toMatchObject([
-      { number: created?.number, title: "Melhorar o grill", body: "\u{1F916} [fábrica] Corpo.", labels: ["retro"] },
+      {
+        number: created?.number,
+        title: "Melhorar o grill",
+        body: "\u{1F916} [mensagem automatizada] Corpo.",
+        labels: ["retro"],
+      },
     ]);
     expect(events.list()).toMatchObject([
       { type: "write", action: "retro-issue", target: "PROJ-1#retro", dryRun: false },
@@ -427,7 +444,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
     const [issue] = sink.issuesOf(REPO);
     expect(issue?.title).toBe("Grill do [removido] e do [removido]");
     expect(issue?.body).toBe(
-      '\u{1F916} [fábrica] Projeto [removido], pessoa [removido] ([removido]), card "[removido]", repo [removido] ' +
+      '\u{1F916} [mensagem automatizada] Projeto [removido], pessoa [removido] ([removido]), card "[removido]", repo [removido] ' +
         "em [caminho removido], chave [segredo removido], [link removido], " +
         "[link removido] e [link removido].",
     );
@@ -440,7 +457,7 @@ describe("escritor de efeitos: issues de retrô no repositório público da fáb
       body: "Conexão postgresql://app:senha@db.interno/folha e arquivo /folha-salarial.csv.",
     });
     expect(sink.issuesOf(REPO)[0]?.body).toBe(
-      "\u{1F916} [fábrica] Conexão [link removido] e arquivo [caminho removido].",
+      "\u{1F916} [mensagem automatizada] Conexão [link removido] e arquivo [caminho removido].",
     );
   });
 

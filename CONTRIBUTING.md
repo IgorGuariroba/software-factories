@@ -40,7 +40,7 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 - Portas: uma suíte de contrato por porta (`test/*.contract.ts`), expressa só pela interface da porta, roda contra o fake e contra o adaptador real com o binário/API falso; contra o sistema real, só opt-in. O que for só do formato de um adaptador e não couber no contrato é testado pela interface pública do adaptador (ex.: `test/fonte-jira.test.ts`, `createJiraDemandSource` com o `acli` falso), nunca chamando helpers internos.
 - Escritor de efeitos (`src/effect-writer.ts`): guardrails, saneamento e dry-run testados direto pela interface `EffectWriter` (`test/escritor-de-efeitos.test.ts`).
 - Implementação: git real contra um remoto bare temporário (`test/fakes/git-repos.ts`) e o modelo faux roteirizado (`scriptImplementer`); o comando de teste dos repositórios de teste é `node --test`.
-- Rodar o daemon localmente: `npm start` (lê `~/.config/software-factory/projects/*.yaml`; o conhecimento de cada projeto em `<configDir>/<projeto>/knowledge.md`; a etapa SPEC usa o modelo de `roles.spec` com a chave do provedor no ambiente, ex. `ANTHROPIC_API_KEY`; `FACTORY_CONFIG_DIR`, `FACTORY_PORT`, `FACTORY_POLL_SECONDS`, `FACTORY_RETRO_REPO` (repositório público da fábrica para as issues de retrô) e `FACTORY_STATE_PATH` (estado durável, padrão `~/.local/state/software-factory/fabrica.sqlite`) sobrescrevem). Exemplo de config em `projects/example.yaml`. A etapa de implementação clona o repositório mapeado para `<dir do estado>/worktrees/<projeto>/<card>` e nunca mexe na cópia de trabalho mapeada.
+- Rodar o daemon localmente: `npm start` (lê `~/.config/software-factory/projects/*.yaml`; o conhecimento de cada projeto em `<configDir>/<projeto>/knowledge.md`; a etapa SPEC usa o modelo de `roles.spec` com as credenciais do pi ou a chave do provedor no ambiente, ex. `ANTHROPIC_API_KEY`; para assinatura Codex, use `provider: openai-codex` e autentique-se no pi com `/login`; o daemon compartilha o armazenamento OAuth do pi e pode atualizar o token; `FACTORY_CONFIG_DIR`, `FACTORY_PORT`, `FACTORY_POLL_SECONDS`, `FACTORY_RETRO_REPO` (repositório público da fábrica para as issues de retrô) e `FACTORY_STATE_PATH` (estado durável, padrão `~/.local/state/software-factory/fabrica.sqlite`) sobrescrevem). Exemplo de config em `projects/example.yaml`. A etapa de implementação clona o repositório mapeado para `<dir do estado>/worktrees/<projeto>/<card>` e nunca mexe na cópia de trabalho mapeada.
 
 ### Assumir card "Em Andamento" e veto
 
@@ -53,7 +53,7 @@ A busca enfileira os cards atribuídos ao usuário em "A Fazer" e em "Em Andamen
 
 ### Perguntas ao PO e horas úteis
 
-Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta `perguntar_po`. A pergunta sai pela porta `Channel` (`src/channel.ts`); no M1, o único adaptador é um comentário no card que menciona o PO declarado em `people` (role `po`), sempre pelo escritor de efeitos (guardrail de destinatário só entre as pessoas do projeto, prefixo, filtro de segredos e dry-run). Sem PO declarado, a Tarefa fica `bloqueada`.
+Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta `perguntar_po`. A pergunta sai pela porta `Channel` (`src/channel.ts`); no M1, o único adaptador é um comentário no card dirigido ao PO declarado em `people` (role `po`), sem token de menção (o `acli` grava texto puro e o Jira mostraria `[~accountid:…]` literalmente; o aviso ao PO vai pelo Teams), sempre pelo escritor de efeitos (guardrail de destinatário só entre as pessoas do projeto, prefixo, filtro de segredos e dry-run). Sem PO declarado, a Tarefa fica `bloqueada`.
 
 - A Tarefa vai para `aguardando-humano`, sai da fila (a próxima avança) e dorme numa task durável de prazo.
 - Resposta: qualquer comentário do PO no card criado depois da pergunta. Ela é achada a cada busca na Fonte (`POST /poll` ou o timer) e sempre que a Tarefa acorda num prazo; a Tarefa volta à fila e, na vez dela, o grill segue com a resposta no contexto.
@@ -145,6 +145,14 @@ npx vitest run test/demand-source-jira.contract.test.ts
 ```
 
 Se as variáveis `TEST_JIRA_PROJECT`, `TEST_JIRA_ASSIGNEE` e `TEST_JIRA_CARD` não forem fornecidas, o arquivo é pulado automaticamente (`skipped`) para segurança contra escritas acidentais e independência de credenciais na CI.
+
+### Aviso ao PO no Teams via MCP
+
+O comentário do Jira continua sendo o canal da pergunta e da resposta. Opcionalmente, configure `source.baseUrl` com a origem HTTPS do Jira e `teamsUserId` (MRI `8:orgid:...`) na pessoa com `role: po`. Inicie o daemon com `FACTORY_TEAMS_MCP_COMMAND` apontando para o executável local do servidor `msteams-mcp`, previamente autenticado. A fábrica não usa shell para iniciar o MCP. A mensagem contém o card e seu link, não o conteúdo da pergunta. `dryRun: true` nunca envia o aviso. Quando a entrega não é confirmada, consulte o status `teamsNotice` na API e o chat antes de agir: uma tentativa incerta não é repetida automaticamente, para evitar duplicação. Um processo encerrado durante o envio pode deixar o status `attempted`, também exigindo conferência. Perguntas criadas antes dessa integração não geram aviso retroativo.
+
+Para um ensaio com revisão, `questionApproval: true` registra a pergunta como rascunho; a página da Tarefa mostra o comentário exato e o aviso Teams antes de aprovar. A aprovação é vinculada ao conteúdo e destino exibidos e não executa em dry-run. Com `specApproval: true`, a SPEC e os Tickets ficam como rascunho (Tarefa `aguardando-humano`): a página mostra os dois comentários exatos e só a aprovação dessa prévia os publica, quando a Tarefa volta a rodar; em dry-run a aprovação é recusada. Com `questionApproval` sem `specApproval`, se o modelo não fizer pergunta, o ensaio bloqueia em vez de publicar SPEC/Tickets. Atenção: assumir o card e movê-lo para Em Andamento ocorrem **antes** da prévia quando `dryRun` está desligado. Se o processo parar durante a publicação, `sending` indica resultado incerto: verifique o Jira antes de qualquer nova tentativa.
+
+`source.keys`, quando presente, restringe novas entradas da fila às chaves listadas. Essa opção não elimina tarefas que já existem no estado durável; para um ensaio isolado, use obrigatoriamente um `FACTORY_STATE_PATH` novo e confira a fila antes de permitir qualquer escrita.
 
 ### Demo em dry-run contra o Jira real
 

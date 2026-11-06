@@ -40,7 +40,9 @@ describe("assumir card 'Em Andamento' com veto", () => {
     await poll(f);
     await waitForStatus(f, "PROJ-1", "aguardando-veto");
 
-    expect(assumeComments(f.source, "PROJ-1").map((c) => c.body)).toEqual(["\u{1F916} [fábrica] Assumindo este card."]);
+    expect(assumeComments(f.source, "PROJ-1").map((c) => c.body)).toEqual([
+      "\u{1F916} [mensagem automatizada] Assumindo este card.",
+    ]);
     expect(await notices(f)).toMatchObject([
       { type: "notify", target: "PROJ-1", reason: "aguardando-veto", until: "2026-11-10T13:30:00.000Z" },
     ]);
@@ -238,7 +240,7 @@ describe("espera do veto", () => {
       expect.objectContaining({
         type: "write",
         action: "comment",
-        content: "\u{1F916} [fábrica] Assumindo este card.",
+        content: "\u{1F916} [mensagem automatizada] Assumindo este card.",
       }),
     );
     expect(await notices(factory)).toHaveLength(1);

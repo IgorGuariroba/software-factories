@@ -7,6 +7,7 @@ import type { DemandSource } from "./demand-source.js";
 import { type RunningFactory, startFactory } from "./factory.js";
 import type { ManagementInterface } from "./management.js";
 import type { RetroSink } from "./retro-sink.js";
+import type { TeamsNotifier } from "./teams-mcp.js";
 
 /** Como criar a Fonte de cada tipo declarado em `source.type`. */
 export type SourceFactories = Record<ProjectConfig["source"]["type"], (config: ProjectConfig) => DemandSource>;
@@ -47,6 +48,8 @@ export async function startDaemon(opts: {
   pollIntervalMs?: number;
   /** Provedores de modelos com as credenciais do usuário. */
   models: Models;
+  /** Avisos Teams ao PO. */
+  teams?: TeamsNotifier;
   /** Interface de gestão (Telegram), global ao daemon: um bot e uma conversa para todos os projetos. */
   management?: { port: ManagementInterface; chat: string; user?: string };
   /** Issues da fábrica: a porta e o repositório público da fábrica (global ao daemon). */
@@ -58,6 +61,7 @@ export async function startDaemon(opts: {
     statePath: opts.statePath,
     pollIntervalMs: opts.pollIntervalMs,
     models: opts.models,
+    teams: opts.teams,
     management: opts.management,
     retro: opts.retro,
     // O conhecimento de cada projeto fica ao lado da config: <configDir>/<projeto>/knowledge.md (ADR-0010).

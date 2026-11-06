@@ -95,7 +95,9 @@ describe("reinício do daemon", () => {
     const source = factory.source;
     const listComments = source.listComments.bind(source);
     const specWritten = async () =>
-      (await events(first)).some((e) => e.type === "write" && String(e.content).includes("[fábrica] SPEC"));
+      (await events(first)).some(
+        (e) => e.type === "write" && String(e.content).includes("[mensagem automatizada] SPEC"),
+      );
     let stuck = true;
     let reached = false;
     // Depois de registrar a SPEC, a leitura para registrar os Tickets nunca termina: o daemon cai no meio do passo.
@@ -116,8 +118,8 @@ describe("reinício do daemon", () => {
     const writes = (await events(factory))
       .filter((e) => e.type === "write" && String(e.target).startsWith("PROJ-1"))
       .map((e) => `${e.action} ${e.target}: ${e.content}`);
-    expect(writes.filter((w) => w.includes("[fábrica] SPEC"))).toHaveLength(1);
-    expect(writes.filter((w) => w.includes("[fábrica] Tickets"))).toHaveLength(1);
+    expect(writes.filter((w) => w.includes("[mensagem automatizada] SPEC"))).toHaveLength(1);
+    expect(writes.filter((w) => w.includes("[mensagem automatizada] Tickets"))).toHaveLength(1);
     expect(writes.filter((w) => w.endsWith("Assumindo este card."))).toHaveLength(1);
     expect(new Set(writes).size).toBe(writes.length);
     expect(source.commentsOf("PROJ-1")).toEqual([]);
@@ -358,7 +360,11 @@ describe("schema da API", () => {
         "/tasks/{project}/{key}",
         "/tasks/{project}/{key}/cancel",
         "/tasks/{project}/{key}/pause",
+        "/tasks/{project}/{key}/questions/{n}",
+        "/tasks/{project}/{key}/questions/{n}/approve",
         "/tasks/{project}/{key}/resume",
+        "/tasks/{project}/{key}/spec",
+        "/tasks/{project}/{key}/spec/approve",
         "/tasks/{project}/{key}/retros/{stage}/{n}",
         "/tasks/{project}/{key}/retros/{stage}/{n}/approve",
         "/tasks/{project}/{key}/veto",
