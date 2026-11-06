@@ -70,6 +70,7 @@ try {
           assignee: config.source.assignee,
           baseUrl: config.source.baseUrl,
         }),
+      // A Fonte GitHub só é registrada quando a triagem existir (ADR-0014): sem ela, issue pública chegaria à SPEC.
     },
     // Credenciais do pi e chaves do ambiente; seleção por regras e allowlist vêm na M1-16.
     models: await createFactoryModels(),

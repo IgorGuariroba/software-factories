@@ -110,6 +110,41 @@ export type BusinessCalendar = z.infer<typeof BusinessCalendar>;
 export const TelegramContent = z.enum(["full", "minimal"]);
 export type TelegramContent = z.infer<typeof TelegramContent>;
 
+const JiraSourceConfig = z.object({
+  type: z.literal("jira"),
+  /** Chave do projeto na Fonte (ex.: "PROJ"). */
+  project: z.string().min(1),
+  /** Identificador do usuário na Fonte; a fábrica só trabalha nos cards dele. */
+  assignee: z.string().min(1),
+  /** Restrição opcional da busca a cards específicos; use estado novo para ensaios isolados. */
+  keys: z.array(z.string().min(1)).min(1).optional(),
+  /** Origem HTTPS do Jira: link no aviso ao PO e download dos anexos. */
+  baseUrl: z
+    .string()
+    .url()
+    .refine((value) => {
+      if (!URL.canParse(value)) return false;
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" && !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash
+      );
+    }, "use a origem HTTPS do Jira")
+    .optional(),
+});
+
+/** Repositório GitHub monitorado: toda issue aberta é candidata (ADR-0014). */
+const GitHubSourceConfig = z.object({
+  type: z.literal("github"),
+  /** Prefixo das chaves dos cards (ex.: "SF" → "SF-12"). */
+  project: z.string().min(1),
+  /** Repositório "dono/nome". */
+  repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "use dono/nome"),
+  /** Login do dono no GitHub; a fábrica age com a conta dele. */
+  assignee: z.string().min(1),
+  keys: z.array(z.string().min(1)).min(1).optional(),
+  baseUrl: z.undefined().optional(),
+});
+
 export const ProjectConfig = z.object({
   name: z.string().min(1),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
@@ -122,32 +157,7 @@ export const ProjectConfig = z.object({
   retroApproval: z.boolean().default(false),
   /** Comenta "Assumindo este card." ao assumir. Desligue quando o card atribuído ao usuário já basta como sinal. */
   announceAssume: z.boolean().default(true),
-  source: z.object({
-    type: z.literal("jira"),
-    /** Chave do projeto na Fonte (ex.: "PROJ"). */
-    project: z.string().min(1),
-    /** Identificador do usuário na Fonte; a fábrica só trabalha nos cards dele. */
-    assignee: z.string().min(1),
-    /** Restrição opcional da busca a cards específicos; use estado novo para ensaios isolados. */
-    keys: z.array(z.string().min(1)).min(1).optional(),
-    /** Origem HTTPS do Jira: link no aviso ao PO e download dos anexos. */
-    baseUrl: z
-      .string()
-      .url()
-      .refine((value) => {
-        if (!URL.canParse(value)) return false;
-        const url = new URL(value);
-        return (
-          url.protocol === "https:" &&
-          !url.username &&
-          !url.password &&
-          url.pathname === "/" &&
-          !url.search &&
-          !url.hash
-        );
-      }, "use a origem HTTPS do Jira")
-      .optional(),
-  }),
+  source: z.discriminatedUnion("type", [JiraSourceConfig, GitHubSourceConfig]),
   /** Modelo fixado para cada Papel. A seleção por regras, com candidatos e allowlist, vem depois (M1-16). */
   roles: z.object({
     /** Grill, SPEC e Tickets. */
