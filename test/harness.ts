@@ -30,6 +30,7 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
     questionApproval: false,
     specApproval: false,
     retroApproval: false,
+    announceAssume: true,
     source: { type: "jira", project: "PROJ", assignee: USER },
     roles: { spec: { provider: FakeModel.PROVIDER, model: "spec-a" } },
     people: [{ id: PO, role: "po" }],

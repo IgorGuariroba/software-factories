@@ -36,6 +36,20 @@ describe("assumir card 'A Fazer'", () => {
     ]);
   });
 
+  it("com announceAssume desligado, assume sem comentar no card", async () => {
+    factory = await startTestFactory({
+      cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],
+      config: { announceAssume: false },
+    });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+
+    expect(assumeComments(factory.source, "PROJ-1")).toEqual([]);
+    expect(factory.source.cards[0]?.status).toBe("Em Andamento");
+    expect((await events(factory)).some((e) => e.type === "assumed" && e.target === "PROJ-1")).toBe(true);
+  });
+
   it("não assume de novo um card que já assumiu", async () => {
     factory = await startTestFactory({
       cards: [{ key: "PROJ-1", title: "t", status: "A Fazer", assignee: USER }],

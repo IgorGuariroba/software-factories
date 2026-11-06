@@ -305,7 +305,7 @@ export async function startFactory(opts: {
       const project = projectOf(input.project);
       const { writer, source } = project;
       if (step === "comentar") {
-        await writer.commentOnce(input.key, "Assumindo este card.");
+        if (project.config.announceAssume) await writer.commentOnce(input.key, "Assumindo este card.");
         // Uma nova tentativa recomeça deste passo; o aviso de que assumiu sai uma vez só.
         const announced = events
           .list()
