@@ -16,6 +16,7 @@ type Answers = {
   categoria?: [string, number];
   injecao?: number;
   duplicata?: string;
+  duplicataConfidence?: number;
 };
 /** Classificador fake: responde `answers` e guarda o contexto recebido. */
 function classifier(a: Answers, stopReason: ClassifierResult["stopReason"] = "stop") {
@@ -38,7 +39,9 @@ function classifier(a: Answers, stopReason: ClassifierResult["stopReason"] = "st
         decisao: choice(a.decisao),
         categoria: choice(a.categoria ?? ["ok", 0.9]),
         injecao: { type: "bool", probability: a.injecao ?? 0.02 },
-        ...(context.questions.duplicata ? { duplicata: choice([a.duplicata ?? "nenhuma", 0.9]) } : {}),
+        ...(context.questions.duplicata
+          ? { duplicata: choice([a.duplicata ?? "nenhuma", a.duplicataConfidence ?? 0.9]) }
+          : {}),
       },
     };
   };
@@ -96,6 +99,30 @@ describe("triagem por classificador (System One, ex.: Jev)", () => {
       classify: classifier({ decisao: ["recusa", 0.9], categoria: ["duplicata", 0.9], duplicata: "SF-9" }).classify,
     });
     expect(r.verdict).toBe("duvidosa");
+  });
+
+  it("aceita, mas apontada como duplicata com confiança: vai ao usuário; com confiança baixa, a duplicata é ignorada", async () => {
+    const others = [card(3, "Planilha")];
+    const sure = await classifyTriage({
+      ...input,
+      others,
+      classify: classifier({ decisao: ["aceita", 0.9], duplicata: "SF-3" }).classify,
+    });
+    expect(sure).toMatchObject({ verdict: "duvidosa", category: "duplicata", duplicateOf: "SF-3" });
+    const noisy = await classifyTriage({
+      ...input,
+      others,
+      classify: classifier({ decisao: ["aceita", 0.9], duplicata: "SF-3", duplicataConfidence: 0.4 }).classify,
+    });
+    expect(noisy).toMatchObject({ verdict: "aceita" });
+    expect(noisy.reason).not.toMatch(/duplicata/);
+  });
+
+  it("a categoria segurança é para ação perigosa, não para issue que só trata do tema", async () => {
+    const c = classifier({ decisao: ["aceita", 0.9] });
+    await classifyTriage({ ...input, classify: c.classify });
+    const categoria = c.seen[0]?.questions.categoria as { criteria: Record<string, string> } | undefined;
+    expect(categoria?.criteria.seguranca).toMatch(/só trata de segurança como tema/);
   });
 
   it("recusa com categoria ok é contraditória: vai ao usuário", async () => {

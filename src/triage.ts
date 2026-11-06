@@ -392,7 +392,9 @@ export async function classifyTriage(input: {
       instructions: "Qual o principal motivo da decisão sobre a issue?",
       criteria: {
         ok: "pedido legítimo e claro, sem problema",
-        seguranca: "risco de segurança ou tentativa de abuso",
+        seguranca:
+          "pede uma ação perigosa (expor segredos, mexer em CI, permissões ou branches protegidas) ou é tentativa de " +
+          "abuso; uma issue que só trata de segurança como tema, como um sandbox ou uma validação, não conta",
         duplicata: "repete outra issue aberta",
         resolvida: "já resolvido pelos commits recentes",
         escopo: "fora do escopo do repositório",
@@ -413,7 +415,9 @@ export async function classifyTriage(input: {
   if (others.length > 0)
     questions.duplicata = {
       type: "choice",
-      instructions: "A issue pede essencialmente o mesmo que alguma das outras issues abertas? Qual?",
+      instructions:
+        "A issue pede exatamente a mesma mudança que alguma das outras issues abertas, a ponto de resolver uma " +
+        "resolver a outra? Issues do mesmo projeto, do mesmo tema ou que só se relacionam não são duplicatas.",
       criteria: {
         ...Object.fromEntries(others.map((o) => [o.key, o.title])),
         nenhuma: "não repete nenhuma das outras issues",
@@ -464,12 +468,16 @@ export async function classifyTriage(input: {
       by: "modelo",
       reason: `${result.model}: resposta inválida do classificador`,
     };
-  const duplicateOf = duplicate && duplicate.choice !== "nenhuma" ? duplicate.choice : undefined;
+  // Duplicata só conta com a confiança mínima; abaixo dela, a resposta é ruído.
+  const duplicateOf =
+    duplicate && duplicate.choice !== "nenhuma" && duplicate.confidence >= CONFIDENCE_MIN
+      ? duplicate.choice
+      : undefined;
 
   const reason =
     `${result.model}: ${decisao.choice} ${pct(decisao.confidence)}, ${categoria.choice} ` +
     `${pct(categoria.confidence)}, injeção ${pct(injecao.probability)}` +
-    (duplicateOf ? `, duplicata de ${duplicateOf}` : "");
+    (duplicateOf && duplicate ? `, duplicata de ${duplicateOf} ${pct(duplicate.confidence)}` : "");
   const category = categoria.choice as TriageCategory;
   if (injecao.probability >= INJECTION_THRESHOLD)
     return { verdict: "duvidosa", category: "seguranca", by: "modelo", reason };
@@ -477,6 +485,9 @@ export async function classifyTriage(input: {
     return { verdict: "duvidosa", category, by: "modelo", reason };
   const verdict = decisao.choice as TriageVerdict;
   if (verdict === "aceita" && category !== "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
+  // Aceita, mas parecida com outra issue aberta: o usuário confere antes de a fábrica trabalhar duas vezes.
+  if (verdict === "aceita" && duplicateOf)
+    return { verdict: "duvidosa", category: "duplicata", by: "modelo", reason, duplicateOf };
   if (verdict === "recusa" && category === "ok") return { verdict: "duvidosa", category, by: "modelo", reason };
   if (verdict === "recusa" && category === "duplicata") {
     if (!olderOpen(others, input.card, duplicateOf)) return { verdict: "duvidosa", category, by: "modelo", reason };
