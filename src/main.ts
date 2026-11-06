@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ConfigError, startDaemon } from "./daemon.js";
 import { createFactoryModels } from "./factory-models.js";
+import { createGitHubDemandSource } from "./github-demand-source.js";
 import { createJiraDemandSource } from "./jira-demand-source.js";
 import { createGhRetroSink } from "./retro-sink.js";
 import { createTeamsMcpNotifier } from "./teams-mcp.js";
@@ -69,6 +70,12 @@ try {
           project: config.source.project,
           assignee: config.source.assignee,
           baseUrl: config.source.baseUrl,
+        }),
+      github: (config) =>
+        createGitHubDemandSource({
+          project: config.source.project,
+          assignee: config.source.assignee,
+          repo: config.source.type === "github" ? config.source.repo : "",
         }),
     },
     // Credenciais do pi e chaves do ambiente; seleção por regras e allowlist vêm na M1-16.

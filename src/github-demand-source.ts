@@ -1,0 +1,178 @@
+import { execFile } from "node:child_process";
+import type { Card, CardComment, DemandSource, TextAttachment } from "./demand-source.js";
+
+export interface GhExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode?: number;
+}
+
+/** Runner injetável para o `gh`. Permite testes sem o binário real. */
+export type GhRunner = (args: string[], input?: string) => Promise<GhExecResult>;
+
+export const defaultGhRunner: GhRunner = (args, input) =>
+  new Promise((resolve) => {
+    const child = execFile("gh", args, { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const code =
+        error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 0;
+      resolve({
+        stdout: String(stdout),
+        stderr: String(stderr || (error && !code ? error.message : "")),
+        exitCode: error ? code || 1 : 0,
+      });
+    });
+    if (input !== undefined) child.stdin?.end(input);
+  });
+
+export interface GitHubDemandSourceOptions {
+  /** Prefixo das chaves dos cards (ex.: "SF" → "SF-12"). */
+  project: string;
+  /** Repositório "dono/nome". */
+  repo: string;
+  /** Login do dono: toda issue aberta é tratada como dele. */
+  assignee: string;
+  runner?: GhRunner;
+}
+
+/** Prefixo dos labels de status da fábrica. */
+export const STATUS_LABEL = "fabrica:";
+export const OPEN_STATUS = "aberta";
+export const CLOSED_STATUS = "fechada";
+
+interface RawIssue {
+  number: number;
+  title: string;
+  body?: string | null;
+  state: string;
+  labels?: (string | { name?: string })[];
+  pull_request?: unknown;
+}
+
+interface RawComment {
+  id: number;
+  body?: string | null;
+  user?: { login?: string } | null;
+}
+
+function labelNames(issue: RawIssue): string[] {
+  return (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? "")));
+}
+
+export class GitHubDemandSource implements DemandSource {
+  private readonly run: GhRunner;
+
+  constructor(private readonly opts: GitHubDemandSourceOptions) {
+    this.run = opts.runner ?? defaultGhRunner;
+  }
+
+  private numberOf(key: string): number | undefined {
+    const m = new RegExp(`^${this.opts.project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`).exec(key);
+    return m ? Number(m[1]) : undefined;
+  }
+
+  private async api(args: string[], what: string, input?: object): Promise<string> {
+    const res = await this.run(["api", ...args, ...(input ? ["--input", "-"] : [])], input && JSON.stringify(input));
+    if ((res.exitCode ?? 0) !== 0)
+      throw new Error(`gh api ${what} falhou: ${res.stderr.trim() || `código ${res.exitCode}`}`);
+    return res.stdout;
+  }
+
+  /** `gh api --paginate --slurp` devolve uma lista de páginas. */
+  private async list<T>(path: string, what: string): Promise<T[]> {
+    const stdout = await this.api(["--paginate", "--slurp", path], what);
+    const pages: unknown = JSON.parse(stdout || "[]");
+    if (!Array.isArray(pages)) throw new Error(`gh api ${what}: resposta inesperada`);
+    return pages.flatMap((p) => (Array.isArray(p) ? (p as T[]) : [p as T]));
+  }
+
+  private toCard(issue: RawIssue): Card {
+    const label = labelNames(issue).find((n) => n.startsWith(STATUS_LABEL));
+    const status = issue.state === "closed" ? CLOSED_STATUS : label ? label.slice(STATUS_LABEL.length) : OPEN_STATUS;
+    return {
+      key: `${this.opts.project}-${issue.number}`,
+      title: issue.title,
+      status,
+      assignee: this.opts.assignee,
+      description: issue.body ?? "",
+    };
+  }
+
+  async listAssignedCards(assignee: string): Promise<Card[]> {
+    if (assignee !== this.opts.assignee) return [];
+    const issues = await this.list<RawIssue>(`repos/${this.opts.repo}/issues?state=open&per_page=100`, "issues");
+    return issues.filter((i) => !i.pull_request).map((i) => this.toCard(i));
+  }
+
+  async getCard(key: string): Promise<Card | undefined> {
+    const n = this.numberOf(key);
+    if (n === undefined) return undefined;
+    const res = await this.run(["api", `repos/${this.opts.repo}/issues/${n}`]);
+    if ((res.exitCode ?? 0) !== 0) {
+      if (/HTTP 404|Not Found/i.test(res.stderr)) return undefined;
+      throw new Error(`gh api issue ${key} falhou: ${res.stderr.trim() || `código ${res.exitCode}`}`);
+    }
+    const issue = JSON.parse(res.stdout) as RawIssue;
+    return issue.pull_request ? undefined : this.toCard(issue);
+  }
+
+  async listComments(key: string): Promise<CardComment[]> {
+    const n = this.numberOf(key);
+    if (n === undefined) return [];
+    const raw = await this.list<RawComment>(
+      `repos/${this.opts.repo}/issues/${n}/comments?per_page=100`,
+      `comentários de ${key}`,
+    );
+    return raw.map((c) => ({ id: String(c.id), author: c.user?.login ?? "", body: c.body ?? "" }));
+  }
+
+  /** Issues do GitHub não têm anexos como o Jira; a leitura ainda confere a issue, para falha não virar lista vazia. */
+  async listTextAttachments(key: string): Promise<TextAttachment[]> {
+    if (this.numberOf(key) !== undefined) await this.getCard(key);
+    return [];
+  }
+
+  private issueNumber(key: string): number {
+    const n = this.numberOf(key);
+    if (n === undefined) throw new Error(`card ${key} não pertence ao projeto ${this.opts.project}`);
+    return n;
+  }
+
+  async addComment(key: string, body: string): Promise<{ id: string }> {
+    const n = this.issueNumber(key);
+    const out = await this.api(["-X", "POST", `repos/${this.opts.repo}/issues/${n}/comments`], `comentar em ${key}`, {
+      body,
+    });
+    return { id: String((JSON.parse(out) as { id: number }).id) };
+  }
+
+  async editComment(key: string, commentId: string, body: string): Promise<void> {
+    this.issueNumber(key);
+    await this.api(
+      ["-X", "PATCH", `repos/${this.opts.repo}/issues/comments/${commentId}`],
+      `editar comentário de ${key}`,
+      { body },
+    );
+  }
+
+  async transition(key: string, status: string): Promise<void> {
+    const n = this.issueNumber(key);
+    const path = `repos/${this.opts.repo}/issues/${n}`;
+    const issue = JSON.parse(await this.api([path], `issue ${key}`)) as RawIssue;
+    const kept = labelNames(issue).filter((l) => !l.startsWith(STATUS_LABEL));
+    const target = status.toLowerCase();
+    if (target === CLOSED_STATUS) {
+      await this.api(["-X", "PATCH", path], `fechar ${key}`, { state: "closed", labels: kept });
+      return;
+    }
+    const labels = target === OPEN_STATUS ? kept : [...kept, `${STATUS_LABEL}${target}`];
+    await this.api(["-X", "PATCH", path], `mover ${key}`, { state: "open", labels });
+  }
+
+  formatMention(personId: string): string {
+    return `@${personId}`;
+  }
+}
+
+export function createGitHubDemandSource(opts: GitHubDemandSourceOptions): DemandSource {
+  return new GitHubDemandSource(opts);
+}

@@ -10,10 +10,16 @@ import type { RetroSink } from "./retro-sink.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 
 /** Como criar a Fonte de cada tipo declarado em `source.type`. */
-export type SourceFactories = Record<ProjectConfig["source"]["type"], (config: ProjectConfig) => DemandSource>;
+export type SourceFactories = Partial<Record<ProjectConfig["source"]["type"], (config: ProjectConfig) => DemandSource>>;
 
 export class ConfigError extends Error {
   override name = "ConfigError";
+}
+
+function sourceFor(sources: SourceFactories, config: ProjectConfig): DemandSource {
+  const create = sources[config.source.type];
+  if (!create) throw new ConfigError(`projeto ${config.name}: Fonte "${config.source.type}" não disponível`);
+  return create(config);
 }
 
 /** Lê e valida todos os `*.yaml` de `dir`. Junta os erros de todos os arquivos numa única mensagem. */
@@ -67,7 +73,7 @@ export async function startDaemon(opts: {
     // O conhecimento de cada projeto fica ao lado da config: <configDir>/<projeto>/knowledge.md (ADR-0010).
     projects: configs.map((config) => ({
       config,
-      source: opts.sources[config.source.type](config),
+      source: sourceFor(opts.sources, config),
       knowledgeDir: join(opts.configDir, config.name),
     })),
   });
