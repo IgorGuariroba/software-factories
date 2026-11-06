@@ -7,9 +7,13 @@ import { gitEnv } from "../../src/git.js";
 
 const pexec = promisify(execFile);
 
-/** git de verdade, sem hooks globais da máquina que roda os testes. */
+/** git de verdade, sem hooks nem ignore global da máquina que roda os testes (uma regra ali sumiria com fixtures). */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await pexec("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd, env: gitEnv() });
+  const { stdout } = await pexec(
+    "git",
+    ["-c", "core.hooksPath=/dev/null", "-c", "core.excludesFile=/dev/null", ...args],
+    { cwd, env: gitEnv() },
+  );
   return stdout.trim();
 }
 

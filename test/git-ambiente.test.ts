@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { git } from "../src/git.js";
 import { createRemoteRepo, removeTempRoot, tempRoot, git as testGit } from "./fakes/git-repos.js";
@@ -60,5 +62,15 @@ describe("git ignora o repositório do ambiente", () => {
       .split("\n")
       .map((l) => l.split("\t")[0]);
     expect(scopes.filter((s) => s === "global" || s === "system")).toEqual([]);
+  });
+
+  it("a suíte não lê o ignore global da máquina: arquivo da fixture entra no commit inicial", async () => {
+    root = await tempRoot();
+    const xdg = join(root, "xdg");
+    await mkdir(join(xdg, "git"), { recursive: true });
+    await writeFile(join(xdg, "git", "ignore"), "segredo.txt\n");
+    process.env.XDG_CONFIG_HOME = xdg;
+    const alvo = await createRemoteRepo(root, "alvo", { files: { "segredo.txt": "x" } });
+    expect(await alvo.show("main", "segredo.txt")).toBe("x");
   });
 });
