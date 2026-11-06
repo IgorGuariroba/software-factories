@@ -21,7 +21,8 @@ source:
 #   repo: dono/nome
 #   assignee: seu-login    # a fábrica age com esta conta do gh
 #   triageApproval: true   # toda recusa passa por prévia na página local
-#   maxActive: 1           # issues tocadas ao mesmo tempo
+#   maxActive: 1           # issues tocadas ao mesmo tempo depois da triagem (a triagem corre em todas)
+#   ignoreLabels: [epic]   # fora da fila; issues com sub-issues (épicos) também ficam fora
 # roles.triage: { provider: openrouter, model: typesafe/jev-1.14 }  # classificador da triagem (recomendado)
 # statuses: { aberta: todo, em-andamento: in_progress, aguardando-teste: waiting_test, fechada: done }
 

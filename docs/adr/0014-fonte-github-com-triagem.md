@@ -7,7 +7,8 @@ O usuário conecta um repositório e a fábrica passa a monitorá-lo. Diferente 
   - `aceita` segue direto para a SPEC (que já tem prévia).
   - `recusa` dá baixa: comentário curto sem expor a regra de segurança, label e fechamento como *not planned* ou *duplicate*. No começo, toda baixa passa por prévia (`triageApproval`) até o usuário confiar.
   - `duvidosa` e risco alto vão ao usuário.
-- **Uma issue em andamento por repositório** no começo (`maxActive: 1`), para não tocar todas ao mesmo tempo.
+- **Uma issue em andamento por repositório** no começo (`maxActive: 1`), para não tocar todas ao mesmo tempo. O limite vale **depois da triagem**: todas as issues são triadas (uma de cada vez), e uma issue à espera da revisão do usuário não segura as outras. Aceita sem vaga, a issue volta à fila no mesmo lugar e segue quando abrir vaga.
+- **Épicos ficam fora da fila**: issue com sub-issues ou com um label de `source.ignoreLabels` (padrão `epic`). O trabalho está nas sub-issues, cada uma triada por si.
 - Merge continua humano; a fábrica nunca dá push na branch padrão; o teste roda num container sem segredos.
 
 **Estado:** implementado. O daemon registra a Fonte GitHub. A triagem é o primeiro passo da Tarefa (`triar`, só em projeto `type: github`):

@@ -28,6 +28,7 @@ import {
 import {
   actionsFor,
   describeEvent,
+  detailStatusLabel,
   formatCommit,
   isTerminal,
   moveTask,
@@ -367,7 +368,7 @@ function renderDetail(task) {
 
   const fields = [
     ["Projeto", task.project],
-    ["Status", statusLabel(task.status)],
+    ["Status", detailStatusLabel(task)],
     ["Etapa", stageLabel(task.stage)],
     ["Tentativas", String(task.attempts)],
   ];

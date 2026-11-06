@@ -32,6 +32,8 @@ export interface GitHubDemandSourceOptions {
   repo: string;
   /** Login do dono: toda issue aberta é tratada como dele. */
   assignee: string;
+  /** Issues com algum destes labels ficam fora da fila (padrão: `epic`). */
+  ignoreLabels?: string[];
   runner?: GhRunner;
 }
 
@@ -47,6 +49,8 @@ interface RawIssue {
   state: string;
   labels?: (string | { name?: string })[];
   pull_request?: unknown;
+  /** Resumo das sub-issues: uma issue com sub-issues é um épico. */
+  sub_issues_summary?: { total?: number } | null;
 }
 
 interface RawTimelineEvent {
@@ -113,7 +117,13 @@ export class GitHubDemandSource implements DemandSource {
   async listAssignedCards(assignee: string): Promise<Card[]> {
     if (assignee !== this.opts.assignee) return [];
     const issues = await this.list<RawIssue>(`repos/${this.opts.repo}/issues?state=open&per_page=100`, "issues");
-    return issues.filter((i) => !i.pull_request).map((i) => this.toCard(i));
+    // Épicos (com sub-issues ou com um label ignorado) ficam fora: o trabalho está nas sub-issues, cada uma na fila.
+    const ignored = new Set((this.opts.ignoreLabels ?? ["epic"]).map((l) => l.toLowerCase()));
+    return issues
+      .filter((i) => !i.pull_request)
+      .filter((i) => !(i.sub_issues_summary?.total ?? 0))
+      .filter((i) => !labelNames(i).some((l) => ignored.has(l.toLowerCase())))
+      .map((i) => this.toCard(i));
   }
 
   async getCard(key: string): Promise<Card | undefined> {

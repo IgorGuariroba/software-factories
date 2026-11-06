@@ -80,6 +80,20 @@ const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada"]);
 /** @param {string} status */
 export const statusLabel = (status) => STATUS[status] ?? status;
 
+/**
+ * Status da Tarefa no detalhe: quem ela espera, em vez de um "Aguardando resposta" genérico.
+ * @param {{status: string, triage?: {review: string | null} | null, specReview?: string | null,
+ *   questions?: {n: number, answer: string | null}[]}} task
+ */
+export function detailStatusLabel(task) {
+  if (task.status !== "aguardando-humano") return statusLabel(task.status);
+  if (task.triage?.review === "draft") return "Aguardando sua revisão da triagem";
+  if (task.specReview === "draft") return "Aguardando sua aprovação da SPEC";
+  const pending = task.questions?.at(-1);
+  if (pending && pending.answer === null) return `Aguardando resposta à pergunta ${pending.n}`;
+  return statusLabel(task.status);
+}
+
 /** @param {string | null | undefined} stage */
 export const stageLabel = (stage) => (stage ? (STAGE[stage] ?? stage) : "Não começou");
 

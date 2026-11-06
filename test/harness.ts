@@ -153,6 +153,8 @@ export interface TaskView {
   project: string;
   key: string;
   status: string;
+  stage?: string | null;
+  reason?: string | null;
 }
 export const tasks = (f: RunningFactory) => api<TaskView[]>(f, "GET", "/tasks");
 export const events = (f: RunningFactory) => api<Record<string, unknown>[]>(f, "GET", "/events");

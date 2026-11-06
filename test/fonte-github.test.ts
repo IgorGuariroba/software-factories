@@ -19,6 +19,20 @@ describe("Fonte GitHub: o que é só do GitHub", () => {
     expect(await source.getCard("SF-8")).toBeUndefined();
   });
 
+  it("épicos ficam fora: issue com sub-issues ou com label ignorado (padrão epic, sem diferença de caixa)", async () => {
+    const { gh, source } = setup();
+    gh.issues.push({ number: 8, title: "M1", subIssues: 20 }, { number: 9, title: "Roadmap", labels: ["Epic"] });
+    expect((await source.listAssignedCards("dono")).map((c) => c.key)).toEqual(["SF-7"]);
+    const custom = createGitHubDemandSource({
+      project: "SF",
+      repo: "dono/repo",
+      assignee: "dono",
+      ignoreLabels: ["bug"],
+      runner: gh.runner,
+    });
+    expect((await custom.listAssignedCards("dono")).map((c) => c.key)).toEqual(["SF-9"]);
+  });
+
   it("o status é o label fabrica:<status> e a transição preserva os outros labels", async () => {
     const { gh, source } = setup();
     await source.transition("SF-7", "Em-Andamento");

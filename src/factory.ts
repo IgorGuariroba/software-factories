@@ -406,7 +406,7 @@ export async function startFactory(opts: {
        * Triagem da issue (ADR-0014), só nos repositórios monitorados: checagens determinísticas e, sem decisão, o
        * modelo. `aceita` segue; `recusa` dá baixa (com prévia se `triageApproval`); `duvidosa` espera o usuário.
        */
-      async function triage(): Promise<"aguardar" | "recusada" | undefined> {
+      async function triage(): Promise<"aguardar" | "recusada" | "adiar" | undefined> {
         const { source: sourceConfig } = project.config;
         if (sourceConfig.type !== "github") return undefined;
         let record: TriageRecord | null = null;
@@ -446,10 +446,29 @@ export async function startFactory(opts: {
           }
           return "aguardar";
         }
-        if (decision === "aceitar") return undefined;
+        if (decision === "aceitar") return (await hasRoom(sourceConfig.maxActive)) ? undefined : "adiar";
         await writer.commentOnce(input.key, refusalComment(result, duplicateRef(result)));
         await writer.dismiss(input.key, closeReason(result));
         return "recusada";
+      }
+
+      /**
+       * Se cabe mais uma issue depois da triagem: `maxActive` conta só as Tarefas que já passaram dela. A triagem corre
+       * em todas, e uma issue à espera da sua revisão não segura as outras.
+       */
+      async function hasRoom(maxActive: number): Promise<boolean> {
+        let busy = 0;
+        await runtime.commit(async (tx) => {
+          busy = (await tx.doc(StateDoc)).tasks.filter(
+            (t) =>
+              t.project === input.project &&
+              t.id !== input.id &&
+              !TERMINAL.has(t.status) &&
+              t.stage != null &&
+              t.stage !== "triagem",
+          ).length;
+        });
+        return busy < maxActive;
       }
 
       /** Junta os sinais da issue e decide: pelas regras ou, sem decisão, pelo modelo. */
@@ -961,9 +980,6 @@ export async function startFactory(opts: {
       for (const item of eligible) {
         const id = `${item.project}/${item.key}`;
         if (state.tasks.some((t) => t.id === id)) continue;
-        const { source: sourceConfig } = projectOf(item.project).config;
-        const open = state.tasks.filter((t) => t.project === item.project && !TERMINAL.has(t.status)).length;
-        if (sourceConfig.type === "github" && open >= sourceConfig.maxActive) continue;
         state.tasks.push({
           id,
           project: item.project,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   actionsFor,
   describeEvent,
+  detailStatusLabel,
   formatCommit,
   moveTask,
   proposalLabel,
@@ -120,5 +121,17 @@ describe("retrôs na página", () => {
     expect(retroStageLabel("tarefa")).toBe("Retrô consolidada");
     expect(proposalLabel({ kind: "fabrica", status: "mais-um" })).toBe("Fábrica: +1 numa issue parecida");
     expect(proposalLabel({ kind: "repo-time", status: "avisada" })).toBe("Repo do time: sugestão enviada a você");
+  });
+});
+
+describe("status no detalhe da Tarefa", () => {
+  it("diz quem a Tarefa espera: revisão da triagem, aprovação da SPEC ou resposta a uma pergunta", () => {
+    const waiting = { status: "aguardando-humano" };
+    expect(detailStatusLabel({ ...waiting, triage: { review: "draft" } })).toBe("Aguardando sua revisão da triagem");
+    expect(detailStatusLabel({ ...waiting, specReview: "draft" })).toBe("Aguardando sua aprovação da SPEC");
+    expect(detailStatusLabel({ ...waiting, questions: [{ n: 2, answer: null }] })).toBe(
+      "Aguardando resposta à pergunta 2",
+    );
+    expect(detailStatusLabel({ status: "ativa" })).toBe("Ativa");
   });
 });
