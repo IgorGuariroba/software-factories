@@ -22,6 +22,7 @@ source:
 #   assignee: seu-login    # a fábrica age com esta conta do gh
 #   triageApproval: true   # toda recusa passa por prévia na página local
 #   maxActive: 1           # issues tocadas ao mesmo tempo
+# roles.triage: { provider: openrouter, model: typesafe/jev-1.14 }  # classificador da triagem (recomendado)
 # statuses: { aberta: todo, em-andamento: in_progress, aguardando-teste: waiting_test, fechada: done }
 
 # Modelo fixado para cada papel (provedor e modelo como o pi-ai os conhece).

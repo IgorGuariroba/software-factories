@@ -12,6 +12,8 @@ O usuário conecta um repositório e a fábrica passa a monitorá-lo. Diferente 
 
 **Estado:** implementado. O daemon registra a Fonte GitHub. A triagem é o primeiro passo da Tarefa (`triar`, só em projeto `type: github`):
 - as regras decidem primeiro: PR mergeado ou commit que fecha a issue (recusa, `completed`), PR aberto (duvidosa), duplicata exata de issue mais antiga (recusa, `duplicate`), texto acima de 40 mil caracteres ou com frases de prompt injection (duvidosa, sem passar pelo modelo);
-- sem decisão das regras, o modelo (`roles.triage`, ou o de `spec`) recebe a issue delimitada como dado, as outras issues abertas e os commits recentes, e entrega pela ferramenta `entregar_triagem`;
+- sem decisão das regras, decide o modelo de `roles.triage` (ou o de `spec`), com a issue inteira, as outras issues abertas e os commits recentes:
+  - **classificador estruturado** (System One, ex.: `openrouter/typesafe/jev-1.14`), o preferido: responde escolhas tipadas com probabilidades (decisão, categoria, prompt injection, duplicata entre as issues abertas), sem texto livre nem ferramentas, então o texto da issue não tem o que acionar. Injeção ≥ 50% ou confiança < 60% vão ao usuário como duvidosa. Custa cerca de US$ 0,00002 por issue;
+  - **LLM**: recebe a issue delimitada como dado e entrega pela ferramenta `entregar_triagem`;
 - a prévia fica em `GET /tasks/<projeto>/<card>/triage`, com o comentário exato e o motivo do fechamento; a decisão vai em `POST .../triage/decide` (`aceitar` ou `recusar`). A Tarefa recusada termina como `recusada`;
 - `source.triageApproval` (padrão `true`) e `source.maxActive` (padrão 1). As issues entram em ordem de número, das mais antigas para as mais novas.

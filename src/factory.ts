@@ -64,6 +64,7 @@ import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
 import {
+  classifyTriage,
   deterministicTriage,
   refusalComment,
   requestTriage,
@@ -467,11 +468,24 @@ export async function startFactory(opts: {
           mergedCommit: repoPath ? await findClosingCommit(repoPath, input.key, n) : null,
         });
         if (decided) return decided;
+        const role = project.config.roles.triage ?? project.config.roles.spec;
+        const classifier = opts.models
+          .getModelsOfType("classifier", role.provider)
+          .find((m) => m.id === role.model && m.provider === role.provider);
+        if (classifier)
+          return classifyTriage({
+            card,
+            comments: await source.listComments(input.key),
+            others,
+            recentCommits: repoPath ? await recentSubjects(repoPath) : [],
+            knowledge: await readKnowledge(project.knowledgeDir),
+            classify: (ctx) => opts.models.classify(classifier, ctx),
+          });
         return requestTriage({
           harness,
           commit: runtime.commit,
           taskId: runtime.taskId,
-          model: project.config.roles.triage ?? project.config.roles.spec,
+          model: role,
           context: runtime.context,
           conversationId: conversation,
           remember: async (tx, id) => {
