@@ -28,7 +28,7 @@ export function createTeamsMcpNotifier(client: Client): TeamsNotifier {
       const chat = await call("teams_get_chat", { userId });
       if (typeof chat.conversationId !== "string" || !chat.conversationId)
         throw new Error("MCP Teams: conversa inválida");
-      await call("teams_send_message", { conversationId: chat.conversationId, content: text, contentType: "text" });
+      await call("teams_send_message", { conversationId: chat.conversationId, content: text, contentType: "markdown" });
     },
   };
 }

@@ -52,7 +52,7 @@ it("resolve o chat e avisa apenas o destinatário informado pelo MCP", async () 
         args: {
           conversationId: "chat-do-po",
           content: "Pergunta no card PROJ-1\n\n*mensagem automatizada*",
-          contentType: "text",
+          contentType: "markdown",
         },
       },
     ]);
