@@ -330,9 +330,15 @@ export async function startFactory(opts: {
         await writer.transition(input.key, "in_progress", { from: "todo" });
         return undefined;
       }
-      if (step === RETRO_STEP.spec) return retro("spec");
-      if (step === RETRO_STEP.implementacao) return retro("implementacao");
-      if (step === RETRO_STEP.tarefa) return retro("tarefa");
+      if (step === RETRO_STEP.spec || step === RETRO_STEP.implementacao) {
+        const stage = step === RETRO_STEP.spec ? "spec" : "implementacao";
+        if ((await retro(stage)) && project.config.retroApproval) await holdAfterRetro(stage);
+        return undefined;
+      }
+      if (step === RETRO_STEP.tarefa) {
+        await retro("tarefa");
+        return undefined;
+      }
 
       // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
       let delivery: SpecDelivery | undefined;
@@ -432,9 +438,9 @@ export async function startFactory(opts: {
       }
 
       /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
-      async function retro(stage: RetroStage): Promise<undefined> {
+      async function retro(stage: RetroStage): Promise<boolean> {
         const task = (await readState()).tasks.find((t) => t.id === input.id);
-        if (!task || (stage === "implementacao" && !task.implementation)) return undefined;
+        if (!task || (stage === "implementacao" && !task.implementation)) return false;
         await runRetro({
           harness,
           runtime,
@@ -452,7 +458,29 @@ export async function startFactory(opts: {
           sink: opts.retro?.sink,
           repo: opts.retro?.repo,
         });
-        return undefined;
+        return true;
+      }
+
+      /** Portão `retroApproval`: pede pausa (o próximo passo espera) e avisa o usuário, uma vez por etapa. */
+      async function holdAfterRetro(stage: "spec" | "implementacao"): Promise<void> {
+        let held = false;
+        await runtime.commit(async (tx) => {
+          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+          if (!task || task.retroHeld?.includes(stage)) return;
+          task.retroHeld = [...(task.retroHeld ?? []), stage];
+          task.pauseRequested = true;
+          held = true;
+        });
+        if (!held) return;
+        await events.append({
+          type: "notify",
+          project: input.project,
+          target: input.key,
+          reason: "retro-pronta",
+          message:
+            `A retrô da ${stage === "spec" ? "SPEC" : "implementação"} do card ${input.key} está pronta. ` +
+            "A Tarefa está pausada antes da próxima etapa: revise e retome para continuar.",
+        });
       }
 
       /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */

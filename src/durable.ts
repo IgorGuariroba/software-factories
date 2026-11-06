@@ -151,6 +151,8 @@ export type QueuedTask = {
   questions?: Question[];
   /** Revisão da SPEC/Tickets antes de publicar: rascunho aguardando aprovação, ou aprovada. */
   specReview?: "draft" | "approved";
+  /** Etapas cuja retrô já segurou a Tarefa (`retroApproval`); retomada ou nova tentativa não seguram de novo. */
+  retroHeld?: ("spec" | "implementacao")[];
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
   /**
