@@ -44,6 +44,8 @@ Sem ele os hooks bloqueiam o commit/push (fail closed).
 
 ### Assumir card "Em Andamento" e veto
 
+Com repositório mapeado, o prazo de veto dá lugar à inspeção do repositório (ADR-0013, `src/prior-work.ts`): a fábrica procura, na cópia local e sem `fetch`, um commit da branch padrão de `origin` que cite a chave do card. Nada encontrado: segue direto para a SPEC. Encontrado: a Tarefa fica `bloqueada` ("card já implementado: o commit …"). Uma branch do card ainda não mergeada é adotada pela implementação. O que segue abaixo vale para cards sem repositório mapeado.
+
 A busca enfileira os cards atribuídos ao usuário em "A Fazer" e em "Em Andamento". Os de "A Fazer" ganham o comentário de assunção e vão para "Em Andamento". Um card que já estava em andamento:
 
 - ganha o mesmo comentário de assunção e um evento `notify` ao usuário (`reason: "aguardando-veto"`, com o fim do prazo em `until`), que as interfaces de gestão encaminham;

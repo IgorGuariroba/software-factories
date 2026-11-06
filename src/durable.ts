@@ -269,6 +269,9 @@ export type TarefaInput = {
   key: string;
 };
 
+/** A inspeção do repositório achou o card já implementado: a Tarefa fica bloqueada com o motivo. */
+export class InspectionBlocked extends Error {}
+
 /** O que cada passo faz e o que vem depois dele. */
 /** O que um passo pode usar da task durável que o executa. */
 export interface StepRuntime {
@@ -284,6 +287,11 @@ export interface StepRuntime {
 export interface TarefaSteps {
   /** Executa um passo. `"aguardar"`: a Tarefa fez uma pergunta e dorme até a resposta, sem ocupar a fila. */
   run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | undefined>;
+  /**
+   * Inspeção de um card que já estava em andamento, no lugar do prazo de veto: `"seguir"` (nada feito antes no
+   * repositório), `"bloquear"` (já implementado) ou `"veto"` (sem repositório para inspecionar: espera o prazo).
+   */
+  inspect(input: TarefaInput): Promise<{ kind: "seguir" } | { kind: "bloquear"; reason: string } | { kind: "veto" }>;
   /** Duração do prazo de veto do projeto da Tarefa (ms). */
   vetoMs(input: TarefaInput): number;
   /** Avisa o usuário de que a Tarefa assumiu um card em andamento e espera um veto até `until` (ms). */
@@ -535,6 +543,31 @@ export function createTarefaTask(steps: TarefaSteps) {
         policy: "allSettled" as const,
       };
     };
+
+    let fresh = false;
+    await runtime.commit(async (tx) => {
+      const queued = findTask(await tx.doc(StateDoc), task.input.id);
+      fresh = queued.startedIn === "in_progress" && queued.status === "ativa" && !queued.veto;
+      return undefined;
+    }, context);
+    if (fresh) {
+      let inspection: Awaited<ReturnType<TarefaSteps["inspect"]>>;
+      try {
+        inspection = await abortable(steps.inspect(task.input), runtime.signal);
+      } catch (err) {
+        return fail(task, err, runtime, context);
+      }
+      if (inspection.kind === "bloquear") return fail(task, new InspectionBlocked(inspection.reason), runtime, context);
+      if (inspection.kind === "seguir") {
+        await runtime.commit(async (tx) => {
+          const queued = findTask(await tx.doc(StateDoc), task.input.id);
+          queued.stage = "veto";
+          queued.veto = { until: runtime.now(), expired: true };
+          return { status: "running", checkpoint: { phase: "spec" } };
+        }, context);
+        return;
+      }
+    }
 
     let announce: number | null = null;
     await runtime.commit(async (tx) => {

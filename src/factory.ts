@@ -27,6 +27,7 @@ import {
   eventToJson,
   type FactoryState,
   GateTask,
+  InspectionBlocked,
   ManagementDoc,
   pendingQuestion,
   type Question,
@@ -41,7 +42,9 @@ import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
+import { findMergedWork } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
+import { resolveRepository } from "./repo-resolver.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import { redactSecrets } from "./secrets.js";
@@ -601,6 +604,18 @@ export async function startFactory(opts: {
       const next = [!q.reminded ? q.remindAt : null, !q.notified ? q.notifyAt : null].filter((t) => t !== null);
       return next.length > 0 ? Math.min(...next) : null;
     },
+    async inspect(input) {
+      const project = projectOf(input.project);
+      const card = await project.source.getCard(input.key);
+      const mapping = card && resolveRepository(project.config.repositories, card);
+      if (!mapping) return { kind: "veto" };
+      const merged = await findMergedWork(resolvePath(mapping.path), input.key);
+      if (!merged) return { kind: "seguir" };
+      return {
+        kind: "bloquear",
+        reason: `card já implementado: o commit ${merged.sha} ("${merged.subject}") da branch padrão cita ${input.key}`,
+      };
+    },
     vetoMs: (input) => projectOf(input.project).config.vetoMinutes * 60_000,
     async announceVeto(input, until) {
       const { vetoMinutes } = projectOf(input.project).config;
@@ -616,7 +631,7 @@ export async function startFactory(opts: {
       });
     },
     classify: (err) =>
-      err instanceof GuardrailViolation || err instanceof StageBlocked
+      err instanceof GuardrailViolation || err instanceof StageBlocked || err instanceof InspectionBlocked
         ? { kind: "blocked", reason: err.message }
         : { kind: "error", message: err instanceof Error ? err.message : String(err) },
     onError: (input, message) => events.append({ type: "error", project: input.project, target: input.key, message }),

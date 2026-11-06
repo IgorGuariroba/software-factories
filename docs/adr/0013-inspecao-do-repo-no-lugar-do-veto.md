@@ -1,0 +1,3 @@
+# Card já em andamento: a fábrica inspeciona o repositório em vez de esperar o veto
+
+A fábrica age pelo usuário, e um card atribuído a ele só é tocado por ela. Esperar um prazo fixo de veto antes de continuar um card que já estava "Em Andamento" virava só atraso. Quando o card tem repositório mapeado, a fábrica procura trabalho anterior na cópia local (commit da branch padrão do remoto que cite a chave do card) e decide sozinha: nada encontrado, segue direto para a SPEC; já mergeado, a Tarefa fica `bloqueada` com o commit no motivo e não reimplementa; branch não mergeada, segue e a implementação adota a branch. Sem repositório mapeado não há o que inspecionar, e o prazo de veto continua. Vetar, pausar e cancelar seguem disponíveis a qualquer momento.
