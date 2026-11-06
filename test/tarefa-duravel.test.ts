@@ -84,7 +84,7 @@ describe("reinício do daemon", () => {
     // o comentário, que chegou, não é repetido.
     const writes = (await events(factory)).filter((e) => e.type === "write").map((e) => e.action);
     expect(
-      (await events(factory)).filter((e) => e.type === "write" && String(e.content).endsWith("Assumindo este card.")),
+      (await events(factory)).filter((e) => e.type === "write" && String(e.content).startsWith("Assumindo este card.")),
     ).toHaveLength(1);
     expect(writes).toContain("transition");
   });
@@ -95,9 +95,7 @@ describe("reinício do daemon", () => {
     const source = factory.source;
     const listComments = source.listComments.bind(source);
     const specWritten = async () =>
-      (await events(first)).some(
-        (e) => e.type === "write" && String(e.content).includes("[mensagem automatizada] SPEC"),
-      );
+      (await events(first)).some((e) => e.type === "write" && String(e.content).startsWith("SPEC"));
     let stuck = true;
     let reached = false;
     // Depois de registrar a SPEC, a leitura para registrar os Tickets nunca termina: o daemon cai no meio do passo.
@@ -118,9 +116,9 @@ describe("reinício do daemon", () => {
     const writes = (await events(factory))
       .filter((e) => e.type === "write" && String(e.target).startsWith("PROJ-1"))
       .map((e) => `${e.action} ${e.target}: ${e.content}`);
-    expect(writes.filter((w) => w.includes("[mensagem automatizada] SPEC"))).toHaveLength(1);
-    expect(writes.filter((w) => w.includes("[mensagem automatizada] Tickets"))).toHaveLength(1);
-    expect(writes.filter((w) => w.endsWith("Assumindo este card."))).toHaveLength(1);
+    expect(writes.filter((w) => w.includes(": SPEC"))).toHaveLength(1);
+    expect(writes.filter((w) => w.includes(": Tickets"))).toHaveLength(1);
+    expect(writes.filter((w) => w.includes(": Assumindo este card."))).toHaveLength(1);
     expect(new Set(writes).size).toBe(writes.length);
     expect(source.commentsOf("PROJ-1")).toEqual([]);
   });
@@ -212,7 +210,7 @@ describe("controle das tarefas", () => {
     await api(factory, "POST", "/daemon/resume");
     await waitForStatus(factory, "PROJ-2", "concluida");
     const commented = (await events(factory))
-      .filter((e) => e.action === "comment" && String(e.content).endsWith("Assumindo este card."))
+      .filter((e) => e.action === "comment" && String(e.content).startsWith("Assumindo este card."))
       .map((e) => e.target);
     expect(commented).toEqual(["PROJ-3", "PROJ-1", "PROJ-2"]);
   });

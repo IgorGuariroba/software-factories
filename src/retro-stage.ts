@@ -12,7 +12,7 @@ import {
   StateDoc,
   type StepRuntime,
 } from "./durable.js";
-import { AUTOMATION_PREFIX, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
+import { type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder } from "./events.js";
 import type { RetroIssue, RetroSink } from "./retro-sink.js";
 
@@ -321,7 +321,7 @@ export async function previewFactoryRetro(opts: FactoryRetroPublication) {
   const title = titleResult.text;
   const issueBody = bodyResult.text;
   const blocked = titleResult.leftovers.length > 0 || bodyResult.leftovers.length > 0;
-  const body = `${AUTOMATION_PREFIX} ${issueBody}`;
+  const body = withAutomationMark(issueBody);
   const revision = createHash("sha256")
     .update(JSON.stringify([opts.repo, title, body, opts.config.dryRun, blocked]))
     .digest("hex");

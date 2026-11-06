@@ -7,10 +7,10 @@ afterEach(async () => {
   factory = undefined;
 });
 
-const PREFIX = "\u{1F916} [mensagem automatizada]";
+const MARK = "\n\n*mensagem automatizada*";
 const card = { key: "PROJ-1", title: "Exportar relatório", status: "A Fazer", assignee: USER };
 const titled = (f: TestFactory, title: string) =>
-  f.source.commentsOf("PROJ-1").filter((c) => c.body.split("\n")[0] === `${PREFIX} ${title}`);
+  f.source.commentsOf("PROJ-1").filter((c) => c.body.split("\n")[0] === title && c.body.endsWith(MARK));
 
 interface SpecPreview {
   spec: string;
@@ -39,7 +39,7 @@ describe("revisão da SPEC antes de publicar", () => {
     expect(titled(factory, "SPEC")).toEqual([]);
 
     const preview = await api<SpecPreview>(factory, "GET", "/tasks/exemplo/PROJ-1/spec");
-    expect(preview.spec.startsWith(`${PREFIX} SPEC`)).toBe(true);
+    expect(preview.spec.startsWith("SPEC") && preview.spec.endsWith(MARK)).toBe(true);
     expect((await approve(factory, "inválida")).status).toBe(409);
     expect(titled(factory, "SPEC")).toEqual([]);
 

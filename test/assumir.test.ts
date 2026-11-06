@@ -27,7 +27,7 @@ describe("assumir card 'A Fazer'", () => {
     await waitForStatus(factory, "PROJ-1", "concluida");
 
     expect(assumeComments(factory.source, "PROJ-1").map((c) => c.body)).toEqual([
-      "🤖 [mensagem automatizada] Assumindo este card.",
+      "Assumindo este card.\n\n*mensagem automatizada*",
     ]);
     expect(factory.source.cards[0]?.status).toBe("Em Andamento");
     expect((await events(factory)).filter((e) => e.type === "write").slice(0, 2)).toMatchObject([
@@ -90,7 +90,7 @@ describe("assumir card 'A Fazer'", () => {
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
     expect(factory.source.cards[0]?.status).toBe("A Fazer");
     expect((await events(factory)).filter((e) => e.type === "write").slice(0, 2)).toMatchObject([
-      { type: "write", action: "comment", content: "🤖 [mensagem automatizada] Assumindo este card.", dryRun: true },
+      { type: "write", action: "comment", content: "Assumindo este card.\n\n*mensagem automatizada*", dryRun: true },
       { type: "write", action: "transition", content: "Em Andamento", dryRun: true },
     ]);
   });

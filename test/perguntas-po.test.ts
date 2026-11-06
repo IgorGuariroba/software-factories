@@ -20,7 +20,7 @@ afterEach(async () => {
   factory = undefined;
 });
 
-const PREFIX = "\u{1F916} [mensagem automatizada]";
+const MARK = "\n\n*mensagem automatizada*";
 const MENTION = `[~accountid:${PO}]`;
 const card = (key: string, extra: object = {}) => ({
   key,
@@ -43,7 +43,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
 const questionComments = (f: TestFactory, key: string) =>
   f.source.commentsOf(key).filter((c) => c.author === USER && /pergunta \d+:/i.test(c.body));
 const specComments = (f: TestFactory, key: string) =>
-  f.source.commentsOf(key).filter((c) => c.body.split("\n")[0] === `${PREFIX} SPEC`);
+  f.source.commentsOf(key).filter((c) => c.body.split("\n")[0] === "SPEC" && c.body.endsWith(MARK));
 
 describe("perguntas de negócio ao PO", () => {
   it("permite revisar a pergunta antes de enviar ao Jira e avisar no Teams", async () => {
@@ -276,7 +276,7 @@ describe("perguntas de negócio ao PO", () => {
 
     const [question] = questionComments(factory, "PROJ-1");
     expect(questionComments(factory, "PROJ-1")).toHaveLength(1);
-    expect(question?.body.startsWith(PREFIX)).toBe(true);
+    expect(question?.body.endsWith(MARK)).toBe(true);
     expect(question?.body).not.toContain(MENTION);
     expect(question?.body).toContain("O CSV usa vírgula ou ponto e vírgula?");
     expect(specComments(factory, "PROJ-1")).toEqual([]);

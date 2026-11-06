@@ -20,7 +20,7 @@ afterEach(async () => {
   factory = undefined;
 });
 
-const PREFIX = "🤖 [mensagem automatizada]";
+const MARK = "\n\n*mensagem automatizada*";
 const card = (extra: object = {}) => ({
   key: "PROJ-1",
   title: "Exportar relatório em CSV",
@@ -30,7 +30,7 @@ const card = (extra: object = {}) => ({
 });
 
 const commentsTitled = (f: TestFactory, title: string) =>
-  f.source.commentsOf("PROJ-1").filter((c) => c.body.split("\n")[0] === `${PREFIX} ${title}`);
+  f.source.commentsOf("PROJ-1").filter((c) => c.body.split("\n")[0] === title && c.body.endsWith(MARK));
 
 describe("etapas grill → SPEC → Tickets", () => {
   it("o card recebe exatamente um comentário SPEC e um Tickets, com prefixo", async () => {
@@ -106,7 +106,7 @@ describe("etapas grill → SPEC → Tickets", () => {
     let failures = 1;
     // Publicar os Tickets falha uma vez: a tarefa é tentada de novo e roda a etapa outra vez.
     source.addComment = async (key, body) => {
-      if (body.startsWith(`${PREFIX} Tickets`) && failures-- > 0) throw new Error("Jira fora do ar");
+      if (body.startsWith("Tickets") && failures-- > 0) throw new Error("Jira fora do ar");
       return addComment(key, body);
     };
 
@@ -159,7 +159,7 @@ describe("etapas grill → SPEC → Tickets", () => {
     let stuck = true;
     // O daemon "cai" ao escrever o comentário Tickets, depois de já ter escrito a SPEC.
     source.addComment = (key, body) =>
-      stuck && body.startsWith(`${PREFIX} Tickets`) ? new Promise(() => {}) : addComment(key, body);
+      stuck && body.startsWith("Tickets") ? new Promise(() => {}) : addComment(key, body);
 
     await poll(factory);
     await eventually(() => expect(commentsTitled(factory as TestFactory, "SPEC")).toHaveLength(1));
@@ -174,14 +174,12 @@ describe("etapas grill → SPEC → Tickets", () => {
 
   it("um comentário humano com o mesmo título não é editado: a fábrica escreve o próprio", async () => {
     factory = await startTestFactory({ cards: [card()] });
-    const human = factory.source.humanComment("PROJ-1", "po", `${PREFIX} SPEC\n\nfeita à mão`);
+    const human = factory.source.humanComment("PROJ-1", "po", `SPEC\n\nfeita à mão${MARK}`);
 
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "concluida");
 
-    expect(factory.source.commentsOf("PROJ-1").find((c) => c.id === human.id)?.body).toBe(
-      `${PREFIX} SPEC\n\nfeita à mão`,
-    );
+    expect(factory.source.commentsOf("PROJ-1").find((c) => c.id === human.id)?.body).toBe(`SPEC\n\nfeita à mão${MARK}`);
     expect(commentsTitled(factory, "SPEC").filter((c) => c.author === USER)).toHaveLength(1);
   });
 
@@ -206,11 +204,7 @@ describe("etapas grill → SPEC → Tickets", () => {
 
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
     const written = (await events(factory)).filter((e) => e.type === "write" && e.action === "comment");
-    expect(written.map((e) => String(e.content).split("\n")[0])).toEqual([
-      `${PREFIX} Assumindo este card.`,
-      `${PREFIX} SPEC`,
-      `${PREFIX} Tickets`,
-    ]);
+    expect(written.map((e) => String(e.content).split("\n")[0])).toEqual(["Assumindo este card.", "SPEC", "Tickets"]);
   });
 
   it("a tarefa fica ativa enquanto o modelo trabalha", async () => {

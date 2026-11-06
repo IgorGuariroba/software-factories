@@ -37,7 +37,7 @@ import {
   recordAnswer,
   StateDoc,
 } from "./durable.js";
-import { AUTOMATION_PREFIX, createEffectWriter, type EffectWriter, GuardrailViolation } from "./effect-writer.js";
+import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
@@ -1057,8 +1057,8 @@ export async function startFactory(opts: {
         const project = projectOf(projectName);
         const preview = {
           card: cardKey,
-          spec: `${AUTOMATION_PREFIX} ${redactSecrets(`SPEC\n\n${task.delivery.spec}`)}`,
-          tickets: `${AUTOMATION_PREFIX} ${redactSecrets(`Tickets\n\n${renderTickets(task.delivery.tickets)}`)}`,
+          spec: withAutomationMark(redactSecrets(`SPEC\n\n${task.delivery.spec}`)),
+          tickets: withAutomationMark(redactSecrets(`Tickets\n\n${renderTickets(task.delivery.tickets)}`)),
           dryRun: project.config.dryRun,
         };
         const revision = reviewRevision(preview);
@@ -1095,7 +1095,7 @@ export async function startFactory(opts: {
         const preview = {
           card: cardKey,
           to: q.to,
-          comment: `${AUTOMATION_PREFIX} ${redactSecrets(text)}`,
+          comment: withAutomationMark(redactSecrets(text)),
           dryRun: project.config.dryRun,
         };
         const revision = reviewRevision(preview);
@@ -1163,7 +1163,7 @@ export async function startFactory(opts: {
           const preview = {
             card: cardKey,
             to: q.to,
-            comment: `${AUTOMATION_PREFIX} ${redactSecrets(`Pergunta ${n}: ${q.text}`)}`,
+            comment: withAutomationMark(redactSecrets(`Pergunta ${n}: ${q.text}`)),
             teamsUserId: po.teamsUserId ?? null,
             teamsMessage: po.teamsUserId && link ? teamsQuestionMessage(cardKey, link) : null,
             dryRun: project.config.dryRun,

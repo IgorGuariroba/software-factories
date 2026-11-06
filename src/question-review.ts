@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { AUTOMATION_PREFIX } from "./effect-writer.js";
+import { withAutomationMark } from "./effect-writer.js";
 
 /** A aprovação é vinculada ao destino, ao conteúdo exato e ao modo de escrita mostrado na prévia. */
 export function questionRevision(preview: {
@@ -19,5 +19,5 @@ export function reviewRevision(preview: unknown): string {
 }
 
 export function teamsQuestionMessage(card: string, link: string): string {
-  return `${AUTOMATION_PREFIX} Há uma pergunta para você no card ${card}. Responda no Jira: ${link}`;
+  return withAutomationMark(`Há uma pergunta para você no card ${card}. Responda no Jira: ${link}`);
 }
