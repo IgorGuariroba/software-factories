@@ -6,20 +6,29 @@ import { privateTerms, sanitizePublicText } from "./public-text.js";
 import type { RetroSink } from "./retro-sink.js";
 import { redactSecrets } from "./secrets.js";
 
-export const AUTOMATION_PREFIX = "\u{1F916} [mensagem automatizada]";
-/** Prefixo usado antes; reconhecido para não duplicar nem tratar como humano o que a fábrica já escreveu. */
-const LEGACY_PREFIXES = ["\u{1F916} [fábrica]"];
+/** Marca de automação: vai no fim de todo texto que a fábrica escreve, depois de uma linha em branco. */
+export const AUTOMATION_MARK = "*mensagem automatizada*";
+const MARK_SUFFIX = `\n\n${AUTOMATION_MARK}`;
+/** Prefixos usados antes; reconhecidos para não duplicar nem tratar como humano o que a fábrica já escreveu. */
+const LEGACY_PREFIXES = ["\u{1F916} [mensagem automatizada]", "\u{1F916} [fábrica]"];
 
-/** Se o texto foi escrito pela fábrica (prefixo atual ou antigo). */
+/** Se o texto foi escrito pela fábrica (marca atual no fim ou prefixo antigo). */
 export function isAutomationText(body: string): boolean {
-  return [AUTOMATION_PREFIX, ...LEGACY_PREFIXES].some((p) => body.startsWith(p));
+  return body.trimEnd().endsWith(AUTOMATION_MARK) || LEGACY_PREFIXES.some((p) => body.startsWith(p));
 }
 
-/** Troca o prefixo antigo pelo atual, para comparar cabeçalhos. */
-const currentPrefix = (body: string) => {
+/** O texto sem a marca de automação (atual ou antiga): o que a fábrica quis dizer. */
+export function stripAutomationMark(body: string): string {
   const legacy = LEGACY_PREFIXES.find((p) => body.startsWith(p));
-  return legacy ? `${AUTOMATION_PREFIX}${body.slice(legacy.length)}` : body;
-};
+  if (legacy) return body.slice(legacy.length).replace(/^ /, "");
+  const trimmed = body.trimEnd();
+  return trimmed.endsWith(AUTOMATION_MARK) ? trimmed.slice(0, -AUTOMATION_MARK.length).trimEnd() : body;
+}
+
+/** O texto com a marca de automação no fim. */
+export function withAutomationMark(body: string): string {
+  return `${body}${MARK_SUFFIX}`;
+}
 
 /** Uma escrita recusada por guardrail. Nunca chega à Fonte. */
 export class GuardrailViolation extends Error {
@@ -171,7 +180,7 @@ export function createEffectWriter(opts: {
   /** Toda mensagem sai sem segredos e com o prefixo de automação. */
   const outgoing = (body: string) => {
     const clean = redactSecrets(body);
-    return isAutomationText(clean) ? currentPrefix(clean) : `${AUTOMATION_PREFIX} ${clean}`;
+    return withAutomationMark(isAutomationText(clean) ? stripAutomationMark(clean) : clean);
   };
   /** Texto que vai ao repositório público: sem segredos e saneado dos valores do projeto e do card. */
   async function publicText(cardKey: string, raw: string) {
@@ -209,7 +218,7 @@ export function createEffectWriter(opts: {
       if (!config.dryRun) {
         const content = outgoing(body);
         const existing = (await source.listComments(cardKey)).find(
-          (c) => c.author === user && currentPrefix(c.body) === content,
+          (c) => c.author === user && withAutomationMark(stripAutomationMark(c.body)) === content,
         );
         if (existing) return { id: existing.id };
       }
@@ -221,7 +230,7 @@ export function createEffectWriter(opts: {
       const content = outgoing(body);
       if (!config.dryRun) {
         const existing = (await source.listComments(cardKey)).find(
-          (c) => c.author === user && currentPrefix(c.body) === content,
+          (c) => c.author === user && withAutomationMark(stripAutomationMark(c.body)) === content,
         );
         if (existing) return { id: existing.id };
       }
@@ -239,9 +248,9 @@ export function createEffectWriter(opts: {
 
     async upsertComment(cardKey, title, body) {
       const content = outgoing(`${title}\n\n${body}`);
-      const header = content.split("\n")[0];
+      const header = stripAutomationMark(content).split("\n")[0];
       const existing = (await source.listComments(cardKey)).find(
-        (c) => c.author === user && currentPrefix(c.body).split("\n")[0] === header,
+        (c) => c.author === user && isAutomationText(c.body) && stripAutomationMark(c.body).split("\n")[0] === header,
       );
       if (!existing) return addOwnComment(cardKey, content, true);
       if (existing.body !== content) await this.editComment(cardKey, existing.id, content);
@@ -311,7 +320,7 @@ export function createEffectWriter(opts: {
     async openRetroIssue(cardKey, repo, issue) {
       const title = await publicText(cardKey, issue.title);
       const body = await publicText(cardKey, issue.body);
-      const content = `${AUTOMATION_PREFIX} ${body.text}`;
+      const content = withAutomationMark(body.text);
       return write<{ number: number; url: string } | undefined>(
         { target: `${cardKey}#retro`, action: "retro-issue", content: `${repo}: ${title.text}\n\n${content}` },
         async () => retroRefused(repo, [...title.leftovers, ...body.leftovers]),
@@ -322,7 +331,7 @@ export function createEffectWriter(opts: {
 
     async commentRetroIssue(cardKey, repo, issue, raw) {
       const body = await publicText(cardKey, raw);
-      const content = `${AUTOMATION_PREFIX} ${body.text}`;
+      const content = withAutomationMark(body.text);
       return write(
         { target: `${cardKey}#retro`, action: "retro-comment", content: `${repo}#${issue}: ${content}` },
         async () => retroRefused(repo, body.leftovers),

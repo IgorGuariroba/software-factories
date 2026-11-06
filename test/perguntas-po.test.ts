@@ -20,7 +20,7 @@ afterEach(async () => {
   factory = undefined;
 });
 
-const PREFIX = "\u{1F916} [mensagem automatizada]";
+const MARK = "\n\n*mensagem automatizada*";
 const MENTION = `[~accountid:${PO}]`;
 const card = (key: string, extra: object = {}) => ({
   key,
@@ -43,7 +43,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
 const questionComments = (f: TestFactory, key: string) =>
   f.source.commentsOf(key).filter((c) => c.author === USER && /pergunta \d+:/i.test(c.body));
 const specComments = (f: TestFactory, key: string) =>
-  f.source.commentsOf(key).filter((c) => c.body.split("\n")[0] === `${PREFIX} SPEC`);
+  f.source.commentsOf(key).filter((c) => c.body.split("\n")[0] === "SPEC" && c.body.endsWith(MARK));
 
 describe("perguntas de negócio ao PO", () => {
   it("permite revisar a pergunta antes de enviar ao Jira e avisar no Teams", async () => {
@@ -201,14 +201,18 @@ describe("perguntas de negócio ao PO", () => {
       },
       config: {
         source: { type: "jira", project: "PROJ", assignee: USER, baseUrl: "https://jira.example.invalid" },
-        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po" }],
+        people: [{ id: PO, role: "po", teamsUserId: "8:orgid:po", name: "Maria Souza" }],
       },
     });
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "aguardando-humano");
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ userId: "8:orgid:po" });
-    expect(sent[0]?.text).toContain("https://jira.example.invalid/browse/PROJ-1");
+    const title = factory.source.cards[0]?.title ?? "";
+    expect(sent[0]?.text).toBe(
+      `Olá, Maria! Aguardamos a sua resposta à pergunta feita no card PROJ-1 (${title}). ` +
+        "Pode responder direto no card: https://jira.example.invalid/browse/PROJ-1\n\n*mensagem automatizada*",
+    );
     factory = await factory.restart();
     await poll(factory);
     expect(sent).toHaveLength(1);
@@ -276,7 +280,7 @@ describe("perguntas de negócio ao PO", () => {
 
     const [question] = questionComments(factory, "PROJ-1");
     expect(questionComments(factory, "PROJ-1")).toHaveLength(1);
-    expect(question?.body.startsWith(PREFIX)).toBe(true);
+    expect(question?.body.endsWith(MARK)).toBe(true);
     expect(question?.body).not.toContain(MENTION);
     expect(question?.body).toContain("O CSV usa vírgula ou ponto e vírgula?");
     expect(specComments(factory, "PROJ-1")).toEqual([]);

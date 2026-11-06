@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
-import { AUTOMATION_PREFIX } from "../src/effect-writer.js";
+import { AUTOMATION_MARK } from "../src/effect-writer.js";
 import { FakeModel, type SpecDelivery, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
 import { api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
@@ -67,14 +67,14 @@ const CSV_CYCLE = () => [write({ "test/csv.test.mjs": CSV_TEST }), write({ "src/
 const BRANCH = "feature/PROJ-1-exportar-relatorio-em-csv";
 
 const ticketsComments = (f: TestFactory) =>
-  f.source.commentsOf("PROJ-1").filter((c) => c.body.split("\n")[0] === `${AUTOMATION_PREFIX} Tickets`);
+  f.source.commentsOf("PROJ-1").filter((c) => c.body.split("\n")[0] === "Tickets" && c.body.endsWith(AUTOMATION_MARK));
 
 /** Guarda o corpo de cada edição do comentário Tickets, na ordem. */
 function recordTicketsEdits(f: TestFactory): string[] {
   const bodies: string[] = [];
   const edit = f.source.editComment.bind(f.source);
   f.source.editComment = async (key, id, body) => {
-    if (body.split("\n")[0] === `${AUTOMATION_PREFIX} Tickets`) bodies.push(body);
+    if (body.split("\n")[0] === "Tickets") bodies.push(body);
     return edit(key, id, body);
   };
   return bodies;

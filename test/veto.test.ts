@@ -25,7 +25,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
 const notices = async (f: TestFactory) => (await events(f)).filter((e) => e.type === "notify");
 /** Comentários da fábrica no card além do de assunção (SPEC, Tickets, …). */
 const otherFactoryComments = (f: TestFactory, key: string) =>
-  f.source.commentsOf(key).filter((c) => c.author === USER && !c.body.endsWith("Assumindo este card."));
+  f.source.commentsOf(key).filter((c) => c.author === USER && !c.body.startsWith("Assumindo este card."));
 
 async function startWith(cards: ReturnType<typeof card>[], config: { vetoMinutes?: number } = {}) {
   const clock = new FakeClock(START);
@@ -41,7 +41,7 @@ describe("assumir card 'Em Andamento' com veto", () => {
     await waitForStatus(f, "PROJ-1", "aguardando-veto");
 
     expect(assumeComments(f.source, "PROJ-1").map((c) => c.body)).toEqual([
-      "\u{1F916} [mensagem automatizada] Assumindo este card.",
+      "Assumindo este card.\n\n*mensagem automatizada*",
     ]);
     expect(await notices(f)).toMatchObject([
       { type: "notify", target: "PROJ-1", reason: "aguardando-veto", until: "2026-11-10T13:30:00.000Z" },
@@ -240,7 +240,7 @@ describe("espera do veto", () => {
       expect.objectContaining({
         type: "write",
         action: "comment",
-        content: "\u{1F916} [mensagem automatizada] Assumindo este card.",
+        content: "Assumindo este card.\n\n*mensagem automatizada*",
       }),
     );
     expect(await notices(factory)).toHaveLength(1);

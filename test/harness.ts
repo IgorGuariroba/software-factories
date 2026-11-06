@@ -189,4 +189,4 @@ export function hold(): { promise: Promise<void>; release: () => void } {
 
 /** Só os comentários de assunção do card (o card também recebe SPEC e Tickets). */
 export const assumeComments = (source: MemoryDemandSource, key: string) =>
-  source.commentsOf(key).filter((c) => c.body.endsWith("Assumindo este card."));
+  source.commentsOf(key).filter((c) => c.body.startsWith("Assumindo este card."));

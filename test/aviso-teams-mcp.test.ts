@@ -44,15 +44,15 @@ it("resolve o chat e avisa apenas o destinatário informado pelo MCP", async () 
   await client.connect(clientTransport);
   try {
     const notifier = createTeamsMcpNotifier(client);
-    await notifier.send({ userId: "8:orgid:po", text: "🤖 [mensagem automatizada] Pergunta no card PROJ-1" });
+    await notifier.send({ userId: "8:orgid:po", text: "Pergunta no card PROJ-1\n\n*mensagem automatizada*" });
     expect(calls).toEqual([
       { name: "teams_get_chat", args: { userId: "8:orgid:po" } },
       {
         name: "teams_send_message",
         args: {
           conversationId: "chat-do-po",
-          content: "🤖 [mensagem automatizada] Pergunta no card PROJ-1",
-          contentType: "text",
+          content: "Pergunta no card PROJ-1\n\n*mensagem automatizada*",
+          contentType: "markdown",
         },
       },
     ]);
