@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { gitEnv } from "../../src/git.js";
 
 const pexec = promisify(execFile);
 
 /** git de verdade, sem hooks globais da máquina que roda os testes. */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await pexec("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd });
+  const { stdout } = await pexec("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd, env: gitEnv() });
   return stdout.trim();
 }
 
@@ -34,8 +35,8 @@ export async function createRemoteRepo(
 ): Promise<RemoteRepo> {
   const bare = join(root, `${name}.git`);
   const user = join(root, name);
-  await pexec("git", ["init", "--quiet", "--bare", "-b", "main", bare]);
-  await pexec("git", ["clone", "--quiet", bare, user]);
+  await pexec("git", ["init", "--quiet", "--bare", "-b", "main", bare], { env: gitEnv() });
+  await pexec("git", ["clone", "--quiet", bare, user], { env: gitEnv() });
   await git(user, "config", "user.name", "Pessoa Teste");
   await git(user, "config", "user.email", "pessoa@exemplo.test");
   for (const [path, content] of Object.entries(opts.files ?? {})) {

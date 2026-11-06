@@ -13,6 +13,35 @@ export class GitError extends Error {
 }
 
 /**
+ * Variáveis que fazem o git agir em outro repositório (`git rev-parse --local-env-vars`). Um hook do git as exporta;
+ * herdadas, o git da fábrica operaria no repositório do hook e não no `cwd` — inclusive dando push no remoto dele.
+ */
+const REPO_ENV_VARS = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_IMPLICIT_WORK_TREE",
+  "GIT_GRAFT_FILE",
+  "GIT_INDEX_FILE",
+  "GIT_NO_REPLACE_OBJECTS",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_PREFIX",
+  "GIT_SHALLOW_FILE",
+  "GIT_COMMON_DIR",
+];
+
+/** O ambiente do processo sem as variáveis que apontam o git para outro repositório. */
+export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env, ...extra };
+  for (const name of REPO_ENV_VARS) delete env[name];
+  return env;
+}
+
+/**
  * Roda git em `cwd`, sem shell e sem perguntar credenciais no terminal. Hooks ficam desligados: o conteúdo do
  * repositório vem do modelo, e um hook (do repo ou global) executaria esse conteúdo fora de qualquer controle.
  */
@@ -22,7 +51,7 @@ export function git(cwd: string, args: readonly string[]): Promise<string> {
     execFile(
       "git",
       full,
-      { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 64 * 1024 * 1024 },
+      { cwd, env: gitEnv({ GIT_TERMINAL_PROMPT: "0" }), maxBuffer: 64 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err) reject(new GitError(args, typeof err.code === "number" ? err.code : null, String(stderr)));
         else resolve(String(stdout));
