@@ -170,7 +170,7 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
   const creds = { ATLASSIAN_EMAIL: "eu@exemplo.invalid", ATLASSIAN_API_TOKEN: "token-super-secreto" };
   const basic = Buffer.from("eu@exemplo.invalid:token-super-secreto").toString("base64");
 
-  function withAttachments(fetchImpl: typeof fetch, timeoutMs?: number) {
+  function withAttachments(fetchImpl: typeof fetch, timeoutMs?: number, baseUrl?: string) {
     const acli = new FakeAcli(me);
     acli.issues = [
       {
@@ -197,6 +197,7 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
       env: creds,
       fetch: fetchImpl,
       timeoutMs,
+      baseUrl,
     });
   }
 
@@ -211,6 +212,20 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
       { name: "especificacao.md", content: "# Especificação" },
     ]);
     expect(requests).toEqual([{ url: "https://exemplo.invalid/a/1", auth: `Basic ${basic}` }]);
+  });
+
+  it("com baseUrl, baixa pelo site do Jira, não pelo host interno que o acli devolve", async () => {
+    const urls: string[] = [];
+    const source = withAttachments(
+      async (url) => {
+        urls.push(String(url));
+        return new Response("ok");
+      },
+      undefined,
+      "https://empresa.atlassian.net/",
+    );
+    await source.listTextAttachments("PROJ-1");
+    expect(urls).toEqual(["https://empresa.atlassian.net/rest/api/3/attachment/content/1"]);
   });
 
   it("interrompe download de anexo que não responde e informa o anexo", async () => {

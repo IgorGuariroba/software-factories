@@ -130,7 +130,7 @@ export const ProjectConfig = z.object({
     assignee: z.string().min(1),
     /** Restrição opcional da busca a cards específicos; use estado novo para ensaios isolados. */
     keys: z.array(z.string().min(1)).min(1).optional(),
-    /** Origem HTTPS do Jira para o link no aviso ao PO. */
+    /** Origem HTTPS do Jira: link no aviso ao PO e download dos anexos. */
     baseUrl: z
       .string()
       .url()

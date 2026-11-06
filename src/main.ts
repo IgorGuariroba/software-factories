@@ -68,6 +68,7 @@ try {
         createJiraDemandSource({
           project: config.source.project,
           assignee: config.source.assignee,
+          baseUrl: config.source.baseUrl,
         }),
     },
     // Credenciais do pi e chaves do ambiente; seleção por regras e allowlist vêm na M1-16.
