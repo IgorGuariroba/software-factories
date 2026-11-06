@@ -12,6 +12,7 @@ import type { QuestionRef } from "./channel.js";
 import type { CardState, TestCommand } from "./config.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
+import type { TriageResult } from "./triage.js";
 
 /** Status de uma Tarefa na fila. */
 export type TaskStatus =
@@ -23,7 +24,9 @@ export type TaskStatus =
   | "concluida"
   | "cancelada"
   | "bloqueada"
-  | "vetada";
+  | "vetada"
+  /** A triagem recusou a issue e a fábrica deu baixa nela. */
+  | "recusada";
 
 /** Prazo de veto de uma Tarefa cujo card já estava em andamento quando a fábrica o assumiu. */
 export type VetoWindow = {
@@ -61,7 +64,7 @@ export type Question = {
 };
 
 /** Etapa em que a Tarefa está (ou a última em que esteve), para as interfaces de gestão. */
-export type TaskStage = "assumir" | "veto" | "spec" | "implementacao";
+export type TaskStage = "triagem" | "assumir" | "veto" | "spec" | "implementacao";
 
 /** De que a retrô trata: uma etapa de modelo, ou a Tarefa inteira (a consolidada). */
 export type RetroStage = "spec" | "implementacao" | "tarefa";
@@ -118,6 +121,13 @@ export type RetroRecord = {
   proposals: RetroProposal[] | null;
 };
 
+/** Triagem de uma issue de repositório monitorado (ADR-0014), gravada para uma nova tentativa não triar de novo. */
+export type TriageRecord = {
+  result: TriageResult;
+  /** Decisão do usuário: rascunho aguardando, ou a decisão tomada na página. Sem revisão, `null`. */
+  review: "draft" | "aceitar" | "recusar" | null;
+};
+
 /** Uma Tarefa da fábrica, na ordem da fila. */
 export type QueuedTask = {
   /** `<projeto>/<card>`. */
@@ -162,6 +172,10 @@ export type QueuedTask = {
   ref?: string;
   /** Retrôs das etapas e a consolidada, na ordem em que aconteceram. */
   retros?: RetroRecord[];
+  /** Triagem da issue, nos projetos de repositório monitorado. */
+  triage?: TriageRecord | null;
+  /** Conversa da triagem com o modelo, criada antes do resultado; a SPEC nunca a reaproveita. */
+  triageConversation?: ConversationId | null;
 };
 
 /** Uma fase do ciclo TDD de um ticket: o teste que falha, depois o código que o faz passar. */
@@ -250,6 +264,8 @@ export const eventToJson = (event: FactoryEvent): JsonObject => JSON.parse(JSON.
 
 /** Passos de uma Tarefa, na ordem em que acontecem. */
 export type TarefaCheckpoint =
+  /** Triagem da issue (só repositório monitorado; nos outros projetos, passa direto). */
+  | { phase: "triar" }
   | { phase: "comentar" }
   /** Card que já estava em andamento: aviso ao usuário e espera do prazo de veto. Os outros passam direto. */
   | { phase: "veto" }
@@ -285,8 +301,11 @@ export interface StepRuntime {
 }
 
 export interface TarefaSteps {
-  /** Executa um passo. `"aguardar"`: a Tarefa fez uma pergunta e dorme até a resposta, sem ocupar a fila. */
-  run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | undefined>;
+  /**
+   * Executa um passo. `"aguardar"`: a Tarefa espera uma pessoa (pergunta, prévia) e dorme sem ocupar a fila.
+   * `"recusada"`: a triagem deu baixa na issue; a Tarefa termina aí.
+   */
+  run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | "recusada" | undefined>;
   /**
    * Inspeção de um card que já estava em andamento, no lugar do prazo de veto: `"seguir"` (nada feito antes no
    * repositório), `"bloquear"` (já implementado) ou `"veto"` (sem repositório para inspecionar: espera o prazo).
@@ -314,6 +333,7 @@ export type Step = Exclude<TarefaCheckpoint["phase"], "aguardar" | "veto">;
 export const RETRO_STEP = { spec: "retro-spec", implementacao: "retro-implementacao", tarefa: "retro-tarefa" } as const;
 
 const NEXT: Record<Step, TarefaCheckpoint | "fim"> = {
+  triar: { phase: "comentar" },
   comentar: { phase: "veto" },
   transicionar: { phase: "spec" },
   spec: { phase: RETRO_STEP.spec },
@@ -325,6 +345,7 @@ const NEXT: Record<Step, TarefaCheckpoint | "fim"> = {
 
 /** A etapa de cada passo comum. As retrôs não mudam a etapa: ficam na que avaliam. */
 const STAGE: Partial<Record<Step, TaskStage>> = {
+  triar: "triagem",
   comentar: "assumir",
   transicionar: "assumir",
   spec: "spec",
@@ -376,7 +397,7 @@ export function recordAnswer(state: FactoryState, id: string, n: number, answer:
 
 /** Se a Tarefa espera uma pessoa: resposta de pergunta ou aprovação da SPEC. */
 export const awaitsHuman = (task: QueuedTask): boolean =>
-  pendingQuestion(task) !== undefined || task.specReview === "draft";
+  pendingQuestion(task) !== undefined || task.specReview === "draft" || task.triage?.review === "draft";
 
 /** A pergunta que a Tarefa aguarda: a última, se ainda não tem resposta. */
 export const pendingQuestion = (task: QueuedTask): Question | undefined => {
@@ -466,17 +487,17 @@ export function createTarefaTask(steps: TarefaSteps) {
     }, context);
     if (gated) return;
 
-    let outcome: "aguardar" | undefined;
+    let outcome: "aguardar" | "recusada" | undefined;
     try {
       outcome = await abortable(steps.run(task.input, step, stepRuntimeOf(task, runtime, context)), runtime.signal);
     } catch (err) {
       return fail(task, err, runtime, context);
     }
 
-    const next = outcome === "aguardar" ? { phase: "aguardar" as const } : NEXT[step];
+    const next = outcome === "aguardar" ? { phase: "aguardar" as const } : outcome === "recusada" ? "fim" : NEXT[step];
     await runtime.commit(async (tx) => {
       if (next !== "fim") return { status: "running", checkpoint: next };
-      findTask(await tx.doc(StateDoc), task.input.id).status = "concluida";
+      findTask(await tx.doc(StateDoc), task.input.id).status = outcome === "recusada" ? "recusada" : "concluida";
       return { status: "terminal", outcome: { status: "completed", result: null } };
     }, context);
   }
@@ -514,9 +535,9 @@ export function createTarefaTask(steps: TarefaSteps) {
 
     await runtime.commit(async (tx) => {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
-      // A resposta chegou e é a vez desta Tarefa: volta à SPEC.
+      // A resposta chegou e é a vez desta Tarefa: volta à etapa que esperava (triagem ou SPEC).
       if (queued.status === "ativa" && !awaitsHuman(queued))
-        return { status: "running", checkpoint: { phase: "spec" } };
+        return { status: "running", checkpoint: { phase: queued.stage === "triagem" ? "triar" : "spec" } };
       if (queued.status === "ativa") queued.status = "aguardando-humano";
       const until = pendingQuestion(queued) && wakeAt !== null ? wakeAt : runtime.now() + TEN_YEARS_MS;
       const gate = await tx.createTask(DeadlineGateTask, { until }, { ownership: { kind: "task", taskId: task.id } });
@@ -612,8 +633,9 @@ export function createTarefaTask(steps: TarefaSteps) {
   return defineTask<TarefaInput, TarefaCheckpoint, null>({
     name: "fabrica.tarefa",
     version: 1,
-    initial: () => ({ phase: "comentar" }),
+    initial: () => ({ phase: "triar" }),
     phases: {
+      triar: (task, runtime, context) => phase(task, "triar", runtime, context),
       comentar: (task, runtime, context) => phase(task, "comentar", runtime, context),
       veto: (task, runtime, context) => awaitVeto(task, runtime, context),
       transicionar: (task, runtime, context) => phase(task, "transicionar", runtime, context),

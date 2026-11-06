@@ -24,6 +24,12 @@ export interface CardComment {
   body: string;
 }
 
+/** Um PR que cita a issue (Fonte GitHub). */
+export interface LinkedPullRequest {
+  number: number;
+  state: "open" | "merged" | "closed";
+}
+
 /**
  * Porta para o sistema de onde vêm as demandas (Jira, GitLab Issues, GitHub Issues).
  * Cada instância atende um único projeto: o adaptador recebe a config do projeto ao ser criado
@@ -47,4 +53,11 @@ export interface DemandSource {
   transition(key: string, status: string): Promise<void>;
   /** Formata o identificador de uma pessoa para menção no corpo de um comentário nesta Fonte. */
   formatMention(personId: string): string;
+  /** PRs que citam o card. Só nas Fontes que têm PRs (GitHub); a triagem usa como sinal de trabalho existente. */
+  linkedPullRequests?(key: string): Promise<LinkedPullRequest[]>;
+  /**
+   * Dá baixa no card recusado na triagem: fecha com o motivo (`completed`, `not_planned`, `duplicate`). Só nas
+   * Fontes com triagem (GitHub).
+   */
+  dismiss?(key: string, reason: "completed" | "not_planned" | "duplicate"): Promise<void>;
 }

@@ -6,6 +6,7 @@ import {
   approveRetro,
   approveSpec,
   cancelTask,
+  decideTriage,
   eventStream,
   getDaemon,
   getQuestionPreview,
@@ -15,6 +16,7 @@ import {
   getSpecPreview,
   getTask,
   getTasks,
+  getTriagePreview,
   pauseDaemon,
   pauseTask,
   pollSource,
@@ -106,6 +108,45 @@ function reviewReminderButton(task, question) {
                 text: "Aprovar lembrete",
                 attrs: { type: "button" },
                 onClick: () => run(() => approveReminder(task.project, task.key, question.n, preview.revision)),
+              }),
+        );
+        clearError();
+      } catch (err) {
+        button.disabled = false;
+        showError(err);
+      }
+    },
+  });
+  container.append(button);
+  return container;
+}
+
+function reviewTriageButton(task) {
+  const container = el("div");
+  const button = el("button", {
+    text: "Revisar triagem",
+    attrs: { type: "button" },
+    onClick: async () => {
+      button.disabled = true;
+      try {
+        const p = await getTriagePreview(task.project, task.key);
+        if (!container.isConnected) return;
+        const decide = (decision) => run(() => decideTriage(task.project, task.key, decision, p.revision));
+        container.replaceChildren(
+          el("p", { text: `Triagem (${p.by}): ${p.verdict}, ${p.category}. ${p.reason}` }),
+          el("p", { text: `Se recusar, comenta na issue e fecha como ${p.closeAs}:` }),
+          el("pre", { className: "texto", text: p.comment }),
+          el("button", {
+            text: "Aceitar e seguir para a SPEC",
+            attrs: { type: "button" },
+            onClick: () => decide("aceitar"),
+          }),
+          p.dryRun
+            ? el("p", { text: "Dry-run: a recusa real está desativada." })
+            : el("button", {
+                text: "Recusar e fechar a issue",
+                attrs: { type: "button" },
+                onClick: () => decide("recusar"),
               }),
         );
         clearError();
@@ -366,6 +407,14 @@ function renderDetail(task) {
   );
 
   $("detalhe-spec").textContent = task.spec ?? "Ainda não entregue.";
+  $("detalhe-triagem").replaceChildren(
+    ...(task.triage
+      ? [
+          el("p", { text: `${task.triage.verdict}: ${task.triage.reason}` }),
+          ...(task.triage.review === "draft" ? [reviewTriageButton(task)] : []),
+        ]
+      : [el("p", { text: "Sem triagem (só repositório monitorado)." })]),
+  );
   $("detalhe-spec-revisao").replaceChildren(
     ...(task.specReview === "draft"
       ? [el("p", { text: "SPEC e Tickets aguardam revisão." }), reviewSpecButton(task)]

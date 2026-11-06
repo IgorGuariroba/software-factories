@@ -50,6 +50,9 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
     })),
     spec: task.delivery?.spec ?? null,
     specReview: task.specReview ?? null,
+    triage: task.triage
+      ? { verdict: task.triage.result.verdict, reason: task.triage.result.reason, review: task.triage.review }
+      : null,
     tickets: task.delivery?.tickets ?? [],
     implementation: implementation
       ? {

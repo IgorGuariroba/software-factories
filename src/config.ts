@@ -143,6 +143,10 @@ const GitHubSourceConfig = z.object({
   assignee: z.string().min(1),
   keys: z.array(z.string().min(1)).min(1).optional(),
   baseUrl: z.undefined().optional(),
+  /** Toda recusa da triagem passa por prévia na página local antes de comentar e fechar a issue. */
+  triageApproval: z.boolean().default(true),
+  /** Quantas issues deste repositório a fábrica toca ao mesmo tempo (Tarefas não terminadas). */
+  maxActive: z.number().int().positive().default(1),
 });
 
 export const ProjectConfig = z.object({
@@ -162,6 +166,8 @@ export const ProjectConfig = z.object({
   roles: z.object({
     /** Grill, SPEC e Tickets. */
     spec: ModelRef,
+    /** Triagem das issues de repositório monitorado. Sem ele, usa o modelo de `spec`. */
+    triage: ModelRef.optional(),
     /** Implementação com TDD. Sem ele, usa o modelo de `spec`. */
     implementer: ModelRef.optional(),
     /** Retrô de cada etapa e consolidada. Sem ele, usa o modelo de `spec`. */

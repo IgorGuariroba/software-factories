@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import type { Card, CardComment, DemandSource, TextAttachment } from "./demand-source.js";
+import type { Card, CardComment, DemandSource, LinkedPullRequest, TextAttachment } from "./demand-source.js";
 
 export interface GhExecResult {
   stdout: string;
@@ -47,6 +47,18 @@ interface RawIssue {
   state: string;
   labels?: (string | { name?: string })[];
   pull_request?: unknown;
+}
+
+interface RawTimelineEvent {
+  event?: string;
+  source?: {
+    issue?: {
+      number: number;
+      state: string;
+      pull_request?: { merged_at?: string | null } | null;
+      repository?: { full_name?: string };
+    };
+  };
 }
 
 interface RawComment {
@@ -194,6 +206,35 @@ export class GitHubDemandSource implements DemandSource {
       if (!labelNames(now).includes(label)) return;
     }
     throw new Error(`gh api tirar ${label} de ${key} falhou: ${res.stderr.trim() || `código ${res.exitCode}`}`);
+  }
+
+  /** PRs deste repositório que citam a issue (eventos `cross-referenced` da timeline). */
+  async linkedPullRequests(key: string): Promise<LinkedPullRequest[]> {
+    const n = this.issueNumber(key);
+    const events = await this.list<RawTimelineEvent>(
+      `repos/${this.opts.repo}/issues/${n}/timeline?per_page=100`,
+      `timeline de ${key}`,
+    );
+    const prs = new Map<number, LinkedPullRequest>();
+    for (const e of events) {
+      const ref = e.event === "cross-referenced" ? e.source?.issue : undefined;
+      if (!ref?.pull_request || ref.repository?.full_name?.toLowerCase() !== this.opts.repo.toLowerCase()) continue;
+      const state = ref.pull_request.merged_at ? "merged" : ref.state === "open" ? "open" : "closed";
+      prs.set(ref.number, { number: ref.number, state });
+    }
+    return [...prs.values()];
+  }
+
+  /** Baixa da triagem: tira os labels da fábrica e fecha a issue com o motivo. */
+  async dismiss(key: string, reason: "completed" | "not_planned" | "duplicate"): Promise<void> {
+    const n = this.issueNumber(key);
+    await this.assertOwner();
+    const path = `repos/${this.opts.repo}/issues/${n}`;
+    const issue = JSON.parse(await this.api([path], `issue ${key}`)) as RawIssue;
+    for (const label of labelNames(issue).filter((l) => l.startsWith(STATUS_LABEL)))
+      await this.removeLabel(path, label, key);
+    if (issue.state !== "closed")
+      await this.api(["-X", "PATCH", path], `fechar ${key}`, { state: "closed", state_reason: reason });
   }
 
   formatMention(personId: string): string {

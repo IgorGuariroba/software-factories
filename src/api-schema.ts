@@ -93,6 +93,69 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/triage": {
+      get: {
+        summary: "Prévia exata da triagem aguardando decisão: motivo, comentário e fechamento se recusada",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          "200": {
+            description: "Prévia vinculada à revisão",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["card", "verdict", "category", "reason", "comment", "closeAs", "dryRun", "revision"],
+                  properties: {
+                    card: { type: "string" },
+                    verdict: { enum: ["recusa", "duvidosa"] },
+                    category: { type: "string" },
+                    reason: { type: "string" },
+                    by: { enum: ["regra", "modelo"] },
+                    duplicateOf: { type: ["string", "null"] },
+                    comment: { type: "string" },
+                    closeAs: { enum: ["completed", "not_planned", "duplicate"] },
+                    dryRun: { type: "boolean" },
+                    revision: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "404": { description: "Triagem inexistente" },
+          "409": { description: "Triagem não aguarda decisão" },
+        },
+      },
+    },
+    "/tasks/{project}/{key}/triage/decide": {
+      post: {
+        summary: "Decide a triagem da revisão exata: aceitar segue para a SPEC; recusar comenta e fecha a issue",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["decision", "revision"],
+                properties: { decision: { enum: ["aceitar", "recusar"] }, revision: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "400": { description: "Decisão inválida" },
+          "409": { description: "Prévia mudou, indisponível ou recusa em dry-run" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/spec/approve": {
       post: {
         summary: "Aprova a revisão exata; a Tarefa publica SPEC e Tickets quando voltar a rodar",
@@ -361,11 +424,12 @@ export const API_SCHEMA = {
               "cancelada",
               "bloqueada",
               "vetada",
+              "recusada",
             ],
           },
           stage: {
             description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
-            enum: ["assumir", "veto", "spec", "implementacao", null],
+            enum: ["triagem", "assumir", "veto", "spec", "implementacao", null],
           },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
@@ -450,6 +514,15 @@ export const API_SCHEMA = {
               },
               spec: { type: ["string", "null"] },
               specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
+              triage: {
+                description: "Triagem da issue (repositório monitorado); null nos outros projetos",
+                type: ["object", "null"],
+                properties: {
+                  verdict: { enum: ["aceita", "recusa", "duvidosa"] },
+                  reason: { type: "string" },
+                  review: { enum: ["draft", "aceitar", "recusar", null] },
+                },
+              },
               tickets: {
                 type: "array",
                 items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },

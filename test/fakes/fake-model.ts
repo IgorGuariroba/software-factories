@@ -1,5 +1,8 @@
 import {
   type AssistantMessage,
+  type ClassifierContext,
+  type ClassifierModel,
+  type ClassifierResult,
   type Context,
   createModels,
   type FauxResponseFactory,
@@ -121,10 +124,52 @@ export class FakeModel {
     this.faux.setResponses([step]);
   }
 
+  /** Id do classificador fake (System One), oferecido como `faux/<CLASSIFIER>`. */
+  static readonly CLASSIFIER = "classificador";
+  /** Contextos recebidos pelo classificador fake. */
+  readonly classifierCalls: ClassifierContext[] = [];
+  /** Como o classificador fake responde. Padrão: aceita com confiança total. */
+  respondClassifier: (context: ClassifierContext) => ClassifierResult["answers"] = () => ({
+    decisao: { type: "choice", choice: "aceita", confidence: 1, probabilities: { aceita: 1 } },
+    categoria: { type: "choice", choice: "ok", confidence: 1, probabilities: { ok: 1 } },
+    injecao: { type: "bool", probability: 0 },
+  });
+
   models(): Models {
     const models = createModels();
     models.setProvider(this.faux.provider);
-    return models;
+    const classifier = {
+      id: FakeModel.CLASSIFIER,
+      name: FakeModel.CLASSIFIER,
+      provider: FakeModel.PROVIDER,
+      api: "typesafe-system-one",
+      type: "classifier",
+      contextWindow: 262_000,
+    } as unknown as ClassifierModel<"typesafe-system-one">;
+    // O provedor faux não tem classificador: um proxy acrescenta o fake sem mudar o resto do `Models`.
+    return new Proxy(models, {
+      get: (target, prop, receiver) => {
+        if (prop === "getModelsOfType")
+          return (type: string, provider?: string) =>
+            type === "classifier" && (!provider || provider === FakeModel.PROVIDER)
+              ? [classifier]
+              : target.getModelsOfType(type as "chat", provider);
+        if (prop === "classify")
+          return async (_model: unknown, context: ClassifierContext): Promise<ClassifierResult> => {
+            this.classifierCalls.push(context);
+            return {
+              api: "typesafe-system-one",
+              provider: FakeModel.PROVIDER,
+              model: FakeModel.CLASSIFIER,
+              answers: this.respondClassifier(context),
+              stopReason: "stop",
+              timestamp: Date.now(),
+            };
+          };
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
   }
 
   /** Uma resposta só de texto, sem entregar pela ferramenta. */

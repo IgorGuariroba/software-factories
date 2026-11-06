@@ -35,6 +35,9 @@ export const vetoTask = (project, key) => api("POST", `/tasks/${seg(project)}/${
 export const pauseTask = (project, key) => api("POST", `/tasks/${seg(project)}/${seg(key)}/pause`);
 export const resumeTask = (project, key) => api("POST", `/tasks/${seg(project)}/${seg(key)}/resume`);
 export const cancelTask = (project, key) => api("POST", `/tasks/${seg(project)}/${seg(key)}/cancel`);
+export const getTriagePreview = (project, key) => api("GET", `/tasks/${seg(project)}/${seg(key)}/triage`);
+export const decideTriage = (project, key, decision, revision) =>
+  api("POST", `/tasks/${seg(project)}/${seg(key)}/triage/decide`, { decision, revision });
 export const getSpecPreview = (project, key) => api("GET", `/tasks/${seg(project)}/${seg(key)}/spec`);
 export const approveSpec = (project, key, revision) =>
   api("POST", `/tasks/${seg(project)}/${seg(key)}/spec/approve`, { revision });

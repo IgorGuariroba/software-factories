@@ -111,4 +111,30 @@ describe("Fonte GitHub: identidade e labels", () => {
     // O caminho do 404 foi de fato exercitado: houve o DELETE do label já removido.
     expect(gh.calls).toContainEqual(["api", "-X", "DELETE", "repos/dono/repo/issues/7/labels/fabrica%3Aem-andamento"]);
   });
+
+  it("PRs que citam a issue, pela timeline: mergeado, aberto ou fechado; de outro repositório não contam", async () => {
+    const { gh, source } = setup();
+    gh.references.set(7, [
+      { number: 20, state: "closed", merged: true },
+      { number: 21, state: "open" },
+      { number: 22, state: "closed" },
+      { number: 23, state: "open", repo: "outro/repo" },
+    ]);
+    expect(await source.linkedPullRequests?.("SF-7")).toEqual([
+      { number: 20, state: "merged" },
+      { number: 21, state: "open" },
+      { number: 22, state: "closed" },
+    ]);
+  });
+
+  it("dar baixa fecha a issue com o motivo e tira os labels da fábrica, conferindo a conta", async () => {
+    const { gh, source } = setup();
+    await source.transition("SF-7", "em-andamento");
+    await source.dismiss?.("SF-7", "duplicate");
+    expect(gh.issues[0]).toMatchObject({ state: "closed", stateReason: "duplicate", labels: ["bug"] });
+    gh.me = "outra-conta";
+    gh.issues[0] = { number: 7, title: "Bug" };
+    await expect(source.dismiss?.("SF-7", "not_planned")).rejects.toThrow(/outra-conta/);
+    expect(gh.issues[0]?.state).toBeUndefined();
+  });
 });
