@@ -222,16 +222,19 @@ export function pipelineSteps(task) {
  * @param {Record<string, any>} task
  * @returns {string | null}
  */
+const WAITING = "Aguardando você.";
+
 export function nextAction(task) {
   if (task.status === "bloqueada") return `Bloqueada: ${task.reason ?? "motivo não informado"}`;
   if (task.status === "aguardando-entrega") return "PR/MR aberto; aguardando CI, comentários e o seu merge.";
   if (task.status === "aguardando-veto") return "Prazo de veto em andamento: vete se não quiser que a fábrica siga.";
   if (task.status === "aguardando-humano") {
-    if (task.triage?.review === "draft") return "Revise a triagem: aceite ou recuse a issue.";
+    // Aceita o detalhe da Tarefa e o resumo da lista (`triageReview`, `pendingQuestion`).
+    if ((task.triage?.review ?? task.triageReview) === "draft") return "Revise a triagem: aceite ou recuse a issue.";
     if (task.specReview === "draft") return "Aprove a SPEC e os Tickets para continuar.";
-    const pending = task.questions?.find((q) => q.answer === null);
-    if (pending) return `Responda à pergunta ${pending.n} ao PO (Telegram ou Jira).`;
-    return "Aguardando você.";
+    const pending = task.questions?.find((q) => q.answer === null)?.n ?? task.pendingQuestion;
+    if (pending) return `Responda à pergunta ${pending} na aba Perguntas.`;
+    return WAITING;
   }
   if (task.status === "pausada") {
     const retro = task.retros?.at(-1);
@@ -240,6 +243,19 @@ export function nextAction(task) {
       : "Pausada: retome quando quiser continuar.";
   }
   return null;
+}
+
+/**
+ * Linha de destaque do cartão do quadro: a ação pendente quando é a vez de quem acompanha; senão o motivo da espera,
+ * sem a faixa de ação (esperar vaga, bloqueio).
+ * @param {Record<string, any>} task
+ * @returns {{text: string, yourTurn: boolean} | null}
+ */
+export function cardHint(task) {
+  const action = nextAction(task);
+  if (action && action !== WAITING) return { text: action, yourTurn: task.status !== "bloqueada" };
+  if (action === WAITING && task.reason) return { text: task.reason, yourTurn: false };
+  return action ? { text: action, yourTurn: true } : null;
 }
 
 const ACTIVITY_KIND = {

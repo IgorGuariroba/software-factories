@@ -175,6 +175,27 @@ describe("pipeline e atividade na página da Tarefa", () => {
     expect(nextAction(base)).toBeNull();
   });
 
+  it("pede a ação certa também a partir do resumo da lista, sem citar canal", async () => {
+    const { nextAction, cardHint } = await import("../web/view.js");
+    const waiting = { ...base, status: "aguardando-humano" };
+    expect(nextAction({ ...waiting, triageReview: "draft" })).toBe("Revise a triagem: aceite ou recuse a issue.");
+    expect(nextAction({ ...waiting, pendingQuestion: 1 })).toBe("Responda à pergunta 1 na aba Perguntas.");
+    expect(cardHint({ ...waiting, specReview: "draft", reason: "erro antigo" })).toEqual({
+      text: "Aprove a SPEC e os Tickets para continuar.",
+      yourTurn: true,
+    });
+    // Esperar vaga não é a vez de quem acompanha: mostra o motivo, sem a faixa de ação.
+    expect(cardHint({ ...waiting, reason: "aceita na triagem; espera vaga (maxActive)" })).toEqual({
+      text: "aceita na triagem; espera vaga (maxActive)",
+      yourTurn: false,
+    });
+    expect(cardHint({ ...base, status: "bloqueada", reason: "CI" })).toEqual({
+      text: "Bloqueada: CI",
+      yourTurn: false,
+    });
+    expect(cardHint(base)).toBeNull();
+  });
+
   it("agrupa a atividade, mais recente primeiro, sem o vaivém de fila", async () => {
     const { activity } = await import("../web/view.js");
     const events = [

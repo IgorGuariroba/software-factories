@@ -446,6 +446,9 @@ export const API_SCHEMA = {
           },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
+          specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
+          triageReview: { enum: ["draft", "aceitar", "recusar", null], description: "Revisão humana da triagem" },
+          pendingQuestion: { type: ["integer", "null"], description: "Número da pergunta ainda sem resposta" },
         },
       },
       Retro: {

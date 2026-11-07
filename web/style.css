@@ -221,6 +221,25 @@ body {
   box-shadow: inset 3px 0 0 var(--destaque);
 }
 
+.resposta {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.resposta textarea {
+  font: inherit;
+  padding: 0.4rem;
+  border: 1px solid var(--borda);
+  border-radius: 6px;
+  background: var(--superficie);
+  color: inherit;
+}
+
+.resposta button {
+  justify-self: start;
+}
+
 .cartao.sua-vez {
   box-shadow:
     inset 3px 0 0 var(--alerta),
