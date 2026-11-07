@@ -42,6 +42,14 @@ export async function runDelivery(opts: {
     });
   }
   const base = progress.defaultBranch ?? (await defaultBranch(cwd));
+  if (!progress.defaultBranch) {
+    // Tarefa anterior ao registro da branch padrão: guarda a descoberta para as retomadas não consultarem o remoto.
+    progress.defaultBranch = base;
+    await runtime.commit(async (tx) => {
+      const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      if (queued?.implementation && !queued.implementation.defaultBranch) queued.implementation.defaultBranch = base;
+    });
+  }
   const remote =
     task.publication?.number && !config.dryRun
       ? await opts.codeHost.inspectRequest(cwd, task.publication.number)
