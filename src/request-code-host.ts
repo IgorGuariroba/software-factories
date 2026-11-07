@@ -133,9 +133,22 @@ export async function inspectRequest(cwd: string, number: number): Promise<Chang
   }
   const request = GlRequest.parse(await t.api(endpoint));
   const [plain, discussions] = await Promise.all([t.pages(`${endpoint}/notes`), t.pages(`${endpoint}/discussions`)]);
-  const threaded = discussions.flatMap((d) => z.object({ notes: z.array(z.unknown()).default([]) }).parse(d).notes);
+  // Respostas de discussão levam as notas anteriores do mesmo fio como contexto; o id continua o da nota nova.
+  const context = new Map<number, string>();
+  const threaded = discussions.flatMap((d) => {
+    const thread = z
+      .object({ notes: z.array(z.unknown()).default([]) })
+      .parse(d)
+      .notes.map((raw) => Note.parse(raw));
+    thread.forEach((n, i) => {
+      const previous = thread.slice(0, i).filter((p) => !p.system && p.body?.trim());
+      if (previous.length > 0)
+        context.set(n.id, previous.map((p) => `> ${p.author?.username ?? "desconhecido"}: ${p.body ?? ""}`).join("\n"));
+    });
+    return thread;
+  });
   const notes = [
-    ...new Map([...plain, ...threaded].map((raw) => Note.parse(raw)).map((n) => [n.id, n] as const)).values(),
+    ...new Map([...plain.map((raw) => Note.parse(raw)), ...threaded].map((n) => [n.id, n] as const)).values(),
   ];
   const pipeline = request.head_pipeline;
   return {
@@ -154,6 +167,12 @@ export async function inspectRequest(cwd: string, number: number): Promise<Chang
     conflicts: request.has_conflicts === true,
     feedback: notes
       .filter((n) => !n.system && n.body?.trim() && !isAutomationText(n.body))
-      .map((n) => ({ id: String(n.id), body: n.body ?? "", author: n.author?.username ?? "desconhecido" })),
+      .map((n) => ({
+        id: String(n.id),
+        body: context.has(n.id)
+          ? `Contexto da discussão:\n${context.get(n.id)}\n\nResposta:\n${n.body ?? ""}`
+          : (n.body ?? ""),
+        author: n.author?.username ?? "desconhecido",
+      })),
   };
 }
