@@ -29,7 +29,9 @@ export const taskSummary = ({
   /** O que o quadro precisa para dizer a ação pendente sem abrir o detalhe. */
   specReview: specReview ?? null,
   triageReview: triage?.review ?? null,
-  pendingQuestion: questions?.find((q) => q.answer === null)?.n ?? null,
+  /** Só a que já pode ser respondida: rascunho ou envio não confirmado não têm resposta ainda. */
+  pendingQuestion:
+    questions?.find((q) => q.answer === null && q.publication !== "draft" && q.publication !== "sending")?.n ?? null,
 });
 
 /**

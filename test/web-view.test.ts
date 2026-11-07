@@ -180,6 +180,10 @@ describe("pipeline e atividade na página da Tarefa", () => {
     const waiting = { ...base, status: "aguardando-humano" };
     expect(nextAction({ ...waiting, triageReview: "draft" })).toBe("Revise a triagem: aceite ou recuse a issue.");
     expect(nextAction({ ...waiting, pendingQuestion: 1 })).toBe("Responda à pergunta 1 na aba Perguntas.");
+    // Pergunta ainda em rascunho não tem caixa de resposta: o que falta é revisar o envio.
+    expect(nextAction({ ...waiting, questions: [{ n: 2, answer: null, publication: "draft" }] })).toBe(
+      "Revise a pergunta 2 antes do envio, na aba Perguntas.",
+    );
     expect(cardHint({ ...waiting, specReview: "draft", reason: "erro antigo" })).toEqual({
       text: "Aprove a SPEC e os Tickets para continuar.",
       yourTurn: true,

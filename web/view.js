@@ -232,7 +232,9 @@ export function nextAction(task) {
     // Aceita o detalhe da Tarefa e o resumo da lista (`triageReview`, `pendingQuestion`).
     if ((task.triage?.review ?? task.triageReview) === "draft") return "Revise a triagem: aceite ou recuse a issue.";
     if (task.specReview === "draft") return "Aprove a SPEC e os Tickets para continuar.";
-    const pending = task.questions?.find((q) => q.answer === null)?.n ?? task.pendingQuestion;
+    const open = task.questions?.find((q) => q.answer === null);
+    if (open?.publication === "draft") return `Revise a pergunta ${open.n} antes do envio, na aba Perguntas.`;
+    const pending = open && open.publication !== "sending" ? open.n : task.pendingQuestion;
     if (pending) return `Responda à pergunta ${pending} na aba Perguntas.`;
     return WAITING;
   }
