@@ -1331,6 +1331,21 @@ export async function startFactory(opts: {
           task.reason = null;
           task.status = "enfileirada";
         }
+        // TDD recusado no limite: quem retoma mudou o que impedia (config, formatador, ambiente). Novas tentativas na
+        // mesma fase; os commits aceitos ficam.
+        if (
+          task.status === "bloqueada" &&
+          (task.stage === "implementacao" || task.stage === "review") &&
+          task.implementation &&
+          task.reason?.startsWith("TDD recusado ")
+        ) {
+          task.implementation.rejections = 0;
+          task.implementation.feedback = null;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
       }),
     async cancel(id: string) {
       let durableId: number | null = null;
