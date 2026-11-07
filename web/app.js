@@ -27,11 +27,14 @@ import {
 } from "./api.js";
 import {
   actionsFor,
-  describeEvent,
+  activity,
+  boardColumns,
   detailStatusLabel,
   formatCommit,
   isTerminal,
   moveTask,
+  nextAction,
+  pipelineSteps,
   proposalLabel,
   refreshSelectedDetail,
   retroStageLabel,
@@ -303,58 +306,61 @@ function moveButton(task, delta) {
     attrs: { type: "button", title: label, "aria-label": `${label} ${task.key} na fila` },
     onClick: () => order && run(() => reorderTasks(order)),
   });
+  button.addEventListener("click", (e) => e.preventDefault());
   button.disabled = order === null;
   return button;
 }
 
-function taskLink(task) {
-  return el("a", {
-    text: task.key,
-    attrs: { href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}` },
-  });
+function statusPill(task) {
+  const tone = task.status === "bloqueada" ? "perigo" : isTerminal(task) || task.status === "ativa" ? "ok" : "alerta";
+  return el("span", { className: `selo ${tone}`, text: statusLabel(task.status) });
+}
+
+function taskCard(task) {
+  const isSelected = selected && task.project === selected.project && task.key === selected.key;
+  const open = !isTerminal(task);
+  const card = el(
+    "a",
+    {
+      className: `cartao${isSelected ? " selecionada" : ""}`,
+      attrs: {
+        href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}`,
+        ...(isSelected ? { "aria-current": "page" } : {}),
+      },
+    },
+    el("span", { className: "chave", text: `${task.key} · ${task.project}` }),
+    el("span", { className: "titulo", text: task.title }),
+    el(
+      "span",
+      { className: "meta" },
+      statusPill(task),
+      ...(open ? [el("span", { className: "mover" }, moveButton(task, -1), moveButton(task, 1))] : []),
+    ),
+  );
+  return el("li", {}, card);
 }
 
 function renderTasks() {
-  const open = tasks.filter((t) => !isTerminal(t));
-  const closed = tasks.filter(isTerminal);
-  const isSelected = (t) => selected && t.project === selected.project && t.key === selected.key;
-
-  $("fila")
-    .querySelector("tbody")
-    .replaceChildren(
-      ...open.map((t, i) =>
+  const columns = boardColumns(tasks);
+  $("quadro").replaceChildren(
+    ...columns.map((c) =>
+      el(
+        "section",
+        { className: "coluna", attrs: { "data-coluna": c.key, "aria-label": c.label } },
         el(
-          "tr",
-          { className: isSelected(t) ? "selecionada" : "" },
-          el("td", { text: String(i + 1) }),
-          el("td", {}, taskLink(t)),
-          el("td", { text: t.title }),
-          el("td", { text: statusLabel(t.status) }),
-          el("td", { text: stageLabel(t.stage) }),
-          el("td", {}, el("div", { className: "acoes" }, moveButton(t, -1), moveButton(t, 1), ...actionButtons(t))),
+          "h3",
+          {},
+          el("span", { className: "ponto" }),
+          c.label,
+          el("span", { className: "contagem", text: String(c.tasks.length) }),
         ),
+        el("ol", { className: "cartoes" }, ...c.tasks.map(taskCard)),
       ),
-    );
-  $("fila-vazia").hidden = open.length > 0;
-  $("fila").hidden = open.length === 0;
-
-  $("encerradas")
-    .querySelector("tbody")
-    .replaceChildren(
-      ...closed.map((t) =>
-        el(
-          "tr",
-          { className: isSelected(t) ? "selecionada" : "" },
-          el("td", {}, taskLink(t)),
-          el("td", { text: t.title }),
-          el("td", { text: statusLabel(t.status) }),
-          el("td", { text: stageLabel(t.stage) }),
-          el("td", { text: t.reason ?? "" }),
-        ),
-      ),
-    );
-  $("encerradas-vazia").hidden = closed.length > 0;
-  $("encerradas").hidden = closed.length === 0;
+    ),
+  );
+  const open = tasks.filter((t) => !isTerminal(t)).length;
+  $("fila-contagem").textContent = `(${open} em andamento)`;
+  $("fila-vazia").hidden = tasks.length > 0;
 }
 
 function renderDaemon() {
@@ -367,18 +373,37 @@ function renderDaemon() {
 }
 
 function renderDetail(task) {
-  $("titulo-detalhe").textContent = `${task.key}: ${task.title}`;
-
-  const fields = [
-    ["Projeto", task.project],
-    ["Status", detailStatusLabel(task)],
-    ["Etapa", stageLabel(task.stage)],
-    ["Tentativas", String(task.attempts)],
-  ];
-  if (task.pauseRequested && task.status !== "pausada") fields.push(["Pausa", "pedida; para no próximo passo"]);
-  if (task.vetoUntil) fields.push(["Prazo de veto", formatTime(task.vetoUntil)]);
-  if (task.reason) fields.push(["Motivo", task.reason]);
-  $("detalhe-estado").replaceChildren(...fields.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+  $("titulo-detalhe").textContent = task.title;
+  $("detalhe-ref").textContent = `${task.project} · ${task.key}`;
+  const facts = [stageLabel(task.stage), `${task.attempts} tentativa(s)`];
+  if (task.pauseRequested && task.status !== "pausada") facts.push("pausa pedida; para no próximo passo");
+  if (task.vetoUntil) facts.push(`veto até ${formatTime(task.vetoUntil)}`);
+  $("detalhe-estado").replaceChildren(
+    el("span", { className: statusPill(task).className, text: detailStatusLabel(task) }),
+    ...facts.map((f) => el("span", { text: `· ${f}` })),
+  );
+  const next = nextAction(task);
+  const proximo = $("detalhe-proximo");
+  proximo.hidden = next === null;
+  proximo.textContent = next ?? "";
+  proximo.className = `proximo${task.status === "bloqueada" ? " bloqueado" : ""}`;
+  const STATE = {
+    feito: "concluída",
+    atual: "em andamento",
+    espera: "aguardando",
+    bloqueado: "bloqueada",
+    pendente: "",
+  };
+  $("detalhe-pipeline").replaceChildren(
+    ...pipelineSteps(task).map((s) =>
+      el(
+        "li",
+        { className: s.state, attrs: s.state === "atual" || s.state === "espera" ? { "aria-current": "step" } : {} },
+        s.label,
+        el("span", { className: "estado-etapa", text: STATE[s.state] }),
+      ),
+    ),
+  );
   $("detalhe-acoes").replaceChildren(...actionButtons(task));
 
   $("detalhe-perguntas").replaceChildren(
@@ -429,16 +454,57 @@ function renderDetail(task) {
   );
 
   const impl = task.implementation;
-  $("detalhe-implementacao").replaceChildren(
-    impl
-      ? el(
-          "p",
-          {},
-          `Branch ${impl.branch}, ${impl.commits.length} commit(s), ${impl.pushed ? "com push" : "sem push"}. `,
-          ...impl.commits.map((c) => el("code", { text: formatCommit(c) })),
-        )
-      : el("p", { className: "vazio", text: "Ainda não começou." }),
-  );
+  const implParts = [];
+  if (!impl) implParts.push(el("p", { className: "vazio", text: "Ainda não começou." }));
+  else {
+    implParts.push(
+      el(
+        "p",
+        {},
+        "Branch ",
+        el("code", { text: impl.branch }),
+        ` · ${impl.commits.length} commit(s) · ${impl.pushed ? "enviada ao remoto" : "ainda não enviada"}`,
+      ),
+    );
+    task.tickets.forEach((ticket, i) => {
+      const commits = impl.commits.filter((c) => c.ticket === i);
+      const phase = (name) => commits.find((c) => c.phase === name);
+      const done = phase("implementacao") ? "GREEN ✓" : phase("teste") ? "RED (teste escrito)" : "pendente";
+      implParts.push(
+        el(
+          "div",
+          { className: "ticket" },
+          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo} — ${done}` }),
+          el("p", { className: "vazio", text: ticket.aceite }),
+          ...commits.map((c) => el("code", { text: formatCommit(c) })),
+        ),
+      );
+    });
+  }
+  if (task.review)
+    implParts.push(
+      el("h3", { text: "Review" }),
+      el("p", {}, el("strong", { text: task.review.status }), ` · HEAD ${task.review.head.slice(0, 8)}`),
+      el("p", { text: task.review.summary }),
+    );
+  if (task.publication)
+    implParts.push(
+      el("h3", { text: "PR/MR" }),
+      el(
+        "p",
+        {},
+        `${task.publication.status} `,
+        ...(task.publication.url
+          ? [
+              el("a", {
+                text: task.publication.url,
+                attrs: { href: task.publication.url, target: "_blank", rel: "noopener" },
+              }),
+            ]
+          : []),
+      ),
+    );
+  $("detalhe-implementacao").replaceChildren(...implParts);
 
   $("detalhe-retros").replaceChildren(
     ...(task.retros.length === 0
@@ -490,12 +556,42 @@ function renderDetail(task) {
     );
 
   $("detalhe-eventos").replaceChildren(
-    ...task.events.map((e) =>
-      el("li", {}, el("span", { className: "quando", text: formatTime(e.at) }), describeEvent(e)),
+    ...activity(task.events).map((a) =>
+      el(
+        "li",
+        {},
+        el("span", { className: "quando", text: formatTime(a.at) }),
+        el("span", { className: `tipo tipo-${a.kind}`, text: a.kind }),
+        el("span", { text: a.text }),
+      ),
     ),
   );
+  const counts = {
+    perguntas: task.questions.length,
+    retros: task.retros.length,
+    escritas: task.writes.length,
+    spec: task.tickets.length,
+  };
+  for (const tab of document.querySelectorAll("[data-aba]")) {
+    const base = tab.dataset.label ?? tab.textContent;
+    tab.dataset.label = base;
+    const n = counts[tab.dataset.aba];
+    tab.textContent = n ? `${base} (${n})` : base;
+  }
   $("detalhe").hidden = false;
+  $("detalhe-vazio").hidden = true;
 }
+
+let currentTab = "atividade";
+function showTab(name) {
+  currentTab = name;
+  for (const tab of document.querySelectorAll("[data-aba]"))
+    tab.setAttribute("aria-selected", String(tab.dataset.aba === name));
+  for (const panel of document.querySelectorAll("[data-painel]")) panel.hidden = panel.dataset.painel !== name;
+}
+for (const tab of document.querySelectorAll("[data-aba]"))
+  tab.addEventListener("click", () => showTab(tab.dataset.aba));
+showTab(currentTab);
 
 function readSelection() {
   const retro = location.hash.match(/^#\/retro\/([0-9a-f]+)$/);
@@ -507,6 +603,7 @@ function readSelection() {
 async function refreshDetail() {
   if (!selected) {
     $("detalhe").hidden = true;
+    $("detalhe-vazio").hidden = false;
     return;
   }
   await refreshSelectedDetail(
