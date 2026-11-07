@@ -109,3 +109,18 @@ export async function defaultBranch(cwd: string): Promise<string> {
   if (!match?.[1]) throw new GitError(["ls-remote", "--symref", "origin", "HEAD"], null, "remoto sem HEAD simbólico");
   return match[1];
 }
+
+/**
+ * Referência local da branch padrão do remoto (`refs/remotes/origin/<branch>`), buscada no remoto quando o clone não
+ * a tem (clone de outra branch, refspec restrito): o review compara contra ela sem cair em erro bruto do git.
+ */
+export async function remoteDefaultRef(cwd: string, branch?: string): Promise<string> {
+  const name = branch ?? (await defaultBranch(cwd));
+  const ref = `refs/remotes/origin/${name}`;
+  const exists = await git(cwd, ["rev-parse", "--verify", "--quiet", ref]).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) await git(cwd, ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${name}:${ref}`]);
+  return ref;
+}

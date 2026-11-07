@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { ChangeRequest } from "./code-host.js";
 import type { ModelRef, ProjectConfig } from "./config.js";
 import { copyOutOfCommit, type QueuedTask, StateDoc, type StepRuntime } from "./durable.js";
-import { defaultBranch, git } from "./git.js";
+import { git, remoteDefaultRef } from "./git.js";
 import { StageBlocked } from "./implement-stage.js";
 import { redactSecrets } from "./secrets.js";
 import { assertFactoryWorktree, confine } from "./workspace.js";
@@ -97,7 +97,7 @@ export async function runReview(opts: {
     );
   const base =
     progress.baseHead ??
-    (await git(cwd, ["merge-base", "HEAD", `origin/${progress.defaultBranch ?? (await defaultBranch(cwd))}`])).trim();
+    (await git(cwd, ["merge-base", "HEAD", await remoteDefaultRef(cwd, progress.defaultBranch)])).trim();
   const diff = await git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--"]);
   if (diff.length > 120_000)
     throw new StageBlocked("diff excede o limite de review integral; divida a entrega antes de publicar");
