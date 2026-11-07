@@ -361,6 +361,48 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
     expect(factory.codeHost.pushed).toEqual([]);
   });
 
+  it("retoma baseline bloqueado após corrigir o ambiente e revalida antes de chamar o implementador", async () => {
+    const repo = await createRemoteRepo(root, "app");
+    const flag = join(root, "ambiente-quebrado");
+    const wrapper = join(root, "testar.mjs");
+    await writeFile(flag, "");
+    await writeFile(
+      wrapper,
+      `import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (existsSync(${JSON.stringify(flag)})) process.exit(1);
+process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).status ?? 1);
+`,
+    );
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      config: { repositories: [mapping(repo, { test: { ...NODE_TEST, command: [process.execPath, wrapper] } })] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    // Retomar sem corrigir o ambiente mede de novo e continua bloqueando, sem chamar o modelo.
+    const blockedCount = async () =>
+      (await events(factory as TestFactory)).filter((e) => e.type === "task" && e.status === "bloqueada").length;
+    const previousBlocks = await blockedCount();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await eventually(async () => expect(await blockedCount()).toBeGreaterThan(previousBlocks));
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await repo.branches()).toEqual(["main"]);
+    await rm(flag);
+    factory = await factory.restart();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
+  });
+
   it("código que não faz os testes passarem é recusado até o limite: a Tarefa bloqueia e nada é enviado", async () => {
     const repo = await createRemoteRepo(root, "app");
     const model = new FakeModel();

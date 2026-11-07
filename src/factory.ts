@@ -1175,6 +1175,19 @@ export async function startFactory(opts: {
       updateTask(id, (task) => {
         task.pauseRequested = false;
         if (task.status === "pausada") task.status = "enfileirada";
+        // O usuário corrigiu o ambiente: nova tentativa mede o baseline, sem aceitar o vermelho como TDD.
+        if (
+          task.status === "bloqueada" &&
+          task.stage === "implementacao" &&
+          task.implementation?.baseline === "vermelha" &&
+          task.implementation.commits.length === 0
+        ) {
+          task.implementation.baseline = null;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
       }),
     async cancel(id: string) {
       let durableId: number | null = null;
