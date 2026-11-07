@@ -91,47 +91,76 @@ body {
 .quadro {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(250px, 1fr);
+  grid-auto-columns: minmax(260px, 1fr);
   gap: 0.75rem;
   overflow-x: auto;
   padding-bottom: 0.5rem;
   align-items: start;
 }
 
+/* Cor de cada etapa: cabeçalho em pílula tingida, ponto e borda do cartão. */
 .coluna {
-  background: color-mix(in srgb, var(--borda) 25%, var(--fundo));
-  border-radius: 10px;
-  padding: 0.5rem;
+  --etapa: var(--suave);
+  border-radius: 12px;
+  padding: 0.4rem;
   min-height: 60vh;
+  background: color-mix(in srgb, var(--etapa) 5%, var(--fundo));
+}
+
+.coluna[data-coluna="spec"] {
+  --etapa: #7c4dff;
+}
+
+.coluna[data-coluna="implementacao"] {
+  --etapa: #e8a400;
+}
+
+.coluna[data-coluna="review"] {
+  --etapa: #e8590c;
+}
+
+.coluna[data-coluna="entrega"] {
+  --etapa: var(--destaque);
+}
+
+.coluna[data-coluna="encerradas"] {
+  --etapa: var(--ok);
 }
 
 .coluna h3 {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  margin: 0.15rem 0.25rem 0.6rem;
+  gap: 0.45rem;
+  margin: 0 0 0.5rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
   font-size: 0.85rem;
+  background: color-mix(in srgb, var(--etapa) 16%, var(--superficie));
+  position: sticky;
+  top: 0;
 }
 
 .ponto {
-  width: 0.6rem;
-  height: 0.6rem;
+  width: 0.65rem;
+  height: 0.65rem;
   border-radius: 50%;
-  border: 2px solid var(--suave);
+  border: 2px solid var(--etapa);
+  background: linear-gradient(90deg, var(--etapa) 50%, transparent 50%);
 }
 
-.coluna[data-coluna="implementacao"] .ponto,
-.coluna[data-coluna="review"] .ponto {
-  border-color: var(--alerta);
-}
-
-.coluna[data-coluna="entrega"] .ponto {
-  border-color: var(--destaque);
+.coluna[data-coluna="triagem"] .ponto {
+  background: none;
 }
 
 .coluna[data-coluna="encerradas"] .ponto {
-  border-color: var(--ok);
-  background: var(--ok);
+  background: var(--etapa);
+}
+
+.coluna-vazia {
+  margin: 1rem 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--suave);
 }
 
 .gaveta {
@@ -169,17 +198,22 @@ body {
 
 .cartao {
   display: grid;
-  gap: 0.2rem;
-  padding: 0.55rem 0.65rem;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
   border: 1px solid var(--borda);
-  border-radius: 8px;
-  background: var(--fundo);
+  border-radius: 10px;
+  background: var(--superficie);
   color: inherit;
   text-decoration: none;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  transition:
+    box-shadow 0.15s,
+    border-color 0.15s;
 }
 
 .cartao:hover {
-  border-color: var(--destaque);
+  border-color: color-mix(in srgb, var(--etapa) 60%, var(--borda));
+  box-shadow: 0 3px 10px rgb(0 0 0 / 10%);
 }
 
 .cartao.selecionada {
@@ -187,16 +221,69 @@ body {
   box-shadow: inset 3px 0 0 var(--destaque);
 }
 
+.cartao.sua-vez {
+  box-shadow:
+    inset 3px 0 0 var(--alerta),
+    0 1px 2px rgb(0 0 0 / 6%);
+}
+
+.cartao .cabeca {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--suave);
+}
+
+.cartao .projeto {
+  padding: 0 0.4rem;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+}
+
 .cartao .titulo {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  font-weight: 500;
 }
 
-.cartao .chave {
+.situacao {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  vertical-align: 0.05rem;
+  background: var(--alerta);
+}
+
+.situacao.ativa,
+.situacao.na-fila {
+  background: var(--destaque);
+}
+
+.situacao.bloqueada,
+.situacao.cancelada {
+  background: var(--perigo);
+}
+
+.situacao.concluida {
+  background: var(--ok);
+}
+
+.cartao .dica {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.78rem;
+  color: var(--alerta);
+}
+
+.cartao .tentativas {
+  margin-left: auto;
   font-size: 0.75rem;
-  color: var(--suave);
 }
 
 .cartao .meta {
