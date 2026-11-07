@@ -42,7 +42,7 @@ import {
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
-import { git } from "./git.js";
+import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
 import {
   baselineBlockedReason,
@@ -328,9 +328,7 @@ export async function startFactory(opts: {
             return false;
           if (p.config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== p.config.dryRun))
             return false;
-          const base =
-            progress.defaultBranch ??
-            (await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).trim().replace(/^origin\//, "");
+          const base = progress.defaultBranch ?? (await defaultBranch(cwd));
           return (
             draft.base === base &&
             (await git(cwd, ["rev-parse", "HEAD"])).trim() === task.review.head &&
