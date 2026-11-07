@@ -132,6 +132,8 @@ describe("retrô por etapa e consolidada", () => {
     expect(retros.map((r) => [r.stage, r.status])).toEqual([
       ["spec", "concluida"],
       ["implementacao", "concluida"],
+      ["review", "concluida"],
+      ["mr", "concluida"],
       ["tarefa", "concluida"],
     ]);
     expect(model.retroCalls[1]?.input).toMatch(/commits aceitos: 2/);

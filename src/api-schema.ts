@@ -298,7 +298,12 @@ export const API_SCHEMA = {
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          {
+            name: "stage",
+            in: "path",
+            required: true,
+            schema: { enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"] },
+          },
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         responses: {
@@ -332,7 +337,12 @@ export const API_SCHEMA = {
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          {
+            name: "stage",
+            in: "path",
+            required: true,
+            schema: { enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"] },
+          },
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         requestBody: {
@@ -427,11 +437,12 @@ export const API_SCHEMA = {
               "bloqueada",
               "vetada",
               "recusada",
+              "aguardando-entrega",
             ],
           },
           stage: {
             description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
-            enum: ["triagem", "assumir", "veto", "spec", "implementacao", null],
+            enum: ["triagem", "assumir", "veto", "spec", "implementacao", "review", "entrega", null],
           },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
@@ -440,7 +451,10 @@ export const API_SCHEMA = {
       Retro: {
         type: "object",
         properties: {
-          stage: { enum: ["spec", "implementacao", "tarefa"], description: "tarefa: a retrô consolidada" },
+          stage: {
+            enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"],
+            description: "tarefa: a retrô consolidada",
+          },
           status: {
             enum: ["em-andamento", "concluida", "falhou"],
             description: "falhou: desistiu depois das tentativas, sem bloquear a tarefa",
@@ -542,6 +556,8 @@ export const API_SCHEMA = {
                   pushed: { type: "boolean" },
                 },
               },
+              review: { type: ["object", "null"], description: "Review independente do HEAD antes da publicação" },
+              publication: { type: ["object", "null"], description: "PR/MR acompanhado até merge humano" },
               retros: {
                 type: "array",
                 description: "Retrôs das etapas de modelo (spec, implementacao) e a consolidada (tarefa), na ordem",

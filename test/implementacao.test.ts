@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
 import { AUTOMATION_MARK } from "../src/effect-writer.js";
+import { createHostTestRunner } from "../src/test-runner.js";
 import { FakeModel, type SpecDelivery, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
 import {
@@ -369,6 +370,105 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
     expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
     expect(await repo.branches()).toEqual(["main"]);
     expect(factory.codeHost.pushed).toEqual([]);
+  });
+
+  it("recupera dependências ausentes pelo lockfile antes do TDD sem intervenção humana", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      files: {
+        "package.json": '{"name":"app","private":true}\n',
+        "package-lock.json": '{"name":"app","lockfileVersion":3,"packages":{}}\n',
+        ".gitignore": "node_modules/\n",
+      },
+    });
+    const wrapper = join(root, "testar.mjs");
+    await writeFile(
+      wrapper,
+      `import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (!existsSync("node_modules/pronto")) {
+  console.error("Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'vitest' imported from vitest.config.ts");
+  process.exit(1);
+}
+process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).status ?? 1);
+`,
+    );
+    const setupCommands: string[][] = [];
+    const host = createHostTestRunner();
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    const before = await repo.userSnapshot();
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      testRunner: {
+        async run(request) {
+          if (request.command[0] !== "npm") return host.run(request);
+          setupCommands.push([...request.command]);
+          await mkdir(join(request.cwd, "node_modules"));
+          await writeFile(join(request.cwd, "node_modules", "pronto"), "");
+          return { exitCode: 0, timedOut: false, output: "installed" };
+        },
+      },
+      config: { repositories: [mapping(repo, { test: { ...NODE_TEST, command: [process.execPath, wrapper] } })] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", 3000);
+    expect(setupCommands).toEqual([["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]]);
+    expect(await repo.userSnapshot()).toBe(before);
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
+    const detail = await api<{ implementation: { environmentRecovery: { status: string; attempts: number } } }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1",
+    );
+    expect(detail.implementation.environmentRecovery).toMatchObject({ status: "recuperado", attempts: 1 });
+  });
+
+  it("limita recuperação malsucedida mesmo após reinício e não trata ambiente quebrado como RED", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      files: {
+        "package.json": '{"name":"app","private":true}\n',
+        "package-lock.json": '{"name":"app","lockfileVersion":3,"packages":{}}\n',
+        ".gitignore": "node_modules/\n",
+      },
+    });
+    let installs = 0;
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      testRunner: {
+        async run(request) {
+          if (request.command[0] === "npm") {
+            installs++;
+            return { exitCode: 1, timedOut: false, output: "registry indisponível" };
+          }
+          return { exitCode: 1, timedOut: false, output: "Cannot find package 'vitest'" };
+        },
+      },
+      config: { repositories: [mapping(repo)] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada");
+    const detail = await api<{ implementation: { environmentRecovery: { status: string; diagnostic: string } } }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1",
+    );
+    expect(detail.implementation.environmentRecovery).toMatchObject({
+      status: "falhou",
+      diagnostic: expect.stringContaining("registry indisponível"),
+    });
+    factory = await factory.restart();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "bloqueada");
+    expect(installs).toBe(1);
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await repo.branches()).toEqual(["main"]);
   });
 
   it.each([false, true])("preserva reparo versionado pendente na retomada (staged: %s)", async (staged) => {

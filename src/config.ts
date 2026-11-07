@@ -16,6 +16,8 @@ export type CardState = z.infer<typeof CardState>;
 export const ModelRef = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
+  /** Família explícita para modelos cujo nome não identifica a linhagem (ex.: aliases privados). */
+  family: z.string().min(1).optional(),
 });
 export type ModelRef = z.infer<typeof ModelRef>;
 
@@ -176,6 +178,8 @@ export const ProjectConfig = z.object({
     triage: ModelRef.optional(),
     /** Implementação com TDD. Sem ele, usa o modelo de `spec`. */
     implementer: ModelRef.optional(),
+    /** Review obrigatório antes da publicação; família diferente da implementação, sem fallback. */
+    reviewer: ModelRef.optional(),
     /** Retrô de cada etapa e consolidada. Sem ele, usa o modelo de `spec`. */
     retro: ModelRef.optional(),
   }),

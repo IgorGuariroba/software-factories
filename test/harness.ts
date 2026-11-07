@@ -33,7 +33,6 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
     retroApproval: false,
     announceAssume: true,
     source: { type: "jira", project: "PROJ", assignee: USER },
-    roles: { spec: { provider: FakeModel.PROVIDER, model: "spec-a" } },
     people: [{ id: PO, role: "po" }],
     vetoMinutes: 30,
     calendar: {
@@ -53,6 +52,11 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
       Concluído: "done",
     },
     ...overrides,
+    roles: {
+      spec: { provider: FakeModel.PROVIDER, model: "spec-a", family: "implementer-fake" },
+      reviewer: { provider: FakeModel.PROVIDER, model: "spec-b", family: "reviewer-fake" },
+      ...overrides.roles,
+    },
   };
 }
 

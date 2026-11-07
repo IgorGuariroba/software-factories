@@ -61,6 +61,13 @@ export const deliverSpec = (delivery: SpecDelivery): AssistantMessage =>
 export const askPo = (pergunta: string): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall("perguntar_po", { pergunta })], { stopReason: "toolUse" });
 
+export const deliverReview = (
+  status: "aprovado" | "corrigir",
+  resumo: string,
+  correcoes: SpecDelivery["tickets"] = [],
+): AssistantMessage =>
+  fauxAssistantMessage([fauxToolCall("entregar_review", { status, resumo, correcoes })], { stopReason: "toolUse" });
+
 /** Uma proposta da retrô, como o modelo a entrega pela ferramenta `entregar_retro`. */
 export type RetroProposal = {
   tipo: "fabrica" | "conhecimento" | "repo-time";
@@ -89,6 +96,9 @@ export class FakeModel {
    * deve mudar o que os testes das outras etapas contam.
    */
   readonly retroCalls: ModelCall[] = [];
+  readonly reviewCalls: ModelCall[] = [];
+  respondReview: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () =>
+    deliverReview("aprovado", "SPEC atendida e padrões respeitados.");
   /** Como responder à retrô. Padrão: uma retrô sem propostas. */
   respondRetro: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () =>
     deliverRetro("Sem observações.");
@@ -117,6 +127,10 @@ export class FakeModel {
       if (call.tools.includes("entregar_retro")) {
         this.retroCalls.push(call);
         return this.respondRetro(call);
+      }
+      if (call.tools.includes("entregar_review")) {
+        this.reviewCalls.push(call);
+        return this.respondReview(call);
       }
       this.calls.push(call);
       return this.respond(call);
