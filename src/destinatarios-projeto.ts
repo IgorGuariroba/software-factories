@@ -10,7 +10,9 @@ export interface OpcoesNotificadorDoProjeto {
 /** Autorização por identidade exata, compartilhada pelos canais do projeto. */
 export function validarDestinatarioDoProjeto(permitidos: readonly string[], userId: string): void {
   if (!userId.trim() || !permitidos.includes(userId)) {
-    throw new Error(`Envio bloqueado: destinatário ${JSON.stringify(userId)} não pertence à lista de pessoas do projeto.`);
+    throw new Error(
+      `Envio bloqueado: destinatário ${JSON.stringify(userId)} não pertence à lista de pessoas do projeto.`,
+    );
   }
 }
 

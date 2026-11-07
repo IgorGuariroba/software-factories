@@ -63,9 +63,13 @@ const askTool = defineTool({
 
 const askTechnicalTool = defineTool({
   name: ASK_TECHNICAL_TOOL,
-  description: "Pergunta ao usuário do projeto uma dúvida técnica necessária para continuar. A tarefa aguarda a resposta na web ou no Telegram.",
+  description:
+    "Pergunta ao usuário do projeto uma dúvida técnica necessária para continuar. A tarefa aguarda a resposta na web ou no Telegram.",
   parameters: obj({ pergunta: str({ description: "Dúvida técnica objetiva e autocontida, em português do Brasil." }) }),
-  execute: async () => ({ output: [{ type: "text", text: "Pergunta técnica recebida para publicação." }], control: { terminate: true } }),
+  execute: async () => ({
+    output: [{ type: "text", text: "Pergunta técnica recebida para publicação." }],
+    control: { terminate: true },
+  }),
 });
 
 export const SpecExtension = defineExtension({ name: "fabrica.spec", tools: [deliverTool, askTool, askTechnicalTool] });
@@ -181,7 +185,9 @@ export const renderTickets = (tickets: SpecDelivery["tickets"]) =>
   tickets.map((t, i) => `- [ ] **${i + 1}. ${t.titulo}**: ${t.aceite}`).join("\n");
 
 /** O que o grill devolveu: a entrega, ou uma pergunta ao PO. */
-export type GrillOutcome = { kind: "spec"; delivery: SpecDelivery } | { kind: "question"; text: string; technical?: boolean };
+export type GrillOutcome =
+  | { kind: "spec"; delivery: SpecDelivery }
+  | { kind: "question"; text: string; technical?: boolean };
 
 /**
  * Pede a SPEC ao modelo numa conversa que pertence à Tarefa. A conversa e cada pedido têm identidade fixa
@@ -240,12 +246,18 @@ export async function requestSpec(opts: {
     if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
     const call = message.content.find(
       (block): block is { type: "toolCall"; name: string; arguments: unknown } =>
-        block?.type === "toolCall" && (block.name === DELIVER_TOOL || block.name === ASK_TOOL || block.name === ASK_TECHNICAL_TOOL),
+        block?.type === "toolCall" &&
+        (block.name === DELIVER_TOOL || block.name === ASK_TOOL || block.name === ASK_TECHNICAL_TOOL),
     );
     if (!call) continue;
     if (call.name === ASK_TOOL || call.name === ASK_TECHNICAL_TOOL) {
       const pergunta = (call.arguments as { pergunta?: unknown } | undefined)?.pergunta;
-      if (typeof pergunta === "string" && pergunta.trim()) return { kind: "question", text: pergunta.trim(), ...(call.name === ASK_TECHNICAL_TOOL ? { technical: true } : {}) };
+      if (typeof pergunta === "string" && pergunta.trim())
+        return {
+          kind: "question",
+          text: pergunta.trim(),
+          ...(call.name === ASK_TECHNICAL_TOOL ? { technical: true } : {}),
+        };
       throw new Error(`pergunta inválida da etapa SPEC: ${ASK_TOOL} sem o texto da pergunta`);
     }
     const parsed = Delivery.safeParse(call.arguments);

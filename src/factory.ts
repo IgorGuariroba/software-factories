@@ -21,8 +21,6 @@ import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
-import { respostaNaoSei } from "./resposta-tecnica.js";
-import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhamento-tecnico.js";
 import {
   copyOutOfCommit,
   createTarefaTask,
@@ -43,6 +41,7 @@ import {
   type TriageRecord,
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
+import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhamento-tecnico.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
@@ -50,6 +49,7 @@ import { type ManagementInterface, startManagementBridge } from "./management.js
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
+import { respostaNaoSei } from "./resposta-tecnica.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import { redactSecrets } from "./secrets.js";
@@ -373,19 +373,28 @@ export async function startFactory(opts: {
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
         const current = (await readState()).tasks.find((task) => task.id === input.id);
-        const repository = current?.repositoryPath !== undefined
-          ? project.config.repositories?.find((candidate) => candidate.path === current.repositoryPath)
-          : resolveRepository(project.config.repositories, card);
+        const repository =
+          current?.repositoryPath !== undefined
+            ? project.config.repositories?.find((candidate) => candidate.path === current.repositoryPath)
+            : resolveRepository(project.config.repositories, card);
         if (project.config.repositories?.length && !repository) {
           if (current && pendingQuestion(current)) return "aguardar";
           // Registrar a resolução recusada preserva a auditoria, mas não encerra
           // uma Tarefa que pode obter a decisão pelo fluxo técnico existente.
           await events.append({
-            type: "blocked", project: input.project, target: input.key,
-            action: "resolver-repositorio", content: card.title,
+            type: "blocked",
+            project: input.project,
+            target: input.key,
+            action: "resolver-repositorio",
+            content: card.title,
             reason: `nenhum repositório mapeado para o card ${input.key}; necessária decisão humana no projeto ${input.project}`,
           });
-          await ask(current?.questions ?? [], repositoryQuestion(card, project.config.repositories), "tecnica", "repositorio");
+          await ask(
+            current?.questions ?? [],
+            repositoryQuestion(card, project.config.repositories),
+            "tecnica",
+            "repositorio",
+          );
           return "aguardar";
         }
         await runImplementation({
@@ -590,9 +599,12 @@ export async function startFactory(opts: {
             knowledge: await readKnowledge(project.knowledgeDir),
             answered,
           }),
-          followUp: last && questions.at(-1)?.origin === "tecnica"
-            ? `Resposta do usuário à pergunta técnica "${last.text}":\n\n${last.answer}\n\nSiga com a SPEC.`
-            : last && questions.at(-1)?.origin === "grill" ? answerFollowUp(last) : undefined,
+          followUp:
+            last && questions.at(-1)?.origin === "tecnica"
+              ? `Resposta do usuário à pergunta técnica "${last.text}":\n\n${last.answer}\n\nSiga com a SPEC.`
+              : last && questions.at(-1)?.origin === "grill"
+                ? answerFollowUp(last)
+                : undefined,
         });
         if (outcome.kind === "question") {
           await ask(questions, outcome.text, outcome.technical ? "tecnica" : "grill");
@@ -661,16 +673,26 @@ export async function startFactory(opts: {
       }
 
       /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */
-      async function ask(previous: Question[], text: string, origin: Question["origin"], purpose?: Question["purpose"]): Promise<void> {
+      async function ask(
+        previous: Question[],
+        text: string,
+        origin: Question["origin"],
+        purpose?: Question["purpose"],
+      ): Promise<void> {
         const tecnica = origin === "tecnica";
         if (tecnica) {
           try {
-            validarDestinatarioDoProjeto(project.config.people.map((p) => p.id), project.config.source.assignee);
+            validarDestinatarioDoProjeto(
+              project.config.people.map((p) => p.id),
+              project.config.source.assignee,
+            );
           } catch (erro) {
             throw new StageBlocked((erro as Error).message);
           }
         }
-        const po = project.config.people.find((p) => tecnica ? p.id === project.config.source.assignee : p.role === "po");
+        const po = project.config.people.find((p) =>
+          tecnica ? p.id === project.config.source.assignee : p.role === "po",
+        );
         if (!po)
           throw new StageBlocked(`o grill precisa perguntar ao PO, mas o projeto ${input.project} não declara um`);
         if (!tecnica && po.teamsUserId && (!project.config.source.baseUrl || !opts.teams))
@@ -680,9 +702,10 @@ export async function startFactory(opts: {
             `o grill já fez ${MAX_PO_QUESTIONS} perguntas ao PO e ainda quer perguntar: "${text}"`,
           );
         const n = previous.length + 1;
-        const ref = tecnica || project.config.questionApproval
-          ? { card: input.key, to: po.id, before: [] }
-          : await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
+        const ref =
+          tecnica || project.config.questionApproval
+            ? { card: input.key, to: po.id, before: [] }
+            : await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
         const askedAt = clock.now();
         const { calendar } = project.config;
         const question: Question = {
@@ -693,7 +716,9 @@ export async function startFactory(opts: {
           text,
           ref,
           askedAt,
-          remindAt: tecnica ? prazoPerguntaTecnica(askedAt) : addBusinessHours(calendar, askedAt, REMINDER_BUSINESS_HOURS),
+          remindAt: tecnica
+            ? prazoPerguntaTecnica(askedAt)
+            : addBusinessHours(calendar, askedAt, REMINDER_BUSINESS_HOURS),
           notifyAt: addBusinessHours(calendar, askedAt, workdayHours(calendar)),
           reminded: false,
           notified: false,
@@ -908,13 +933,17 @@ export async function startFactory(opts: {
     const task = (await readState()).tasks.find((t) => t.id === id);
     if (!task) return;
     const project = projectOf(task.project);
-    await encaminharPerguntaTecnica({
-      config: project.config,
-      channel: project.channel,
-      events: eventRecorder,
-      now: clock.now,
-      commit: (change) => harness.commit(async (tx) => change(await tx.doc(StateDoc)), context),
-    }, id, n);
+    await encaminharPerguntaTecnica(
+      {
+        config: project.config,
+        channel: project.channel,
+        events: eventRecorder,
+        now: clock.now,
+        commit: (change) => harness.commit(async (tx) => change(await tx.doc(StateDoc)), context),
+      },
+      id,
+      n,
+    );
   }
 
   /** Altera uma pergunta registrada no estado durável. */
@@ -1188,9 +1217,11 @@ export async function startFactory(opts: {
           q.needsForwarding = false;
         }
         return {
-          project: task.project, target: task.key, to: q.to,
+          project: task.project,
+          target: task.key,
+          to: q.to,
           text: encaminhar ? resposta : q.text,
-          status: encaminhar ? "encaminhar" as const : "respondida" as const,
+          status: encaminhar ? ("encaminhar" as const) : ("respondida" as const),
         };
       }, context);
       if (!recorded) return false;
@@ -1460,8 +1491,7 @@ export async function startFactory(opts: {
         const n = Number(answerRoute[3]);
         const id = `${project}/${key}`;
         const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task?.questions?.some((q) => q.n === n))
-          return json(res, 404, { error: "pergunta não encontrada" });
+        if (!task?.questions?.some((q) => q.n === n)) return json(res, 404, { error: "pergunta não encontrada" });
         // Web e Telegram usam a mesma classificação e o mesmo despertar atômico.
         const ok = await commands.answerQuestion?.(id, n, body.answer.trim());
         return ok

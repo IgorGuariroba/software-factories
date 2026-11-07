@@ -4,9 +4,7 @@ import type { Channel } from "../src/channel.js";
 import { FakeClock } from "./fakes/fake-clock.js";
 import { DEFAULT_SPEC, deliverSpec, FakeModel } from "./fakes/fake-model.js";
 import { FakeTelegram } from "./fakes/fake-telegram.js";
-import {
-  api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus,
-} from "./harness.js";
+import { api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
 
 // Observa a porta Channel, mas mantém seu adaptador real e o escritor de efeitos:
 // o teste confere tanto o destinatário escolhido quanto a escrita externa efetiva.
@@ -48,9 +46,7 @@ async function iniciar(inicio = "2025-06-10T10:00:00-03:00") {
   model.respond = () => {
     if (perguntou) return deliverSpec(DEFAULT_SPEC);
     perguntou = true;
-    return fauxAssistantMessage([
-      fauxToolCall("perguntar_tecnico", { pergunta: PERGUNTA }),
-    ], { stopReason: "toolUse" });
+    return fauxAssistantMessage([fauxToolCall("perguntar_tecnico", { pergunta: PERGUNTA })], { stopReason: "toolUse" });
   };
   const people = [
     { id: USER, role: "po" as const },
@@ -58,12 +54,17 @@ async function iniciar(inicio = "2025-06-10T10:00:00-03:00") {
   ];
   factory = await startTestFactory({
     cards: [{ key: "PROJ-1", title: "Conexão com banco", status: "A Fazer", assignee: USER }],
-    model, clock, telegram,
+    model,
+    clock,
+    telegram,
     config: {
       people,
       calendar: {
-        timezone: "America/Sao_Paulo", workdays: ["mon", "tue", "wed", "thu", "fri"],
-        start: "09:00", end: "18:00", holidays: [],
+        timezone: "America/Sao_Paulo",
+        workdays: ["mon", "tue", "wed", "thu", "fri"],
+        start: "09:00",
+        end: "18:00",
+        holidays: [],
       },
     },
   });
@@ -83,9 +84,15 @@ async function responder(f: TestFactory, telegram: FakeTelegram, canal: string, 
   } else {
     const comando = `/responder exemplo/PROJ-1 1 ${texto}`;
     telegram.say(comando);
-    await eventually(async () => expect(await events(f)).toContainEqual(expect.objectContaining({
-      type: "command", accepted: true, text: comando,
-    })));
+    await eventually(async () =>
+      expect(await events(f)).toContainEqual(
+        expect.objectContaining({
+          type: "command",
+          accepted: true,
+          text: comando,
+        }),
+      ),
+    );
   }
 }
 
@@ -130,23 +137,28 @@ describe("encaminhamento de pergunta técnica ao tech lead", () => {
   it.each([
     {
       nome: "dentro do expediente",
-      inicio: "2025-06-10T10:00:00-03:00", prazo: "2025-06-10T12:00:00-03:00",
+      inicio: "2025-06-10T10:00:00-03:00",
+      prazo: "2025-06-10T12:00:00-03:00",
     },
     {
       nome: "início antes do expediente",
-      inicio: "2025-06-10T07:00:00-03:00", prazo: "2025-06-10T11:00:00-03:00",
+      inicio: "2025-06-10T07:00:00-03:00",
+      prazo: "2025-06-10T11:00:00-03:00",
     },
     {
       nome: "passagem de expediente e feriado estadual de SP",
-      inicio: "2025-07-08T17:00:00-03:00", prazo: "2025-07-10T10:00:00-03:00",
+      inicio: "2025-07-08T17:00:00-03:00",
+      prazo: "2025-07-10T10:00:00-03:00",
     },
     {
       nome: "fim de semana e feriado municipal de Mogi",
-      inicio: "2025-08-29T17:00:00-03:00", prazo: "2025-09-02T10:00:00-03:00",
+      inicio: "2025-08-29T17:00:00-03:00",
+      prazo: "2025-09-02T10:00:00-03:00",
     },
     {
       nome: "feriado nacional de Natal",
-      inicio: "2025-12-24T17:00:00-03:00", prazo: "2025-12-26T10:00:00-03:00",
+      inicio: "2025-12-24T17:00:00-03:00",
+      prazo: "2025-12-26T10:00:00-03:00",
     },
   ])("sem resposta, encaminha só ao completar 120 minutos úteis: $nome", async ({ inicio, prazo }) => {
     const { f, clock } = await iniciar(inicio);
@@ -161,36 +173,46 @@ describe("encaminhamento de pergunta técnica ao tech lead", () => {
     await conferirEncaminhamento(f);
   });
 
-  it.each(["web", "telegram"])("resposta resolutiva pela %s antes do limite impede a escalada por prazo", async (canal) => {
-    const { f, clock, telegram } = await iniciar();
-    clock.advanceTo("2025-06-10T11:59:59.999-03:00");
-    await responder(f, telegram, canal, "PostgreSQL 16 com TLS obrigatório.");
-    await waitForStatus(f, "PROJ-1", "concluida");
+  it.each(["web", "telegram"])(
+    "resposta resolutiva pela %s antes do limite impede a escalada por prazo",
+    async (canal) => {
+      const { f, clock, telegram } = await iniciar();
+      clock.advanceTo("2025-06-10T11:59:59.999-03:00");
+      await responder(f, telegram, canal, "PostgreSQL 16 com TLS obrigatório.");
+      await waitForStatus(f, "PROJ-1", "concluida");
 
-    clock.advanceTo("2025-06-10T12:00:00-03:00");
-    await settle();
-    await poll(f);
-    clock.advanceTo("2025-06-11T18:00:00-03:00");
-    await settle();
+      clock.advanceTo("2025-06-10T12:00:00-03:00");
+      await settle();
+      await poll(f);
+      clock.advanceTo("2025-06-11T18:00:00-03:00");
+      await settle();
 
-    expect(encaminhamentos()).toEqual([]);
-    expect(f.source.commentsOf("PROJ-1").filter((c) => /encaminha|tech.?lead/i.test(c.body))).toEqual([]);
-  });
+      expect(encaminhamentos()).toEqual([]);
+      expect(f.source.commentsOf("PROJ-1").filter((c) => /encaminha|tech.?lead/i.test(c.body))).toEqual([]);
+    },
+  );
 
-  it.each(["não sei", "prazo"])("sem tech lead nas pessoas do projeto, bloqueia %s com aviso e não envia a outro destinatário", async (motivo) => {
-    const { f, clock, telegram, people, escrever } = await iniciar();
-    // Revoga a pessoa depois da disponibilização, antes de surgir a necessidade de envio.
-    people.splice(1, 1);
-    if (motivo === "não sei") await responder(f, telegram, "web", "não sei");
-    else clock.advanceTo("2025-06-10T12:00:00-03:00");
+  it.each(["não sei", "prazo"])(
+    "sem tech lead nas pessoas do projeto, bloqueia %s com aviso e não envia a outro destinatário",
+    async (motivo) => {
+      const { f, clock, telegram, people, escrever } = await iniciar();
+      // Revoga a pessoa depois da disponibilização, antes de surgir a necessidade de envio.
+      people.splice(1, 1);
+      if (motivo === "não sei") await responder(f, telegram, "web", "não sei");
+      else clock.advanceTo("2025-06-10T12:00:00-03:00");
 
-    await eventually(() => {
-      expect(telegram.texts().some((texto) =>
-        /bloquead/i.test(texto) && /tech.?lead|líder técnico/i.test(texto) && /projeto/i.test(texto),
-      )).toBe(true);
-    });
-    expect(perguntasNoChannel).not.toHaveBeenCalled();
-    expect(escrever).not.toHaveBeenCalled();
-    expect(f.source.commentsOf("PROJ-1").some((c) => c.body.includes(PERGUNTA))).toBe(false);
-  });
+      await eventually(() => {
+        expect(
+          telegram
+            .texts()
+            .some(
+              (texto) => /bloquead/i.test(texto) && /tech.?lead|líder técnico/i.test(texto) && /projeto/i.test(texto),
+            ),
+        ).toBe(true);
+      });
+      expect(perguntasNoChannel).not.toHaveBeenCalled();
+      expect(escrever).not.toHaveBeenCalled();
+      expect(f.source.commentsOf("PROJ-1").some((c) => c.body.includes(PERGUNTA))).toBe(false);
+    },
+  );
 });

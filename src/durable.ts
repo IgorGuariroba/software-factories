@@ -9,8 +9,8 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { QuestionRef } from "./channel.js";
-import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { CardState, TestCommand } from "./config.js";
+import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TriageResult } from "./triage.js";
@@ -566,7 +566,12 @@ export function createTarefaTask(steps: TarefaSteps) {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
       // A resposta chegou e é a vez desta Tarefa: volta à etapa que esperava (triagem ou SPEC).
       if (queued.status === "ativa" && !awaitsHuman(queued))
-        return { status: "running", checkpoint: { phase: queued.stage === "triagem" ? "triar" : queued.stage === "implementacao" ? "implementar" : "spec" } };
+        return {
+          status: "running",
+          checkpoint: {
+            phase: queued.stage === "triagem" ? "triar" : queued.stage === "implementacao" ? "implementar" : "spec",
+          },
+        };
       if (queued.status === "ativa") queued.status = "aguardando-humano";
       const until = pendingQuestion(queued) && wakeAt !== null ? wakeAt : runtime.now() + TEN_YEARS_MS;
       const gate = await tx.createTask(DeadlineGateTask, { until }, { ownership: { kind: "task", taskId: task.id } });

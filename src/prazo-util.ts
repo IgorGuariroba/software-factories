@@ -21,10 +21,7 @@ function calendarioLocal(instante: number): number {
   const partes = formatoLocal.formatToParts(new Date(instante));
   const valor = (tipo: Intl.DateTimeFormatPartTypes): number =>
     Number(partes.find((parte) => parte.type === tipo)?.value);
-  return Date.UTC(
-    valor("year"), valor("month") - 1, valor("day"),
-    valor("hour"), valor("minute"), valor("second"),
-  );
+  return Date.UTC(valor("year"), valor("month") - 1, valor("day"), valor("hour"), valor("minute"), valor("second"));
 }
 
 function instanteLocal(dia: number, hora: number): number {
@@ -59,10 +56,18 @@ function pascoa(ano: number): number {
 
 function feriados(ano: number): Set<number> {
   const datas = [
-    [1, 1], [4, 21], [5, 1], [9, 7], [10, 12],
-    [11, 2], [11, 15], [11, 20], [12, 25], // nacionais (20/11 também observado localmente)
+    [1, 1],
+    [4, 21],
+    [5, 1],
+    [9, 7],
+    [10, 12],
+    [11, 2],
+    [11, 15],
+    [11, 20],
+    [12, 25], // nacionais (20/11 também observado localmente)
     [7, 9], // estadual de São Paulo
-    [7, 26], [9, 1], // Sant'Ana e aniversário de Mogi das Cruzes
+    [7, 26],
+    [9, 1], // Sant'Ana e aniversário de Mogi das Cruzes
   ];
   const resultado = new Set(datas.map(([mes, dia]) => Date.UTC(ano, mes - 1, dia)));
   const domingoPascoa = pascoa(ano);

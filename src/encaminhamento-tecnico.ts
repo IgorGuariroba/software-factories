@@ -38,7 +38,7 @@ export async function encaminharPerguntaTecnica(deps: Dependencias, id: string, 
     if (!q.needsForwarding && deps.now() < prazoPerguntaTecnica(q.askedAt)) return undefined;
 
     const lead = deps.config.people.find((p) => p.role === "tech_lead");
-    const reason = q.needsForwarding ? "nao-sei" as const : "prazo" as const;
+    const reason = q.needsForwarding ? ("nao-sei" as const) : ("prazo" as const);
     q.forwarding = { status: lead ? "sending" : "blocked", to: lead?.id ?? null, reason, at: deps.now() };
     // Só valores independentes do rascunho saem do commit.
     return { card: task.key, text: q.text, to: lead?.id, reason };
@@ -60,7 +60,10 @@ export async function encaminharPerguntaTecnica(deps: Dependencias, id: string, 
   }
 
   try {
-    validarDestinatarioDoProjeto(deps.config.people.map((p) => p.id), reserva.to);
+    validarDestinatarioDoProjeto(
+      deps.config.people.map((p) => p.id),
+      reserva.to,
+    );
     if (!deps.config.people.some((p) => p.id === reserva.to && p.role === "tech_lead")) {
       throw new Error("Tech lead revogado");
     }
@@ -87,7 +90,9 @@ export async function encaminharPerguntaTecnica(deps: Dependencias, id: string, 
       if (q?.forwarding) q.forwarding.status = "uncertain";
     });
     await deps.events.append({
-      type: "error", project: deps.config.name, target: reserva.card,
+      type: "error",
+      project: deps.config.name,
+      target: reserva.card,
       message: `Encaminhamento da pergunta ${n} ao tech lead não confirmado; verifique o Channel antes de reenviar.`,
     });
     return;

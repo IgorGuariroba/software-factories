@@ -49,19 +49,17 @@ describe("guardrail de destinatários do projeto", () => {
     expect(aviso).not.toContain("Cliente Sigiloso");
   });
 
-  it.each([
-    "",
-    "8:orgid:usuario-projeto-externo",
-    "usuario-projeto",
-    "8:orgid:tech-lead-projeto@outra-organizacao",
-  ])("não aceita correspondência parcial ou destinatário vazio: %j", async (userId) => {
-    const { protegido, enviar, avisar } = preparar();
+  it.each(["", "8:orgid:usuario-projeto-externo", "usuario-projeto", "8:orgid:tech-lead-projeto@outra-organizacao"])(
+    "não aceita correspondência parcial ou destinatário vazio: %j",
+    async (userId) => {
+      const { protegido, enviar, avisar } = preparar();
 
-    await expect(protegido.send({ userId, text: "Pergunta reservada" })).rejects.toThrow(/bloquead/i);
+      await expect(protegido.send({ userId, text: "Pergunta reservada" })).rejects.toThrow(/bloquead/i);
 
-    expect(enviar).not.toHaveBeenCalled();
-    expect(avisar).toHaveBeenCalledTimes(1);
-  });
+      expect(enviar).not.toHaveBeenCalled();
+      expect(avisar).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("lista vazia bloqueia por padrão, em vez de desativar a validação", async () => {
     const enviar = vi.fn<TeamsNotifier["send"]>().mockResolvedValue(undefined);
