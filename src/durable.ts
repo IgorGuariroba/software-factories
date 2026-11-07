@@ -235,6 +235,8 @@ export const StateDoc = defineDoc<FactoryState>({
 export type ManagementProgress = {
   /** Próximo evento do log a publicar (índice). `null`: interface nova, começa pelos eventos que vierem. */
   eventCursor: number | null;
+  /** Avisos aguardando o expediente do respectivo projeto; sobrevivem ao reinício. */
+  deferred?: { project: string; message: { text: string; buttons?: { label: string; command: string }[] } }[];
   /** Próximo update a receber (no Telegram, o `offset` do `getUpdates`). */
   updateOffset: number;
   /** Instante do último comando ou reinício preventivo da sequência. */
@@ -325,6 +327,8 @@ export interface TarefaSteps {
   classify(err: unknown): { kind: "blocked"; reason: string } | { kind: "error"; message: string };
   onError(input: TarefaInput, message: string): Promise<void>;
   retryDelayMs: number;
+  /** Próximo instante em que o projeto pode iniciar um passo. */
+  availableAt?(input: TarefaInput): number;
 }
 
 /** Passos comuns, executados por `TarefaSteps.run`; as esperas (`aguardar`, `veto`) são tratadas pela própria task. */
@@ -475,13 +479,16 @@ export function createTarefaTask(steps: TarefaSteps) {
     await runtime.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
       const queued = findTask(state, task.input.id);
-      if (!state.daemonPaused && !queued.pauseRequested) {
+      const availableAt = steps.availableAt?.(task.input) ?? runtime.now();
+      if (!state.daemonPaused && !queued.pauseRequested && availableAt <= runtime.now()) {
         const stage = STAGE[step];
         if (stage) queued.stage = stage;
         return undefined;
       }
       const gate = await tx.createTask(GateTask, {}, { ownership: { kind: "task", taskId: task.id } });
-      queued.status = "pausada";
+      queued.status =
+        availableAt > runtime.now() && !state.daemonPaused && !queued.pauseRequested ? "enfileirada" : "pausada";
+      if (availableAt > runtime.now()) queued.notBefore = availableAt;
       queued.gateId = gate;
       gated = true;
       return { status: "waiting", checkpoint: { phase: step }, on: [gate], policy: "allSettled" };

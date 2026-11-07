@@ -27,6 +27,7 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
   return {
     name: "exemplo",
     dryRun: false,
+    activity: "always",
     questionApproval: false,
     specApproval: false,
     retroApproval: false,

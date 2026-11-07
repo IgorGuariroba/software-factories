@@ -172,7 +172,7 @@ describe("config de projeto", () => {
     });
     await fetch(`${daemon.url}/poll`, { method: "POST" });
 
-    await vi.waitFor(() => expect(telegram.texts()).toContain("Assumi o card PROJ-7 (exemplo)."));
+    await vi.waitFor(() => expect(telegram.texts()).toContain("[Pessoal] Assumi o card PROJ-7 (exemplo)."));
   });
 
   it("recusa iniciar sem nenhum projeto configurado", async () => {

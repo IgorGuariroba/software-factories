@@ -41,6 +41,37 @@ async function startWith(cards: Card[], opts: Parameters<typeof startTestFactory
 }
 
 describe("Telegram: eventos ao usuário", () => {
+  it.each([
+    ["2026-11-07T10:00:00-03:00", "2026-11-10"],
+    ["2026-11-19T18:00:00-03:00", "2026-11-23"],
+    ["2026-07-09T10:00:00-03:00", "2026-07-10"],
+    ["2026-09-01T10:00:00-03:00", "2026-09-02"],
+    ["2026-04-03T10:00:00-03:00", "2026-04-06"],
+    ["2026-06-04T10:00:00-03:00", "2026-06-05"],
+  ])("aguarda expediente a partir de %s e retoma em %s", async (start, next) => {
+    const clock = new FakeClock(start);
+    const { f } = await startWith([card("PROJ-1", "A Fazer")], {
+      clock,
+      config: {
+        activity: "business-hours",
+        calendar: {
+          timezone: "America/Sao_Paulo",
+          workdays: ["mon", "tue", "wed", "thu", "fri"],
+          start: "09:00",
+          end: "18:00",
+          holidays: ["2026-11-09"],
+        },
+      },
+    });
+    await poll(f);
+    await settle();
+    expect(f.model.calls).toHaveLength(0);
+    clock.advanceTo(new Date(`${next}T08:59:00-03:00`));
+    await settle();
+    expect(f.model.calls).toHaveLength(0);
+    clock.advanceTo(new Date(`${next}T09:00:00-03:00`));
+    await waitForStatus(f, "PROJ-1", "concluida");
+  });
   it("encaminha pergunta em dry-run e avisa quando a SPEC aguarda revisão", async () => {
     const model = new FakeModel();
     model.respond = (call) =>
@@ -53,7 +84,14 @@ describe("Telegram: eventos ao usuário", () => {
     await poll(f);
     await waitForStatus(f, "PROJ-1", "aguardando-humano");
     await eventually(() => expect(telegram.texts().join("\n")).toContain("Qual calendário usar?"));
-    telegram.say("/responder exemplo/PROJ-1 1 Dias úteis.");
+    telegram.say("/responder");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Escolha uma pergunta"));
+    telegram.say("/responder exemplo/PROJ-1 1");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Envie sua resposta"));
+    telegram.say("Dias úteis.");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Confirmar resposta para exemplo/PROJ-1"));
+    expect(model.calls).toHaveLength(1);
+    telegram.tap(telegram.button("Confirmar resposta"));
     await eventually(() =>
       expect(telegram.texts().join("\n")).toContain("SPEC de PROJ-1 (exemplo) pronta para revisão"),
     );
@@ -236,7 +274,7 @@ describe("Telegram: bloqueios e avisos", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContainEqual(
-        expect.stringMatching(/^A Tarefa PROJ-1 \(exemplo\) está bloqueada: .*não declara um/),
+        expect.stringMatching(/^\[Pessoal\] A Tarefa PROJ-1 \(exemplo\) está bloqueada: .*não declara um/),
       ),
     );
   });
@@ -253,7 +291,7 @@ describe("Telegram: bloqueios e avisos", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContainEqual(
-        expect.stringMatching(/^Guardrail bloqueou comment em PROJ-1 \(exemplo\): /),
+        expect.stringMatching(/^\[Pessoal\] Guardrail bloqueou comment em PROJ-1 \(exemplo\): /),
       ),
     );
   });
@@ -272,7 +310,9 @@ describe("Telegram: bloqueios e avisos", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContainEqual(
-        expect.stringMatching(/^Aviso: A pergunta 1 ao PO no card PROJ-1 .*DB_PASSWORD=\[segredo removido\] mesmo\?/),
+        expect.stringMatching(
+          /^\[Pessoal\] Aviso: A pergunta 1 ao PO no card PROJ-1 .*DB_PASSWORD=\[segredo removido\] mesmo\?/,
+        ),
       ),
     );
     expect(telegram.texts().join("\n")).not.toContain("2segredo");
@@ -288,7 +328,7 @@ describe("Telegram: conteúdo", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContain(
-        "Assumi o card PROJ-1 (exemplo): Configurar integração com api_key: [segredo removido]",
+        "[Pessoal] Assumi o card PROJ-1 (exemplo): Configurar integração com api_key: [segredo removido]",
       ),
     );
     expect(telegram.texts().join("\n")).not.toContain("123segredo");
@@ -304,7 +344,10 @@ describe("Telegram: conteúdo", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toEqual(
-        expect.arrayContaining(["Assumi o card PROJ-1 (exemplo).", "A Tarefa PROJ-2 (exemplo) está bloqueada."]),
+        expect.arrayContaining([
+          "[Pessoal] Assumi o card PROJ-1 (exemplo).",
+          "[Pessoal] A Tarefa PROJ-2 (exemplo) está bloqueada.",
+        ]),
       ),
     );
     expect(telegram.texts().join("\n")).not.toMatch(/Configurar|PO/);
@@ -328,8 +371,8 @@ describe("Telegram: falhas", () => {
 
     await advanceUntil(clock, () =>
       expect(telegram.texts()).toEqual([
-        "Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
-        "A Tarefa PROJ-1 (exemplo) terminou.",
+        "[Pessoal] Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
+        "[Pessoal] A Tarefa PROJ-1 (exemplo) terminou.",
       ]),
     );
     expect((await events(f)).filter((e) => e.type === "delivery")).toEqual([]);
@@ -342,13 +385,15 @@ describe("Telegram: falhas", () => {
     await poll(f);
     await waitForStatus(f, "PROJ-1", "concluida");
 
-    await advanceUntil(clock, () => expect(telegram.texts()).toEqual(["A Tarefa PROJ-1 (exemplo) terminou."]));
+    await advanceUntil(clock, () =>
+      expect(telegram.texts()).toEqual(["[Pessoal] A Tarefa PROJ-1 (exemplo) terminou."]),
+    );
     expect((await events(f)).filter((e) => e.type === "delivery")).toEqual([
       expect.objectContaining({
         via: "telegram",
         status: "descartada",
         attempts: 3,
-        text: "Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
+        text: "[Pessoal] Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
         error: expect.stringMatching(/fora do ar/),
       }),
     ]);

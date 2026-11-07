@@ -82,6 +82,10 @@ export interface ManagementBridgeDeps {
   commands: FactoryCommands;
   /** Nível de conteúdo do projeto (`telegram.content`). */
   content(project: string): TelegramContent;
+  /** Próximo instante permitido para avisos automáticos deste projeto. */
+  availableAt?(project: string): number;
+  /** Identificação visível do contexto, sem inferir pelo nome do projeto. */
+  contextLabel?(project: string): string;
   now(): number;
   /** Timer no relógio da fábrica; devolve como desarmá-lo. */
   armTimer(callback: () => void, delayMs: number): () => void;
@@ -93,7 +97,9 @@ const HELP = [
   "/pausar [card]: pausa a Tarefa (sem card, o daemon)",
   "/retomar [card]: retoma a Tarefa (sem card, o daemon)",
   "/cancelar <card>: cancela a Tarefa",
-  "/responder <card> <número> <texto>: responde uma pergunta sem publicar na Fonte",
+  "/responder: escolha uma pergunta e envie sua resposta",
+  "/sair: cancela a resposta em andamento",
+  "/responder <card> <número> <texto>: registra uma resposta local explícita",
   "<card> é a chave (PROJ-1) ou projeto/chave (exemplo/PROJ-1).",
 ].join("\n");
 
@@ -108,6 +114,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
   const stored = await deps.progress.load();
   const progress: ManagementProgress = {
     eventCursor: stored?.eventCursor ?? deps.initialEventCount,
+    deferred: stored?.deferred ?? [],
     updateOffset: stored?.updateOffset ?? 0,
     lastUpdateAt: stored?.lastUpdateAt ?? deps.now(),
   };
@@ -134,13 +141,13 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     });
 
   /** Publica com novas tentativas. `false` se a ponte parou antes de conseguir (a mensagem fica para o reinício). */
-  async function deliver(message: ManagementMessage): Promise<boolean> {
+  async function deliver(message: ManagementMessage, project?: string): Promise<boolean> {
     const safe: ManagementMessage = {
       text: redactSecrets(message.text),
       ...(message.buttons ? { buttons: message.buttons.map((b) => ({ ...b, label: redactSecrets(b.label) })) } : {}),
     };
     for (let attempt = 1; ; attempt++) {
-      if (stopped) return false;
+      if (stopped || (project !== undefined && (deps.availableAt?.(project) ?? deps.now()) > deps.now())) return false;
       try {
         await port.send(safe, abort.signal);
         return true;
@@ -176,7 +183,8 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
           text:
             `Pergunta ${event.n} sobre ${event.target} (${event.project})` +
             (full ? `: ${event.text}` : ". Consulte a interface web local para ver o conteúdo.") +
-            `\nPara responder: /responder ${event.project}/${event.target} ${event.n} <texto>`,
+            "\nToque em Responder para enviar sua resposta.",
+          buttons: [{ label: "Responder", command: `/responder ${event.project}/${event.target} ${event.n}` }],
         };
       }
       case "assumed": {
@@ -238,18 +246,50 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
 
   let publishing: Promise<void> = Promise.resolve();
   let publishPending = false;
+  let disarmDeferred: (() => void) | undefined;
+  const availableAt = (project: string) => deps.availableAt?.(project) ?? deps.now();
+  function wakeDeferred(): void {
+    disarmDeferred?.();
+    const wakeAt = Math.min(...(progress.deferred ?? []).map((item) => availableAt(item.project)));
+    if (Number.isFinite(wakeAt) && !stopped) disarmDeferred = deps.armTimer(publish, Math.max(1, wakeAt - deps.now()));
+  }
+  async function automatic(project: string, message: ManagementMessage): Promise<boolean> {
+    const label = deps.contextLabel?.(project);
+    if (label && !message.text.startsWith(`[${label}]`)) message = { ...message, text: `[${label}] ${message.text}` };
+    if (availableAt(project) <= deps.now() && (await deliver(message, project))) return true;
+    if (stopped) return false;
+    progress.deferred ??= [];
+    const queue = progress.deferred;
+    // A reconciliação no reinício não duplica um lembrete já enfileirado.
+    if (!queue.some((item) => item.project === project && item.message.text === message.text)) {
+      queue.push({ project, message: { ...message, text: redactSecrets(message.text) } });
+      await save();
+    }
+    wakeDeferred();
+    return true;
+  }
   function publish(): void {
     if (publishPending || stopped) return;
     publishPending = true;
     publishing = publishing.then(async () => {
       publishPending = false;
       try {
+        for (const item of [...(progress.deferred ?? [])]) {
+          if (availableAt(item.project) > deps.now()) continue;
+          if (!(await deliver(item.message, item.project))) {
+            wakeDeferred();
+            return;
+          }
+          progress.deferred = progress.deferred?.filter((entry) => entry !== item);
+          await save();
+        }
+        wakeDeferred();
         let advanced = false;
         for (;;) {
           const event = events.list()[progress.eventCursor ?? 0];
           if (!event || stopped) break;
           const message = await render(event);
-          if (message && !(await deliver(message))) break;
+          if (message && !(await ("project" in event ? automatic(event.project, message) : deliver(message)))) break;
           progress.eventCursor = (progress.eventCursor ?? 0) + 1;
           advanced = true;
           if (message) {
@@ -279,6 +319,8 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
       return { error: `Há mais de uma Tarefa ${arg}; use projeto/chave: ${matches.map((t) => t.id).join(", ")}.` };
     return { id: (matches[0] as QueuedTask).id };
   }
+
+  const answering = new Map<string, { id: string; n: number; draft?: string }>();
 
   async function execute(text: string): Promise<string> {
     const [head = "", arg] = text.trim().split(/\s+/);
@@ -328,7 +370,68 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
       await events.append({ type: "command", ...origin, accepted: false, result: "origem não autorizada; ignorado" });
       return;
     }
-    const reply = await execute(update.text);
+    const session = `${update.chat}/${update.user}`;
+    const selected = answering.get(session);
+    const input = update.text.trim();
+    if (input === "/responder") {
+      answering.delete(session);
+      const tasks = await deps.tasks();
+      const buttons = tasks
+        .filter((t) => ["aguardando-humano", "pausada"].includes(t.status))
+        .flatMap((t) =>
+          (t.questions ?? [])
+            .filter((q) => q.answer === null && q.publication !== "sending")
+            .map((q) => ({ label: `${t.key} · pergunta ${q.n}`, command: `/responder ${t.id} ${q.n}` })),
+        );
+      await deliver({
+        text: buttons.length ? "Escolha uma pergunta para responder:" : "Não há perguntas pendentes.",
+        buttons,
+      });
+      return;
+    }
+    const choose = /^\/responder\s+(\S+)\s+(\d+)$/.exec(input);
+    if (choose) {
+      const found = await resolveTask(choose[1] as string);
+      const task = "id" in found ? (await deps.tasks()).find((t) => t.id === found.id) : undefined;
+      const q = task?.questions?.find(
+        (q) => q.n === Number(choose[2]) && q.answer === null && q.publication !== "sending",
+      );
+      if (!task || !q || !["aguardando-humano", "pausada"].includes(task.status)) {
+        await deliver({ text: "Essa pergunta não está mais disponível. Use /responder para escolher outra." });
+        return;
+      }
+      answering.set(session, { id: task.id, n: q.n });
+      if (update.buttonId) await port.answerButton(update.buttonId, "Envie sua resposta na conversa.", abort.signal);
+      await deliver({
+        text: `Envie sua resposta para ${task.key}, pergunta ${q.n}. Ela será registrada localmente, sem publicar na Fonte. Para sair, use /sair.`,
+      });
+      return;
+    }
+    if (input === "/sair") {
+      answering.delete(session);
+      await deliver({ text: "Resposta cancelada. Nenhuma alteração foi feita." });
+      return;
+    }
+    if (selected && !input.startsWith("/")) {
+      selected.draft = update.text;
+      await deliver({
+        text: `Confirmar resposta para ${selected.id}, pergunta ${selected.n}?\n\n${update.text}\n\nA resposta fica local, sem publicar na Fonte.`,
+        buttons: [
+          { label: "Confirmar resposta", command: "/confirmar-resposta" },
+          { label: "Cancelar", command: "/sair" },
+        ],
+      });
+      return;
+    }
+    if (input === "/confirmar-resposta" && !selected?.draft) {
+      await deliver({ text: "Não há resposta para confirmar. Use /responder para escolher uma pergunta." });
+      return;
+    }
+    const reply =
+      input === "/confirmar-resposta" && selected?.draft
+        ? await execute(`/responder ${selected.id} ${selected.n} ${selected.draft}`)
+        : await execute(update.text);
+    if (selected && reply.startsWith("Resposta registrada")) answering.delete(session);
     await events.append({ type: "command", ...origin, accepted: true, result: reply });
     if (update.buttonId !== undefined) {
       await port.answerButton(update.buttonId, redactSecrets(reply), abort.signal).catch((err) => {
@@ -400,21 +503,22 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
         for (const q of pending) {
           const full = deps.content(task.project) === "full";
           if (
-            !(await deliver({
+            !(await automatic(task.project, {
               text:
                 `Pergunta pendente ${q.n} sobre ${task.key} (${task.project})` +
                 (full ? `: ${q.text}` : ". Consulte a interface web local para ver o conteúdo.") +
                 (q.publication === "draft"
                   ? "\nRascunho não enviado ao PO. Para publicar, revise e aprove na interface web local. /responder registra uma resposta local, sem publicar a pergunta."
                   : "") +
-                `\nPara responder: /responder ${task.project}/${task.key} ${q.n} <texto>`,
+                "\nToque em Responder para enviar sua resposta.",
+              buttons: [{ label: "Responder", command: `/responder ${task.id} ${q.n}` }],
             }))
           )
             return;
         }
         if (pending.length === 0 && task.specReview === "draft") {
           if (
-            !(await deliver({
+            !(await automatic(task.project, {
               text: `SPEC de ${task.key} (${task.project}) pronta para revisão. Consulte a interface web local para revisar e aprovar.`,
             }))
           )
@@ -434,6 +538,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     async stop() {
       stopped = true;
       unsubscribe();
+      disarmDeferred?.();
       abort.abort();
       for (const disarm of [...disarms]) disarm();
       await publishing;

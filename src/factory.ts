@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
-import { addBusinessHours, workdayHours } from "./business-hours.js";
+import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
@@ -318,6 +318,10 @@ export async function startFactory(opts: {
 
   const Tarefa = createTarefaTask({
     retryDelayMs,
+    availableAt(input) {
+      const config = projectOf(input.project).config;
+      return nextProjectActivity(config, clock.now());
+    },
     async run(input, step, runtime) {
       const project = projectOf(input.project);
       const { writer, source } = project;
@@ -697,6 +701,10 @@ export async function startFactory(opts: {
     },
     async escalate(input, runtime) {
       const project = projectOf(input.project);
+      if (project.config.activity === "business-hours") {
+        const next = nextProjectActivity(project.config, runtime.now());
+        if (next > runtime.now()) return next;
+      }
       let question: Question | undefined;
       await runtime.commit(async (tx) => {
         const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
@@ -937,6 +945,8 @@ export async function startFactory(opts: {
   /** Confere, na Fonte, a resposta de cada Tarefa que aguarda uma pessoa. */
   async function checkAnswers(): Promise<void> {
     for (const task of (await readState()).tasks) {
+      const config = projectOf(task.project).config;
+      if (nextProjectActivity(config, clock.now()) > clock.now()) continue;
       const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
       if (!pending || pending.publication === "draft" || pending.publication === "sending") continue;
       try {
@@ -1019,10 +1029,14 @@ export async function startFactory(opts: {
     const state = await readState();
     if (state.daemonPaused || state.tasks.some((t) => t.status === "ativa")) return;
     const now = clock.now();
-    const next = state.tasks.find((t) => t.status === "enfileirada" && !t.pauseRequested && (t.notBefore ?? 0) <= now);
+    const availableAt = (task: QueuedTask) => {
+      const config = projectOf(task.project).config;
+      return Math.max(task.notBefore ?? 0, nextProjectActivity(config, now));
+    };
+    const next = state.tasks.find((t) => t.status === "enfileirada" && !t.pauseRequested && availableAt(t) <= now);
     if (!next) {
       const wakeAt = Math.min(
-        ...state.tasks.filter((t) => t.status === "enfileirada" && t.notBefore).map((t) => t.notBefore as number),
+        ...state.tasks.filter((t) => t.status === "enfileirada" && !t.pauseRequested).map(availableAt),
       );
       if (Number.isFinite(wakeAt) && !closing) {
         disarmRetry?.();
@@ -1679,6 +1693,11 @@ export async function startFactory(opts: {
       tasks: async () => (await readState()).tasks,
       commands,
       content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
+      contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
+      availableAt: (name) => {
+        const config = projects.get(name)?.config;
+        return config ? nextProjectActivity(config, clock.now()) : clock.now();
+      },
       now: clock.now,
       armTimer,
     }));
