@@ -9,6 +9,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { QuestionRef } from "./channel.js";
+import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { CardState, TestCommand } from "./config.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
@@ -58,6 +59,8 @@ export type Question = {
   /** Resposta não resolutiva do usuário, preservada para encaminhar ao tech lead. */
   userResponse?: string;
   needsForwarding?: boolean;
+  /** Reserva e resultado do envio ao tech lead, compartilhados pelos dois gatilhos. */
+  forwarding?: EncaminhamentoTecnico;
   /** Rascunho de ensaio; `sending` indica resultado potencialmente incerto após uma interrupção. */
   publication?: "draft" | "sending" | "sent";
   /** Lembrete em revisão: rascunho aguardando aprovação, em envio (incerto se interrompido) ou enviado. */

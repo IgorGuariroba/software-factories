@@ -22,6 +22,7 @@ import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
 import { respostaNaoSei } from "./resposta-tecnica.js";
+import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhamento-tecnico.js";
 import {
   copyOutOfCommit,
   createTarefaTask,
@@ -674,7 +675,7 @@ export async function startFactory(opts: {
           text,
           ref,
           askedAt,
-          remindAt: addBusinessHours(calendar, askedAt, REMINDER_BUSINESS_HOURS),
+          remindAt: tecnica ? prazoPerguntaTecnica(askedAt) : addBusinessHours(calendar, askedAt, REMINDER_BUSINESS_HOURS),
           notifyAt: addBusinessHours(calendar, askedAt, workdayHours(calendar)),
           reminded: false,
           notified: false,
@@ -719,7 +720,10 @@ export async function startFactory(opts: {
       const q = question;
       // As perguntas técnicas são respondidas localmente, não pelo comentário no card.
       // O encaminhamento ao tech lead é tratado pelo fluxo técnico, não pelo lembrete ao PO.
-      if (q.origin === "tecnica") return null;
+      if (q.origin === "tecnica") {
+        await forwardTechnical(input.id, q.n);
+        return !q.forwarding && runtime.now() < q.remindAt ? q.remindAt : null;
+      }
       if (q.publication === "draft" || q.publication === "sending") return runtime.now() + 60_000;
       if (await checkAnswer(input, q)) return null;
 
@@ -880,6 +884,20 @@ export async function startFactory(opts: {
   }
 
   // --- Perguntas -------------------------------------------------------------------------------
+
+  /** Encaminhamento comum a respostas locais e ao timer durável da Tarefa. */
+  async function forwardTechnical(id: string, n: number): Promise<void> {
+    const task = (await readState()).tasks.find((t) => t.id === id);
+    if (!task) return;
+    const project = projectOf(task.project);
+    await encaminharPerguntaTecnica({
+      config: project.config,
+      channel: project.channel,
+      events: eventRecorder,
+      now: clock.now,
+      commit: (change) => harness.commit(async (tx) => change(await tx.doc(StateDoc)), context),
+    }, id, n);
+  }
 
   /** Altera uma pergunta registrada no estado durável. */
   async function markQuestion(id: string, n: number, change: (q: Question) => void): Promise<void> {
@@ -1153,6 +1171,7 @@ export async function startFactory(opts: {
       }, context);
       if (!recorded) return false;
       await events.append({ type: "question", ...recorded, n });
+      if (recorded.status === "encaminhar") await forwardTechnical(id, n);
       react();
       return true;
     },
