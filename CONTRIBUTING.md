@@ -53,6 +53,16 @@ A busca enfileira os cards atribuídos ao usuário em "A Fazer" e em "Em Andamen
 - `POST /tasks/{projeto}/{card}/veto` (ou `commands.veto` do `RunningFactory`, o mesmo comando das interfaces de gestão) dentro do prazo deixa a Tarefa `vetada`: estado final, ela não escreve mais nada no card. Fora do prazo, ou numa Tarefa que não aguarda veto, a resposta é 409, sem efeito;
 - sem veto, a Tarefa volta à fila e, na vez dela, segue para as etapas, sem transição (o card já está em "Em Andamento"). Uma nova tentativa depois de uma falha não abre outro prazo.
 
+### Agenda por projeto
+
+`activity: always` (padrão) permite trabalho e avisos 24/7. `activity: business-hours` restringe novos passos, retomadas, escalonamentos e avisos automáticos ao `calendar` do projeto. Configure explicitamente `timezone: America/Sao_Paulo`, `workdays: [mon, tue, wed, thu, fri]`, `start: "09:00"` e `end: "18:00"` para o expediente brasileiro aprovado.
+
+Em `business-hours`, o calendário efetivo inclui os feriados legais nacionais, estaduais de SP e municipais de Mogi das Cruzes, inclusive Paixão de Cristo e Corpus Christi. Essa regra também vale para os prazos das perguntas; `calendar.holidays` acrescenta datas excepcionais. Pontos facultativos não são feriados automaticamente.
+
+Avisos fora do expediente ficam em uma fila durável por projeto: não são descartados nem bloqueiam mensagens pessoais. A abertura é agendada no relógio da fábrica, sem precisar reiniciar. Respostas a comandos explícitos do usuário continuam disponíveis fora do expediente.
+
+**Limitação atual:** uma etapa já em execução não é interrompida no fechamento do expediente. A política é verificada entre passos; não representa ainda uma proibição estrita de processamento após as 18h. Não ativar como garantia de interrupção imediata.
+
 ### Perguntas ao PO e horas úteis
 
 Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta `perguntar_po`. A pergunta sai pela porta `Channel` (`src/channel.ts`); no M1, o único adaptador é um comentário no card dirigido ao PO declarado em `people` (role `po`), sem token de menção (o `acli` grava texto puro e o Jira mostraria `[~accountid:…]` literalmente; o aviso ao PO vai pelo Teams), sempre pelo escritor de efeitos (guardrail de destinatário só entre as pessoas do projeto, prefixo, filtro de segredos e dry-run). Sem PO declarado, a Tarefa fica `bloqueada`.
@@ -109,6 +119,12 @@ O Telegram é a interface de gestão do celular (porta `ManagementInterface`, `s
 - Durabilidade: o progresso fica no estado durável (`ManagementDoc`): o índice do próximo evento a publicar e o `offset` do `getUpdates`. Um reinício não republica mensagens nem repete comandos (o offset é gravado depois de executar o comando; os comandos são idempotentes). Ao ligar o Telegram pela primeira vez, o histórico anterior não é publicado.
 - Falhas: uma mensagem que não sai é tentada de novo em 5 s e em 30 s (relógio da fábrica) e, na terceira falha, é descartada com um evento `delivery` (`status: "descartada"`) e um log; as seguintes continuam saindo. Uma falha ao receber espera 10 s e tenta de novo. Nenhuma falha do Telegram derruba nem trava a fábrica (a publicação corre à parte da fila de Tarefas).
 - Limites da Bot API: texto acima de 4096 caracteres é truncado com "…"; botão cujo comando passa de 64 bytes (`callback_data`) é omitido, e o comando continua valendo por texto.
+
+#### Perguntas e respostas guiadas
+
+Perguntas novas e lembretes de perguntas pendentes têm botão **Responder**. `/responder` sem argumentos lista as pendências; escolha uma, envie o texto e toque em **Confirmar resposta**. `/sair` ou **Cancelar** abandona o rascunho. A resposta é local, sem publicar comentário na Fonte. O atalho explícito `/responder projeto/card número texto` continua disponível e registra diretamente, sem o diálogo guiado.
+
+A seleção e o rascunho pertencem ao par conversa/usuário autorizado. São voláteis: após reiniciar, use `/responder` novamente; texto livre sem seleção nunca é associado automaticamente a um card. Os avisos automáticos indicam `[Empresa]` para `business-hours` e `[Pessoal]` para `always`. Ao iniciar, a ponte lembra perguntas abertas e SPECs esperando revisão; aprovação da SPEC continua na web local.
 
 #### Testes de contrato contra o Telegram real (opt-in)
 

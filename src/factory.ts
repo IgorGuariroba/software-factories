@@ -282,6 +282,10 @@ export async function startFactory(opts: {
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
     opts.projects.map((p) => {
+      // Execução e SLAs usam o mesmo calendário efetivo, inclusive feriados legais.
+      if (p.config.activity === "business-hours") {
+        p = { ...p, config: { ...p.config, calendar: { ...p.config.calendar, legalHolidays: true } } };
+      }
       const codeHost = p.codeHost ?? gitCodeHost;
       const writer: EffectWriter = createEffectWriter({
         ...p,

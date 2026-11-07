@@ -72,6 +72,41 @@ describe("Telegram: eventos ao usuário", () => {
     clock.advanceTo(new Date(`${next}T09:00:00-03:00`));
     await waitForStatus(f, "PROJ-1", "concluida");
   });
+  it("os prazos da pergunta também excluem os feriados legais da agenda", async () => {
+    const model = new FakeModel();
+    model.respond = () => askPo("Como deve funcionar?");
+    const clock = new FakeClock("2026-11-19T16:00:00-03:00");
+    const { f, telegram } = await startWith([card("PROJ-1", "A Fazer")], {
+      model,
+      clock,
+      config: {
+        activity: "business-hours",
+        calendar: {
+          timezone: "America/Sao_Paulo",
+          workdays: ["mon", "tue", "wed", "thu", "fri"],
+          start: "09:00",
+          end: "18:00",
+          holidays: [],
+        },
+      },
+    });
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("[Empresa] Pergunta"));
+    const reminders = () =>
+      f.source.commentsOf("PROJ-1").filter((comment) => comment.body.includes("Lembrete da pergunta 1"));
+    clock.advanceTo("2026-11-23T10:59:00-03:00");
+    await settle();
+    expect(reminders()).toHaveLength(0);
+    clock.advanceTo("2026-11-23T11:00:00-03:00");
+    await eventually(() => expect(reminders()).toHaveLength(1));
+    clock.advanceTo("2026-11-23T16:00:00-03:00");
+    await eventually(async () =>
+      expect(
+        (await events(f)).filter((event) => event.type === "notify" && event.reason === "pergunta-sem-resposta"),
+      ).toMatchObject([{ at: "2026-11-23T19:00:00.000Z" }]),
+    );
+  });
   it("encaminha pergunta em dry-run e avisa quando a SPEC aguarda revisão", async () => {
     const model = new FakeModel();
     model.respond = (call) =>
