@@ -50,6 +50,26 @@ describe("revisão da SPEC antes de publicar", () => {
     expect((await approve(factory, preview.revision)).status).toBe(409);
   });
 
+  it("exige nova aprovação real após aprovar localmente em dry-run e reiniciar", async () => {
+    factory = await startTestFactory({ dryRun: true, cards: [card], config: { specApproval: true } });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/pause");
+    const preview = await api<SpecPreview>(factory, "GET", "/tasks/exemplo/PROJ-1/spec");
+    expect((await approve(factory, preview.revision)).status).toBe(200);
+    await waitForStatus(factory, "PROJ-1", "pausada");
+    factory = await factory.restart({ dryRun: false });
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    expect(titled(factory, "SPEC")).toEqual([]);
+    const real = await api<SpecPreview>(factory, "GET", "/tasks/exemplo/PROJ-1/spec");
+    expect(real.dryRun).toBe(false);
+    expect((await approve(factory, preview.revision)).status).toBe(409);
+    expect((await approve(factory, real.revision)).status).toBe(200);
+    await waitForStatus(factory, "PROJ-1", "concluida");
+    expect(titled(factory, "SPEC").map((c) => c.body)).toEqual([real.spec]);
+  });
+
   it("não publica a SPEC aprovada em dry-run", async () => {
     factory = await startTestFactory({ dryRun: true, cards: [card], config: { specApproval: true } });
     await poll(factory);

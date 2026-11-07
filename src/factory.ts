@@ -403,7 +403,7 @@ export async function startFactory(opts: {
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
           if (!task) return;
-          approved = task.specReview === "approved";
+          approved = task.specReview === "approved" && task.specApprovedDryRun === project.config.dryRun;
           if (!approved) task.specReview = "draft";
         });
         if (!approved) return "aguardar";
@@ -1331,6 +1331,7 @@ export async function startFactory(opts: {
           const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
           if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
           current.specReview = "approved";
+          current.specApprovedDryRun = project.config.dryRun;
           current.status = current.pauseRequested ? "pausada" : "enfileirada";
           return true;
         }, context);
