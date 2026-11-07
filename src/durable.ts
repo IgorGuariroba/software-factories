@@ -20,6 +20,7 @@ export type TaskStatus =
   | "ativa"
   | "aguardando-humano"
   | "aguardando-veto"
+  | "aguardando-entrega"
   | "pausada"
   | "concluida"
   | "cancelada"
@@ -64,10 +65,10 @@ export type Question = {
 };
 
 /** Etapa em que a Tarefa está (ou a última em que esteve), para as interfaces de gestão. */
-export type TaskStage = "triagem" | "assumir" | "veto" | "spec" | "implementacao";
+export type TaskStage = "triagem" | "assumir" | "veto" | "spec" | "implementacao" | "review" | "entrega";
 
 /** De que a retrô trata: uma etapa de modelo, ou a Tarefa inteira (a consolidada). */
-export type RetroStage = "spec" | "implementacao" | "tarefa";
+export type RetroStage = "triagem" | "spec" | "implementacao" | "review" | "mr" | "tarefa";
 
 /** Os três tipos de proposta de retrô (SPEC, "Retrô"). */
 export type RetroKind = "fabrica" | "conhecimento" | "repo-time";
@@ -157,6 +158,26 @@ export type QueuedTask = {
    * a SPEC e os Tickets) republica a mesma entrega, sem chamar o modelo de novo nem trocar uma SPEC válida.
    */
   delivery?: SpecDelivery | null;
+  /** Correções de review, dentro dos critérios já aprovados; cada uma ganha novo ciclo TDD. */
+  correctionTickets?: SpecDelivery["tickets"];
+  correctionRounds?: number;
+  /** Resultado do review local, vinculado ao HEAD que foi realmente lido. */
+  review?: {
+    head: string;
+    status: "em-andamento" | "aprovado" | "corrigir";
+    summary: string;
+    conversationId: ConversationId;
+    feedbackRevision?: string;
+  };
+  /** Publicação remota. Ausente até o review; dry-run nunca se confunde com merge real. */
+  publication?: {
+    number: number | null;
+    url: string | null;
+    status: "dry-run" | "aguardando-ci" | "aguardando-review" | "aguardando-merge" | "merged";
+    head: string;
+    feedbackIds: string[];
+    pendingFeedback?: { id: string; body: string; author: string }[];
+  };
   /** Perguntas ao PO, na ordem; a última sem resposta é a que a Tarefa aguarda. */
   questions?: Question[];
   /** Revisão da SPEC/Tickets antes de publicar: rascunho aguardando aprovação, ou aprovada. */
@@ -164,7 +185,7 @@ export type QueuedTask = {
   /** Modo autorizado na revisão da SPEC; ausente em aprovações antigas exige nova revisão. */
   specApprovedDryRun?: boolean;
   /** Etapas cuja retrô já segurou a Tarefa (`retroApproval`); retomada ou nova tentativa não seguram de novo. */
-  retroHeld?: ("spec" | "implementacao")[];
+  retroHeld?: RetroStage[];
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
   /**
@@ -203,6 +224,9 @@ export type ImplementationProgress = {
   conversationId: ConversationId;
   /** HEAD depois do último commit registrado. Um HEAD diferente na retomada é um commit que caiu antes do registro. */
   head: string;
+  /** Base imutável do diff local e destino do PR/MR. Ausentes só em progresso legado. */
+  baseHead?: string;
+  defaultBranch?: string;
   /** Commits feitos, na ordem: um por fase de cada ticket. */
   commits: { ticket: number; phase: TddPhase; sha: string }[];
   /** Pedidos feitos ao modelo; numera o próximo para que uma nova tentativa não reaproveite um pedido recusado. */
@@ -212,6 +236,14 @@ export type ImplementationProgress = {
    * rodá-la de novo (com o teste novo já no clone, ela falharia). `null`: ainda não rodou.
    */
   baseline?: "verde" | "vermelha" | null;
+  /** Diagnóstico limitado do baseline, sem segredos; falha de ambiente não prova o RED do TDD. */
+  baselineDiagnostic?: string;
+  /** Reserva durável antes de instalar: nunca repete indefinidamente após falhas ou reinícios. */
+  environmentRecovery?: {
+    attempts: number;
+    status: "iniciada" | "recuperado" | "falhou";
+    diagnostic: string;
+  };
   /** Recusas seguidas da fábrica na fase atual (ex.: o teste novo não falhou). */
   rejections: number;
   /** Por que a fábrica recusou a última tentativa; vai junto do próximo pedido. */
@@ -286,6 +318,11 @@ export type TarefaCheckpoint =
   /** Dormindo até a resposta de uma pessoa ou o próximo prazo de escalonamento. */
   | { phase: "aguardar" }
   | { phase: "implementar" }
+  | { phase: "revisar" }
+  | { phase: "entregar" }
+  | { phase: "retro-triagem" }
+  | { phase: "retro-review" }
+  | { phase: "retro-mr" }
   /** Retrôs: uma ao fim de cada etapa de modelo e a consolidada ao fim da Tarefa. */
   | { phase: "retro-spec" }
   | { phase: "retro-implementacao" }
@@ -318,7 +355,11 @@ export interface TarefaSteps {
    * `"recusada"`: a triagem deu baixa na issue; a Tarefa termina aí. `"adiar"`: aceita na triagem, mas sem vaga
    * (`maxActive`); volta à fila, no mesmo lugar, e tenta de novo depois.
    */
-  run(input: TarefaInput, step: Step, runtime: StepRuntime): Promise<"aguardar" | "recusada" | "adiar" | undefined>;
+  run(
+    input: TarefaInput,
+    step: Step,
+    runtime: StepRuntime,
+  ): Promise<"aguardar" | "recusada" | "adiar" | "acompanhar" | undefined>;
   /**
    * Inspeção de um card que já estava em andamento, no lugar do prazo de veto: `"seguir"` (nada feito antes no
    * repositório), `"bloquear"` (já implementado) ou `"veto"` (sem repositório para inspecionar: espera o prazo).
@@ -345,16 +386,28 @@ export interface TarefaSteps {
 export type Step = Exclude<TarefaCheckpoint["phase"], "aguardar" | "veto">;
 
 /** O passo da retrô de cada etapa de modelo; uma etapa nova entra aqui e em `NEXT`. */
-export const RETRO_STEP = { spec: "retro-spec", implementacao: "retro-implementacao", tarefa: "retro-tarefa" } as const;
+export const RETRO_STEP = {
+  triagem: "retro-triagem",
+  spec: "retro-spec",
+  implementacao: "retro-implementacao",
+  review: "retro-review",
+  mr: "retro-mr",
+  tarefa: "retro-tarefa",
+} as const;
 
 const NEXT: Record<Step, TarefaCheckpoint | "fim"> = {
-  triar: { phase: "comentar" },
+  triar: { phase: RETRO_STEP.triagem },
+  [RETRO_STEP.triagem]: { phase: "comentar" },
   comentar: { phase: "veto" },
   transicionar: { phase: "spec" },
   spec: { phase: RETRO_STEP.spec },
   [RETRO_STEP.spec]: { phase: "implementar" },
   implementar: { phase: RETRO_STEP.implementacao },
-  [RETRO_STEP.implementacao]: { phase: RETRO_STEP.tarefa },
+  [RETRO_STEP.implementacao]: { phase: "revisar" },
+  revisar: { phase: RETRO_STEP.review },
+  [RETRO_STEP.review]: { phase: "entregar" },
+  entregar: { phase: RETRO_STEP.mr },
+  [RETRO_STEP.mr]: { phase: RETRO_STEP.tarefa },
   [RETRO_STEP.tarefa]: "fim",
 };
 
@@ -365,6 +418,8 @@ const STAGE: Partial<Record<Step, TaskStage>> = {
   transicionar: "assumir",
   spec: "spec",
   implementar: "implementacao",
+  revisar: "review",
+  entregar: "entrega",
 };
 
 const TEN_YEARS_MS = 10 * 365 * 24 * 60 * 60 * 1000;
@@ -505,13 +560,24 @@ export function createTarefaTask(steps: TarefaSteps) {
     }, context);
     if (gated) return;
 
-    let outcome: "aguardar" | "recusada" | "adiar" | undefined;
+    let outcome: "aguardar" | "recusada" | "adiar" | "acompanhar" | undefined;
     try {
       outcome = await abortable(steps.run(task.input, step, stepRuntimeOf(task, runtime, context)), runtime.signal);
     } catch (err) {
       return fail(task, err, runtime, context);
     }
 
+    if (outcome === "acompanhar") {
+      await runtime.commit(async (tx) => {
+        const queued = findTask(await tx.doc(StateDoc), task.input.id);
+        queued.status = "aguardando-entrega";
+        queued.notBefore = runtime.now() + 60_000;
+        const gate = await tx.createTask(GateTask, {}, { ownership: { kind: "task", taskId: task.id } });
+        queued.gateId = gate;
+        return { status: "waiting", checkpoint: { phase: step }, on: [gate], policy: "allSettled" };
+      }, context);
+      return;
+    }
     if (outcome === "adiar") {
       // Sem vaga (maxActive): volta à fila no mesmo lugar (a mais antiga segue primeiro), sem contar tentativa.
       await runtime.commit(async (tx) => {
@@ -678,6 +744,11 @@ export function createTarefaTask(steps: TarefaSteps) {
       spec: (task, runtime, context) => phase(task, "spec", runtime, context),
       aguardar: (task, runtime, context) => awaitHuman(task, runtime, context),
       implementar: (task, runtime, context) => phase(task, "implementar", runtime, context),
+      revisar: (task, runtime, context) => phase(task, "revisar", runtime, context),
+      entregar: (task, runtime, context) => phase(task, "entregar", runtime, context),
+      "retro-triagem": (task, runtime, context) => phase(task, "retro-triagem", runtime, context),
+      "retro-review": (task, runtime, context) => phase(task, "retro-review", runtime, context),
+      "retro-mr": (task, runtime, context) => phase(task, "retro-mr", runtime, context),
       "retro-spec": (task, runtime, context) => phase(task, "retro-spec", runtime, context),
       "retro-implementacao": (task, runtime, context) => phase(task, "retro-implementacao", runtime, context),
       "retro-tarefa": (task, runtime, context) => phase(task, "retro-tarefa", runtime, context),

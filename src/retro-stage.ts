@@ -116,7 +116,14 @@ export function findSimilarIssue(issues: RetroIssue[], title: string): RetroIssu
 /** Um identificador opaco para a Tarefa: aleatório, sem derivar do projeto nem do card. */
 export const newTaskRef = () => randomBytes(6).toString("hex");
 
-const STAGE_LABEL: Record<RetroStage, string> = { spec: "SPEC", implementacao: "implementação", tarefa: "consolidada" };
+const STAGE_LABEL: Record<RetroStage, string> = {
+  triagem: "triagem",
+  spec: "SPEC",
+  implementacao: "implementação",
+  review: "review",
+  mr: "PR/MR",
+  tarefa: "consolidada",
+};
 
 /**
  * A retrô de uma etapa (ou a consolidada). Pede a retrô ao modelo numa conversa da Tarefa e grava a entrega no estado.

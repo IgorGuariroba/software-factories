@@ -67,9 +67,26 @@ describe("portão depois da retrô da SPEC", () => {
     await waitForStatus(factory, "PROJ-1", "pausada");
     expect((await detail(factory)).retros.map((r) => r.stage)).toEqual(["spec", "implementacao"]);
 
+    for (const stages of [
+      ["spec", "implementacao", "review"],
+      ["spec", "implementacao", "review", "mr"],
+    ]) {
+      await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+      await eventually(
+        async () => expect((await detail(factory as TestFactory)).retros.map((r) => r.stage)).toEqual(stages),
+        45_000,
+      );
+      await waitForStatus(factory, "PROJ-1", "pausada");
+    }
     await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
     await waitForStatus(factory, "PROJ-1", "concluida");
-    expect((await detail(factory)).retros.map((r) => r.stage)).toEqual(["spec", "implementacao", "tarefa"]);
+    expect((await detail(factory)).retros.map((r) => r.stage)).toEqual([
+      "spec",
+      "implementacao",
+      "review",
+      "mr",
+      "tarefa",
+    ]);
   });
 
   it("sem retroApproval, segue direto para a implementação", async () => {

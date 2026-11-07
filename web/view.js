@@ -29,6 +29,7 @@ const STATUS = {
   cancelada: "Cancelada",
   bloqueada: "Bloqueada",
   vetada: "Vetada",
+  "aguardando-entrega": "Aguardando merge humano",
 };
 
 const STAGE = {
@@ -36,9 +37,18 @@ const STAGE = {
   veto: "Prazo de veto",
   spec: "Grill e SPEC",
   implementacao: "Implementação",
+  review: "Review",
+  entrega: "PR/MR e merge humano",
 };
 
-const RETRO_STAGE = { spec: "Retrô da SPEC", implementacao: "Retrô da implementação", tarefa: "Retrô consolidada" };
+const RETRO_STAGE = {
+  triagem: "Retrô da triagem",
+  review: "Retrô do review",
+  mr: "Retrô do PR/MR",
+  spec: "Retrô da SPEC",
+  implementacao: "Retrô da implementação",
+  tarefa: "Retrô consolidada",
+};
 
 const RETRO_STATUS = { "em-andamento": "em andamento", concluida: "concluída", falhou: "desistiu (a tarefa seguiu)" };
 

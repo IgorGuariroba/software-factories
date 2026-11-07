@@ -79,7 +79,7 @@ describe("detalhe da tarefa", () => {
       title: "card PROJ-1",
       status: "concluida",
       // Sem repositório mapeado, a etapa de implementação termina sem fazer nada.
-      stage: "implementacao",
+      stage: "entrega",
       attempts: 0,
       reason: null,
       questions: [],

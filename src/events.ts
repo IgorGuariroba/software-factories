@@ -97,7 +97,7 @@ export type FactoryEvent =
       project: string;
       /** Card da Tarefa. */
       target: string;
-      stage: "spec" | "implementacao" | "tarefa";
+      stage: "triagem" | "spec" | "implementacao" | "review" | "mr" | "tarefa";
       status: "concluida" | "falhou";
       message: string;
     }

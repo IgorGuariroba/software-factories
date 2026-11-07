@@ -19,6 +19,7 @@ import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
+import { runDelivery } from "./delivery-stage.js";
 import type { DemandSource } from "./demand-source.js";
 import {
   copyOutOfCommit,
@@ -41,6 +42,7 @@ import {
 } from "./durable.js";
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
+import { git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
 import {
   baselineBlockedReason,
@@ -55,6 +57,7 @@ import { questionRevision, reviewRevision, teamsQuestionMessage } from "./questi
 import { resolveRepository } from "./repo-resolver.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
+import { createReviewExtension, runReview } from "./review-stage.js";
 import { redactSecrets } from "./secrets.js";
 import {
   answerFollowUp,
@@ -231,6 +234,12 @@ function retroInput(stage: RetroStage, task: QueuedTask, all: FactoryEvent[]): s
       `Push da branch: ${impl?.pushed ? "feito" : "não feito"}.`,
     ].join("\n");
   }
+  if (stage === "triagem" || stage === "review" || stage === "mr")
+    return [
+      `# Retrô da etapa ${stage}`,
+      ...common,
+      JSON.stringify(stage === "triagem" ? task.triage : stage === "review" ? task.review : task.publication),
+    ].join("\n");
   const retros = (task.retros ?? []).filter((r) => r.stage !== "tarefa");
   return [
     "# Retrô consolidada da Tarefa",
@@ -307,6 +316,27 @@ export async function startFactory(opts: {
               t.implementation?.branch === branch &&
               t.implementation.branchOrigin === "criada",
           ),
+        isReviewedBranch: async (cardKey, cwd, draft) => {
+          const task = (await readState()).tasks.find((t) => t.project === p.config.name && t.key === cardKey);
+          const progress = task?.implementation;
+          if (
+            !progress ||
+            progress.worktree !== cwd ||
+            progress.branch !== draft.branch ||
+            task.review?.status !== "aprovado"
+          )
+            return false;
+          if (p.config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== p.config.dryRun))
+            return false;
+          const base =
+            progress.defaultBranch ??
+            (await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).trim().replace(/^origin\//, "");
+          return (
+            draft.base === base &&
+            (await git(cwd, ["rev-parse", "HEAD"])).trim() === task.review.head &&
+            task.review.head === progress.head
+          );
+        },
         retro: opts.retro,
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
@@ -320,6 +350,7 @@ export async function startFactory(opts: {
     events: eventRecorder,
   };
   const implementationTools = createImplementationExtension(implementationDeps);
+  const reviewTools = createReviewExtension(implementationDeps.worktreesRoot);
   const projectOf = (name: string) => {
     const project = projects.get(name);
     if (!project) throw new Error(`Projeto ${name} não está configurado`);
@@ -362,14 +393,40 @@ export async function startFactory(opts: {
         await writer.transition(input.key, "in_progress", { from: "todo" });
         return undefined;
       }
-      if (step === RETRO_STEP.spec || step === RETRO_STEP.implementacao) {
-        const stage = step === RETRO_STEP.spec ? "spec" : "implementacao";
-        if ((await retro(stage)) && project.config.retroApproval) await holdAfterRetro(stage);
+      const retroStage = (Object.entries(RETRO_STEP) as [RetroStage, string][]).find(
+        ([, value]) => value === step,
+      )?.[0];
+      if (retroStage) {
+        if ((await retro(retroStage)) && project.config.retroApproval && retroStage !== "tarefa")
+          await holdAfterRetro(retroStage);
         return undefined;
       }
-      if (step === RETRO_STEP.tarefa) {
-        await retro("tarefa");
+      if (step === "revisar") {
+        await reviewLoop();
         return undefined;
+      }
+      if (step === "entregar") {
+        for (let batch = 0; batch < 3; batch++) {
+          const outcome = await runDelivery({
+            taskId: input.id,
+            runtime,
+            config: project.config,
+            codeHost: project.codeHost,
+            writer,
+            worktreesRoot: implementationDeps.worktreesRoot,
+          });
+          if (outcome !== "revisar") return outcome;
+          const feedback = (await readState()).tasks.find((t) => t.id === input.id)?.publication?.pendingFeedback ?? [];
+          await reviewLoop(feedback);
+          await runtime.commit(async (tx) => {
+            const publication = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.publication;
+            if (publication) {
+              publication.feedbackIds = [...new Set([...publication.feedbackIds, ...feedback.map((f) => f.id)])];
+              publication.pendingFeedback = [];
+            }
+          });
+        }
+        return "acompanhar";
       }
 
       // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
@@ -380,22 +437,7 @@ export async function startFactory(opts: {
       });
 
       if (step === "implementar") {
-        if (!delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
-        const card = await source.getCard(input.key);
-        if (!card) throw new Error(`card ${input.key} não existe mais`);
-        await runImplementation({
-          harness,
-          runtime,
-          taskId: input.id,
-          config: project.config,
-          codeHost: project.codeHost,
-          writer,
-          card,
-          delivery,
-          model: project.config.roles.implementer ?? project.config.roles.spec,
-          deps: implementationDeps,
-          tools: implementationTools,
-        });
+        await implement();
         return undefined;
       }
 
@@ -417,6 +459,45 @@ export async function startFactory(opts: {
       await writer.upsertComment(input.key, "SPEC", delivery.spec);
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
       return undefined;
+
+      async function implement(): Promise<void> {
+        const current = (await readState()).tasks.find((t) => t.id === input.id);
+        if (!current?.delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        await runImplementation({
+          harness,
+          runtime,
+          taskId: input.id,
+          config: project.config,
+          codeHost: project.codeHost,
+          writer,
+          card,
+          delivery: {
+            ...current.delivery,
+            tickets: [...current.delivery.tickets, ...(current.correctionTickets ?? [])],
+          },
+          model: project.config.roles.implementer ?? project.config.roles.spec,
+          deps: implementationDeps,
+          tools: implementationTools,
+        });
+      }
+
+      async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
+        for (;;) {
+          const verdict = await runReview({
+            harness,
+            runtime,
+            taskId: input.id,
+            config: project.config,
+            worktreesRoot: implementationDeps.worktreesRoot,
+            tools: reviewTools,
+            feedback,
+          });
+          if (verdict !== "corrigir") return;
+          await implement();
+        }
+      }
 
       /**
        * Triagem da issue (ADR-0014), só nos repositórios monitorados: checagens determinísticas e, sem decisão, o
@@ -609,7 +690,14 @@ export async function startFactory(opts: {
       /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
       async function retro(stage: RetroStage): Promise<boolean> {
         const task = (await readState()).tasks.find((t) => t.id === input.id);
-        if (!task || (stage === "implementacao" && !task.implementation)) return false;
+        if (
+          !task ||
+          (stage === "implementacao" && !task.implementation) ||
+          (stage === "triagem" && !task.triage) ||
+          (stage === "review" && !task.review) ||
+          (stage === "mr" && !task.publication)
+        )
+          return false;
         await runRetro({
           harness,
           runtime,
@@ -631,7 +719,7 @@ export async function startFactory(opts: {
       }
 
       /** Portão `retroApproval`: pede pausa (o próximo passo espera) e avisa o usuário, uma vez por etapa. */
-      async function holdAfterRetro(stage: "spec" | "implementacao"): Promise<void> {
+      async function holdAfterRetro(stage: RetroStage): Promise<void> {
         let held = false;
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
@@ -647,7 +735,7 @@ export async function startFactory(opts: {
           target: input.key,
           reason: "retro-pronta",
           message:
-            `A retrô da ${stage === "spec" ? "SPEC" : "implementação"} do card ${input.key} está pronta. ` +
+            `A retrô da etapa ${stage} do card ${input.key} está pronta. ` +
             "A Tarefa está pausada antes da próxima etapa: revise e retome para continuar.",
         });
       }
@@ -833,6 +921,7 @@ export async function startFactory(opts: {
   registry.install(TriageExtension);
   registry.install(RetroExtension);
   registry.install(implementationTools.extension);
+  registry.install(reviewTools.extension);
   await mkdir(dirname(opts.statePath), { recursive: true });
   const harness = await Harness.open(
     await openNodeSqliteStorage(opts.statePath),
@@ -1045,7 +1134,7 @@ export async function startFactory(opts: {
     let next: QueuedTask | undefined;
     let wakeAt = Number.POSITIVE_INFINITY;
     for (const task of state.tasks) {
-      if (task.status !== "enfileirada" || task.pauseRequested) continue;
+      if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
       const project = projects.get(task.project);
       if (!project) {
         if (!missingProjectReported.has(task.id)) {
@@ -1077,7 +1166,12 @@ export async function startFactory(opts: {
     await harness.commit(async (tx) => {
       const draft = await tx.doc(StateDoc);
       const task = draft.tasks.find((t) => t.id === next.id);
-      if (task?.status !== "enfileirada" || draft.tasks.some((t) => t.status === "ativa")) return;
+      if (
+        !task ||
+        !["enfileirada", "aguardando-entrega"].includes(task.status) ||
+        draft.tasks.some((t) => t.status === "ativa")
+      )
+        return;
       task.status = "ativa";
       task.notBefore = null;
       if (task.gateId !== null) {
@@ -1175,7 +1269,7 @@ export async function startFactory(opts: {
       updateTask(id, (task) => {
         if (TERMINAL.has(task.status)) return;
         task.pauseRequested = true;
-        if (task.status === "enfileirada") task.status = "pausada";
+        if (["enfileirada", "aguardando-entrega"].includes(task.status)) task.status = "pausada";
       }),
     resume: (id: string) =>
       updateTask(id, (task) => {
@@ -1573,7 +1667,7 @@ export async function startFactory(opts: {
         }
       }
       const retroRoute = url.pathname.match(
-        /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(spec|implementacao|tarefa)\/(\d+)(\/approve)?$/,
+        /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(triagem|spec|implementacao|review|mr|tarefa)\/(\d+)(\/approve)?$/,
       );
       if (retroRoute && (req.method === "GET" || req.method === "POST")) {
         const [, encodedProject, encodedKey, stage, number, approval] = retroRoute;

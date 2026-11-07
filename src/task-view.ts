@@ -48,6 +48,8 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
       publication: publication ?? "sent",
       reminder: reminder ?? null,
     })),
+    review: task.review ? { head: task.review.head, status: task.review.status, summary: task.review.summary } : null,
+    publication: task.publication ?? null,
     spec: task.delivery?.spec ?? null,
     specReview: task.specReview ?? null,
     triage: task.triage
@@ -60,6 +62,9 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
           branchOrigin: implementation.branchOrigin ?? null,
           commits: implementation.commits,
           pushed: implementation.pushed,
+          baseline: implementation.baseline ?? null,
+          baselineDiagnostic: implementation.baselineDiagnostic ?? null,
+          environmentRecovery: implementation.environmentRecovery ?? null,
         }
       : null,
     /** Retrôs das etapas e a consolidada, com as propostas classificadas e o que virou cada uma. */

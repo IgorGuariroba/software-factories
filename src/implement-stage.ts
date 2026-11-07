@@ -25,6 +25,7 @@ import type { EffectWriter } from "./effect-writer.js";
 import type { EventRecorder } from "./events.js";
 import { git } from "./git.js";
 import { resolveRepository } from "./repo-resolver.js";
+import { redactSecrets } from "./secrets.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TestRun, TestRunner } from "./test-runner.js";
 import {
@@ -280,6 +281,7 @@ export async function runImplementation(opts: {
       const sha = await commit(verdict, step.phase, ticket?.titulo ?? "");
       progress.commits.push({ ...step, sha });
       progress.head = sha;
+      progress.pushed = false;
       progress.requests++;
       progress.rejections = 0;
       progress.feedback = null;
@@ -291,12 +293,7 @@ export async function runImplementation(opts: {
     }
   }
 
-  if (!progress.pushed) {
-    runtime.signal.throwIfAborted();
-    await writer.pushBranch(worktree, progress.branch);
-    progress.pushed = true;
-    await save(progress);
-  }
+  // O envio acontece na etapa de entrega, somente depois do review do HEAD final.
 
   /** Primeira vez: resolve o repositório, clona, cria a branch e a conversa, e registra tudo num commit só. */
   async function start(): Promise<ImplementationProgress> {
@@ -341,6 +338,8 @@ export async function runImplementation(opts: {
         test: copyOutOfCommit(mapping.test),
         conversationId: conversation.id,
         head,
+        baseHead: head,
+        defaultBranch,
         commits: [],
         baseline: null,
         requests: 0,
@@ -377,14 +376,15 @@ export async function runImplementation(opts: {
   }
 
   /** Roda a suíte configurada no clone. Um comando que nem executa bloqueia a Tarefa. */
-  async function runSuite(): Promise<TestRun> {
+  async function runSuite(requireExecutable = true): Promise<TestRun> {
     const run = await deps.testRunner.run({
       cwd: worktree,
       command: progress.test.command,
       timeoutMs: progress.test.timeoutSeconds * 1000,
       signal: runtime.signal,
     });
-    if (run.spawnError) throw new StageBlocked(`o comando de teste não executa: ${run.spawnError}`);
+    if (run.spawnError && requireExecutable)
+      throw new StageBlocked(`o comando de teste não executa: ${run.spawnError}`);
     return run;
   }
 
@@ -400,11 +400,47 @@ export async function runImplementation(opts: {
       // diff HEAD cobre índice e working tree, inclusive arquivos adicionados ao índice.
       const pending = await git(worktree, ["diff", "--name-only", "-z", "--no-renames", "HEAD"]);
       if (pending.length > 0) throw new StageBlocked(baselineWorkspaceBlockedReason(progress.branch));
-      const run = await runSuite();
-      progress.baseline = run.exitCode === 0 ? "verde" : "vermelha";
+      let run = await runSuite(false);
+      run = await recoverEnvironment(run);
+      progress.baselineDiagnostic = redactSecrets(describeRun(run));
+      progress.baseline = run.exitCode === 0 && !run.timedOut && !run.spawnError ? "verde" : "vermelha";
       await save(progress);
     }
     if (progress.baseline === "vermelha") throw new StageBlocked(baselineBlockedReason(progress.branch));
+  }
+
+  /** Recuperação limitada: só dependência de pacote ausente, com npm lockfile, sem shell nem scripts. */
+  async function recoverEnvironment(run: TestRun): Promise<TestRun> {
+    if (run.exitCode === 0 || run.timedOut || progress.environmentRecovery?.attempts) return run;
+    const missingPackage = /(?:Cannot find (?:package|module)|Could not resolve) ['"]@?[\w-]+(?:\/[\w.-]+)?['"]/;
+    if (!missingPackage.test(run.output)) return run;
+    const manifest = JSON.parse(await readFile(await confine(worktree, "package.json"), "utf8").catch(() => "null"));
+    const lock = JSON.parse(await readFile(await confine(worktree, "package-lock.json"), "utf8").catch(() => "null"));
+    if (!manifest || !lock?.lockfileVersion || (manifest.packageManager && !manifest.packageManager.startsWith("npm@")))
+      return run;
+    // A instalação não pode introduzir dependências que depois sejam incluídas nos commits do TDD.
+    const ignored = await git(worktree, ["check-ignore", "node_modules/"]).catch(() => "");
+    if (!ignored.trim()) return run;
+    progress.baselineDiagnostic = redactSecrets(describeRun(run));
+    progress.environmentRecovery = { attempts: 1, status: "iniciada", diagnostic: progress.baselineDiagnostic };
+    await save(progress);
+    const setup = await deps.testRunner.run({
+      cwd: worktree,
+      command: ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+      timeoutMs: 120_000,
+      signal: runtime.signal,
+    });
+    progress.environmentRecovery.diagnostic = redactSecrets(describeRun(setup));
+    progress.environmentRecovery.status = "falhou";
+    await save(progress);
+    const pending = await git(worktree, ["diff", "--name-only", "-z", "--no-renames", "HEAD"]);
+    if (pending.length > 0) throw new StageBlocked(baselineWorkspaceBlockedReason(progress.branch));
+    if (setup.exitCode !== 0 || setup.timedOut || setup.spawnError) return run;
+    const measured = await runSuite(false);
+    if (measured.exitCode === 0 && !measured.timedOut && !measured.spawnError)
+      progress.environmentRecovery.status = "recuperado";
+    await save(progress);
+    return measured;
   }
 
   /** Confere a fase: devolve os caminhos a commitar, ou por que recusou. */
