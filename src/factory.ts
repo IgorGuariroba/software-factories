@@ -423,8 +423,9 @@ export async function startFactory(opts: {
               worktreesRoot: implementationDeps.worktreesRoot,
             });
           } catch (err) {
-            // CI reprovada: o status gravado aparece no progresso antes do bloqueio seguir.
-            await publishProgress();
+            // Bloqueio na entrega (ex.: CI reprovada): o motivo aparece no progresso e o bloqueio segue.
+            if (err instanceof StageBlocked) await progressOnce(`Entrega bloqueada: ${redactSecrets(err.message)}`);
+            else await publishProgress();
             throw err;
           }
           await publishProgress();
