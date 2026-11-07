@@ -12,10 +12,11 @@ jobs:
   pr-agent:
     # Ignora bots (inclusive a fábrica e o CodeRabbit). Comandos por comentário só de quem tem acesso de escrita
     # ao repositório e só /review ou /improve: evita gasto de tokens e uso do token por terceiros.
-    # PRs de fork ficam de fora de propósito: pull_request_target exporia secrets a contribuições externas.
+    # PRs de fork não têm review automático (pull_request_target exporia secrets); um mantenedor pode pedir
+    # /review ou /improve neles conscientemente: o agente só lê o diff, sem executar código do PR. Rascunhos esperam.
     if: >-
       github.event.sender.type != 'Bot' && (
-        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (
+        (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository) || (
           github.event.issue.pull_request &&
           contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
           (startsWith(github.event.comment.body, '/review') || startsWith(github.event.comment.body, '/improve'))
