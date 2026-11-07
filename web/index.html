@@ -21,88 +21,98 @@
 
     <p id="aviso" class="aviso" role="alert" hidden></p>
 
-    <main>
-      <section aria-labelledby="titulo-fila">
-        <h2 id="titulo-fila">Fila</h2>
-        <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa na fila.</p>
-        <table id="fila">
-          <thead>
-            <tr>
-              <th scope="col">#</th>
-              <th scope="col">Card</th>
-              <th scope="col">Título</th>
-              <th scope="col">Status</th>
-              <th scope="col">Etapa</th>
-              <th scope="col">Ações</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
+    <div class="layout">
+      <aside class="lateral" aria-label="Tarefas">
+        <section aria-labelledby="titulo-fila">
+          <h2 id="titulo-fila">Em andamento <span id="fila-contagem" class="contagem"></span></h2>
+          <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa na fila.</p>
+          <ol id="fila" class="cartoes"></ol>
+        </section>
 
-      <section aria-labelledby="titulo-encerradas">
-        <h2 id="titulo-encerradas">Encerradas</h2>
-        <p id="encerradas-vazia" class="vazio" hidden>Nenhuma tarefa encerrada.</p>
-        <table id="encerradas">
-          <thead>
-            <tr>
-              <th scope="col">Card</th>
-              <th scope="col">Título</th>
-              <th scope="col">Status</th>
-              <th scope="col">Etapa</th>
-              <th scope="col">Motivo</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
+        <details>
+          <summary>Encerradas <span id="encerradas-contagem" class="contagem"></span></summary>
+          <p id="encerradas-vazia" class="vazio" hidden>Nenhuma tarefa encerrada.</p>
+          <ol id="encerradas" class="cartoes"></ol>
+        </details>
 
-      <section aria-labelledby="titulo-elegiveis">
-        <h2 id="titulo-elegiveis">Cards elegíveis na Fonte</h2>
-        <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
-        <ul id="elegiveis" class="lista"></ul>
-      </section>
+        <details>
+          <summary>Cards elegíveis na Fonte</summary>
+          <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
+          <ul id="elegiveis" class="lista"></ul>
+        </details>
+      </aside>
 
-      <section id="detalhe" aria-labelledby="titulo-detalhe" hidden>
-        <h2 id="titulo-detalhe">Tarefa</h2>
-        <button type="button" id="fechar-detalhe">Fechar</button>
-        <dl id="detalhe-estado" class="estado"></dl>
-        <div id="detalhe-acoes" class="acoes"></div>
+      <main class="painel">
+        <p id="detalhe-vazio" class="vazio centro">Selecione uma tarefa à esquerda para ver o que a fábrica está fazendo.</p>
 
-        <h3>Triagem</h3>
-        <div id="detalhe-triagem"></div>
+        <article id="detalhe" aria-labelledby="titulo-detalhe" hidden>
+          <header class="cabecalho">
+            <div>
+              <p id="detalhe-ref" class="ref"></p>
+              <h2 id="titulo-detalhe">Tarefa</h2>
+              <p id="detalhe-estado" class="linha-estado"></p>
+            </div>
+            <div class="acoes">
+              <span id="detalhe-acoes" class="acoes"></span>
+              <button type="button" id="fechar-detalhe" aria-label="Fechar detalhe">✕</button>
+            </div>
+          </header>
 
-        <h3>Perguntas ao PO</h3>
-        <ul id="detalhe-perguntas" class="lista"></ul>
+          <p id="detalhe-proximo" class="proximo" role="status" hidden></p>
 
-        <h3>SPEC</h3>
-        <div id="detalhe-spec-revisao"></div>
-        <pre id="detalhe-spec" class="texto"></pre>
-        <ol id="detalhe-tickets" class="lista"></ol>
+          <ol id="detalhe-pipeline" class="pipeline" aria-label="Etapas do fluxo"></ol>
 
-        <h3>Implementação</h3>
-        <div id="detalhe-implementacao"></div>
+          <div class="abas" role="tablist" aria-label="Seções da Tarefa">
+            <button type="button" role="tab" data-aba="atividade">Atividade</button>
+            <button type="button" role="tab" data-aba="spec">SPEC e Tickets</button>
+            <button type="button" role="tab" data-aba="implementacao">Implementação</button>
+            <button type="button" role="tab" data-aba="perguntas">Perguntas</button>
+            <button type="button" role="tab" data-aba="retros">Retrôs</button>
+            <button type="button" role="tab" data-aba="escritas">Escritas</button>
+          </div>
 
-        <h3>Retrôs</h3>
-        <div id="detalhe-retros"></div>
+          <section data-painel="atividade" role="tabpanel">
+            <ol id="detalhe-eventos" class="linha-do-tempo"></ol>
+          </section>
 
-        <h3>Escritas registradas</h3>
-        <table id="detalhe-escritas">
-          <thead>
-            <tr>
-              <th scope="col">Quando</th>
-              <th scope="col">Situação</th>
-              <th scope="col">Ação</th>
-              <th scope="col">Alvo</th>
-              <th scope="col">Conteúdo</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+          <section data-painel="spec" role="tabpanel" hidden>
+            <h3>Triagem</h3>
+            <div id="detalhe-triagem"></div>
+            <h3>SPEC</h3>
+            <div id="detalhe-spec-revisao"></div>
+            <pre id="detalhe-spec" class="texto"></pre>
+            <h3>Tickets</h3>
+            <ol id="detalhe-tickets" class="lista"></ol>
+          </section>
 
-        <h3>Histórico de eventos</h3>
-        <ol id="detalhe-eventos" class="lista historico"></ol>
-      </section>
-    </main>
+          <section data-painel="implementacao" role="tabpanel" hidden>
+            <div id="detalhe-implementacao"></div>
+          </section>
+
+          <section data-painel="perguntas" role="tabpanel" hidden>
+            <ul id="detalhe-perguntas" class="lista"></ul>
+          </section>
+
+          <section data-painel="retros" role="tabpanel" hidden>
+            <div id="detalhe-retros"></div>
+          </section>
+
+          <section data-painel="escritas" role="tabpanel" hidden>
+            <table id="detalhe-escritas">
+              <thead>
+                <tr>
+                  <th scope="col">Quando</th>
+                  <th scope="col">Situação</th>
+                  <th scope="col">Ação</th>
+                  <th scope="col">Alvo</th>
+                  <th scope="col">Conteúdo</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </section>
+        </article>
+      </main>
+    </div>
   </body>
 </html>

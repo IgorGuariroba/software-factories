@@ -135,3 +135,60 @@ describe("status no detalhe da Tarefa", () => {
     expect(detailStatusLabel({ status: "ativa" })).toBe("Ativa");
   });
 });
+
+describe("pipeline e atividade na página da Tarefa", () => {
+  const base = { status: "ativa", stage: "implementacao", retros: [], questions: [], publication: null, review: null };
+
+  it("mostra as etapas do fluxo com feito, atual e pendente", async () => {
+    const { pipelineSteps } = await import("../web/view.js");
+    expect(pipelineSteps(base).map((s) => [s.key, s.state])).toEqual([
+      ["triagem", "feito"],
+      ["spec", "feito"],
+      ["implementacao", "atual"],
+      ["review", "pendente"],
+      ["entrega", "pendente"],
+      ["merge", "pendente"],
+    ]);
+    expect(pipelineSteps({ ...base, status: "bloqueada" }).find((s) => s.key === "implementacao")?.state).toBe(
+      "bloqueado",
+    );
+    expect(pipelineSteps({ ...base, status: "pausada" }).find((s) => s.key === "implementacao")?.state).toBe("espera");
+    expect(
+      pipelineSteps({ ...base, status: "concluida", stage: "entrega", publication: { status: "merged" } }).every(
+        (s) => s.state === "feito",
+      ),
+    ).toBe(true);
+  });
+
+  it("diz em uma frase o que a Tarefa precisa de você agora", async () => {
+    const { nextAction } = await import("../web/view.js");
+    expect(nextAction({ ...base, status: "pausada", retros: [{ stage: "implementacao", status: "concluida" }] })).toBe(
+      "Revise a Retrô da implementação e retome a Tarefa.",
+    );
+    expect(nextAction({ ...base, status: "aguardando-humano", specReview: "draft" })).toBe(
+      "Aprove a SPEC e os Tickets para continuar.",
+    );
+    expect(nextAction({ ...base, status: "bloqueada", reason: "CI falhou" })).toBe("Bloqueada: CI falhou");
+    expect(nextAction({ ...base, status: "aguardando-entrega", publication: { url: "https://x/pull/1" } })).toBe(
+      "PR/MR aberto; aguardando CI, comentários e o seu merge.",
+    );
+    expect(nextAction(base)).toBeNull();
+  });
+
+  it("agrupa a atividade, mais recente primeiro, sem o vaivém de fila", async () => {
+    const { activity } = await import("../web/view.js");
+    const events = [
+      { type: "task", status: "enfileirada", at: "1" },
+      { type: "task", status: "ativa", at: "2" },
+      { type: "task", status: "enfileirada", reason: "espera vaga", at: "3" },
+      { type: "task", status: "ativa", at: "4" },
+      { type: "progress", message: "Commit abc", at: "5" },
+      { type: "write", action: "comment", target: "X", dryRun: false, at: "6" },
+    ];
+    expect(activity(events).map((a) => [a.at, a.kind, a.text])).toEqual([
+      ["6", "escrita", "Escrita: comment em X"],
+      ["5", "progresso", "Commit abc"],
+      ["4", "status", "Status: Ativa"],
+    ]);
+  });
+});
