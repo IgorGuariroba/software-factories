@@ -1,6 +1,7 @@
 // Página de gestão: lê e comanda a fábrica só pela API local, e se atualiza pelo stream de eventos (SSE).
 // O DOM é montado com createElement e textContent: conteúdo do card e do modelo nunca vira HTML.
 import {
+  answerQuestion,
   approveQuestion,
   approveReminder,
   approveRetro,
@@ -29,6 +30,7 @@ import {
   actionsFor,
   activity,
   boardColumns,
+  cardHint,
   detailStatusLabel,
   formatCommit,
   isTerminal,
@@ -91,6 +93,34 @@ async function run(command) {
     showError(err);
   }
   await refresh();
+}
+
+/** Rascunhos das respostas: sobrevivem ao redesenho ao vivo do detalhe enquanto você digita. */
+const answerDrafts = new Map();
+
+function answerForm(task, question) {
+  const id = `${task.id}#${question.n}`;
+  const field = el("textarea", {
+    attrs: { rows: "3", "aria-label": `Resposta à pergunta ${question.n}`, placeholder: "Sua resposta" },
+  });
+  field.value = answerDrafts.get(id) ?? "";
+  field.addEventListener("input", () => answerDrafts.set(id, field.value));
+  const send = el("button", {
+    text: "Responder",
+    attrs: { type: "submit" },
+  });
+  const form = el("form", { className: "resposta" }, field, send);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const answer = field.value.trim();
+    if (!answer) return;
+    send.disabled = true;
+    run(async () => {
+      await answerQuestion(task.project, task.key, question.n, answer);
+      answerDrafts.delete(id);
+    });
+  });
+  return form;
 }
 
 function reviewReminderButton(task, question) {
@@ -319,12 +349,11 @@ function statusPill(task) {
 function taskCard(task) {
   const isSelected = selected && task.project === selected.project && task.key === selected.key;
   const open = !isTerminal(task);
-  const action = nextAction(task);
-  const hint = action === "Aguardando você." ? task.reason : action;
+  const hint = cardHint(task);
   const card = el(
     "a",
     {
-      className: `cartao${isSelected ? " selecionada" : ""}${hint && task.status !== "bloqueada" ? " sua-vez" : ""}`,
+      className: `cartao${isSelected ? " selecionada" : ""}${hint?.yourTurn ? " sua-vez" : ""}`,
       attrs: {
         href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}`,
         ...(isSelected ? { "aria-current": "page" } : {}),
@@ -337,7 +366,7 @@ function taskCard(task) {
       el("span", { className: "projeto", text: task.project }),
     ),
     el("span", { className: "titulo" }, el("span", { className: `situacao ${task.status}` }), task.title),
-    ...(hint ? [el("span", { className: "dica", text: hint })] : []),
+    ...(hint ? [el("span", { className: "dica", text: hint.text })] : []),
     el(
       "span",
       { className: "meta" },
@@ -429,14 +458,19 @@ function renderDetail(task) {
                 q.publication === "draft"
                   ? "(aguarda revisão)"
                   : q.publication === "sending"
-                    ? "(publicação não confirmada; verifique o Jira)"
+                    ? "(publicação não confirmada; verifique o card na Fonte)"
                     : q.answer === null
                       ? "(pendente)"
                       : `Resposta: ${q.answer}`,
             }),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
+            ...(q.answer === null && q.publication !== "draft" && q.publication !== "sending"
+              ? [answerForm(task, q)]
+              : []),
             ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),
-            ...(q.reminder === "sending" ? [el("p", { text: "Lembrete não confirmado; verifique o Jira." })] : []),
+            ...(q.reminder === "sending"
+              ? [el("p", { text: "Lembrete não confirmado; verifique o card na Fonte." })]
+              : []),
             ...(q.teamsNotice === "uncertain" || q.teamsNotice === "attempted"
               ? [el("p", { text: "Aviso Teams não confirmado; verifique o chat antes de reenviar." })]
               : []),

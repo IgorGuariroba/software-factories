@@ -2,7 +2,20 @@ import type { QueuedTask } from "./durable.js";
 import type { FactoryEvent } from "./events.js";
 
 /** Uma Tarefa como a API a lista em `GET /tasks`. */
-export const taskSummary = ({ id, project, key, title, status, stage, attempts, reason, ref }: QueuedTask) => ({
+export const taskSummary = ({
+  id,
+  project,
+  key,
+  title,
+  status,
+  stage,
+  attempts,
+  reason,
+  ref,
+  specReview,
+  triage,
+  questions,
+}: QueuedTask) => ({
   id,
   /** Identificador opaco da Tarefa: o único que sai no link das issues públicas da fábrica. */
   ref: ref ?? null,
@@ -13,6 +26,12 @@ export const taskSummary = ({ id, project, key, title, status, stage, attempts, 
   stage: stage ?? null,
   attempts,
   reason,
+  /** O que o quadro precisa para dizer a ação pendente sem abrir o detalhe. */
+  specReview: specReview ?? null,
+  triageReview: triage?.review ?? null,
+  /** Só a que já pode ser respondida: rascunho ou envio não confirmado não têm resposta ainda. */
+  pendingQuestion:
+    questions?.find((q) => q.answer === null && q.publication !== "draft" && q.publication !== "sending")?.n ?? null,
 });
 
 /**
