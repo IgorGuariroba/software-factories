@@ -194,7 +194,24 @@ describe("Telegram: eventos ao usuário", () => {
     await eventually(() => expect(telegram.texts().join("\n")).toContain("Confirmar resposta para exemplo/PROJ-1"));
     expect(model.calls).toHaveLength(1);
     factory = await f.restart();
-    telegram.tap(telegram.button("Confirmar resposta"));
+    const confirmedFactory = factory;
+    const confirmTap = telegram.tap(telegram.button("Confirmar resposta"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: confirmTap,
+        text: "Resposta registrada para exemplo/PROJ-1, pergunta 1.",
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(confirmedFactory)).toContainEqual(
+        expect.objectContaining({
+          text: "/confirmar-resposta",
+          accepted: true,
+          result: "Resposta registrada para exemplo/PROJ-1, pergunta 1.",
+        }),
+      ),
+    );
+    await eventually(() => expect(telegram.texts()).toContain("Resposta registrada para exemplo/PROJ-1, pergunta 1."));
     await eventually(() =>
       expect(telegram.texts().join("\n")).toContain("SPEC de PROJ-1 (exemplo) pronta para revisão"),
     );

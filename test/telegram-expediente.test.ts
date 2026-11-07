@@ -84,7 +84,7 @@ it("fila da empresa sobrevive ao reinício sem bloquear mensagens pessoais", asy
   }
 });
 
-it("aviso diferido full não vaza segredo se a config vira minimal antes da entrega", async () => {
+it.each(["atual", "legado"])("aviso diferido %s full não vaza segredo ao mudar para minimal", async (format) => {
   const clock = new FakeClock("2026-11-07T10:00:00-03:00");
   const monday = Date.parse("2026-11-09T09:00:00-03:00");
   const telegram = new FakeTelegram();
@@ -144,6 +144,10 @@ it("aviso diferido full não vaza segredo se a config vira minimal antes da entr
     await eventually(() => expect(progress?.deferred?.length).toBe(1));
     expect(telegram.texts().join("\n")).not.toContain("SEGREDONEGOCIO");
     await bridge.stop();
+    if (format === "legado" && progress?.deferred) {
+      // Contrato antigo da porta de progresso: guardava apenas projeto e mensagem renderizada.
+      progress.deferred = progress.deferred.map(({ project, message }) => ({ project, message }));
+    }
     contentLevel = "minimal";
     bridge = await start();
     clock.advanceTo(new Date(monday));
