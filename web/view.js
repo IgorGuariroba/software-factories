@@ -166,6 +166,7 @@ export function describeEvent(e) {
     case "command":
       return `Comando pelo ${e.via}: ${e.text} (${e.result})`;
     case "retro":
+    case "progress":
       return e.message;
     case "delivery":
       return `Mensagem descartada no ${e.via} depois de ${e.attempts} tentativas`;

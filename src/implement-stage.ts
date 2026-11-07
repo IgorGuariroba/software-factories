@@ -271,6 +271,12 @@ export async function runImplementation(opts: {
         progress.rejections++;
         progress.feedback = verdict;
         await save(progress);
+        await deps.events.append({
+          type: "progress",
+          project: config.name,
+          target: card.key,
+          message: `TDD recusado no ticket ${step.ticket + 1} (${step.phase}): ${redactSecrets(verdict).slice(0, 300)}`,
+        });
         if (progress.rejections >= MAX_TDD_REJECTIONS)
           throw new StageBlocked(
             `TDD recusado ${progress.rejections} vezes na fase ${step.phase} do ticket ${step.ticket + 1}: ${verdict}`,
@@ -280,6 +286,12 @@ export async function runImplementation(opts: {
       const ticket = delivery.tickets[step.ticket];
       const sha = await commit(verdict, step.phase, ticket?.titulo ?? "");
       progress.commits.push({ ...step, sha });
+      await deps.events.append({
+        type: "progress",
+        project: config.name,
+        target: card.key,
+        message: `Commit ${sha.slice(0, 8)}: ticket ${step.ticket + 1}/${delivery.tickets.length} (${step.phase === "teste" ? "teste RED" : "implementação GREEN"}) — ${redactSecrets(ticket?.titulo ?? "")}`,
+      });
       progress.head = sha;
       progress.pushed = false;
       progress.requests++;
@@ -369,6 +381,7 @@ export async function runImplementation(opts: {
       throw new StageBlocked(`o histórico do clone ${worktree} divergiu do registrado (HEAD ${head})`);
     progress.commits.push({ ...next, sha: head });
     progress.head = head;
+    progress.pushed = false;
     progress.requests++;
     progress.rejections = 0;
     progress.feedback = null;
