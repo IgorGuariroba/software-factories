@@ -54,9 +54,9 @@ jobs:
           PR_REVIEWER.REQUIRE_MERGE_RECOMMENDATION: "true"
           PR_REVIEWER.REQUIRE_FAILURE_MODES: "true"
           PR_REVIEWER.ENABLE_HELP_TEXT: "false"
-          # Sugestões importantes viram sugestão aplicável na linha; sem autoavaliação válida, a sugestão cai.
+          # Sugestões importantes (nota >= 7) viram sugestão aplicável na linha; sem autoavaliação válida, ficam só na tabela.
           PR_CODE_SUGGESTIONS.DUAL_PUBLISHING_SCORE_THRESHOLD: "7"
           PR_CODE_SUGGESTIONS.SUGGESTIONS_SCORE_THRESHOLD: "5"
-          PR_CODE_SUGGESTIONS.SCORE_ON_REFLECTION_FAILURE: "0"
+          PR_CODE_SUGGESTIONS.SCORE_ON_REFLECTION_FAILURE: "5"
           # Revisa também a cada push no PR (padrão ignora synchronize).
           GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
