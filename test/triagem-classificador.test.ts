@@ -16,6 +16,7 @@ type Answers = {
   categoria?: [string, number];
   injecao?: number;
   duplicata?: string;
+  duplicataConfidence?: number;
 };
 /** Classificador fake: responde `answers` e guarda o contexto recebido. */
 function classifier(a: Answers, stopReason: ClassifierResult["stopReason"] = "stop") {
@@ -38,7 +39,9 @@ function classifier(a: Answers, stopReason: ClassifierResult["stopReason"] = "st
         decisao: choice(a.decisao),
         categoria: choice(a.categoria ?? ["ok", 0.9]),
         injecao: { type: "bool", probability: a.injecao ?? 0.02 },
-        ...(context.questions.duplicata ? { duplicata: choice([a.duplicata ?? "nenhuma", 0.9]) } : {}),
+        ...(context.questions.duplicata
+          ? { duplicata: choice([a.duplicata ?? "nenhuma", a.duplicataConfidence ?? 0.9]) }
+          : {}),
       },
     };
   };
@@ -96,6 +99,49 @@ describe("triagem por classificador (System One, ex.: Jev)", () => {
       classify: classifier({ decisao: ["recusa", 0.9], categoria: ["duplicata", 0.9], duplicata: "SF-9" }).classify,
     });
     expect(r.verdict).toBe("duvidosa");
+  });
+
+  it("aceita, mas apontada como duplicata com confiança: vai ao usuário; com confiança baixa, a duplicata é ignorada", async () => {
+    const others = [card(3, "Planilha")];
+    const sure = await classifyTriage({
+      ...input,
+      others,
+      classify: classifier({ decisao: ["aceita", 0.9], duplicata: "SF-3" }).classify,
+    });
+    expect(sure).toMatchObject({ verdict: "duvidosa", category: "duplicata", duplicateOf: "SF-3" });
+    const noisy = await classifyTriage({
+      ...input,
+      others,
+      classify: classifier({ decisao: ["aceita", 0.9], duplicata: "SF-3", duplicataConfidence: 0.4 }).classify,
+    });
+    expect(noisy).toMatchObject({ verdict: "aceita" });
+    expect(noisy.reason).not.toMatch(/duplicata/);
+  });
+
+  it("categoria duplicata numa aceita: vai ao usuário e mantém a referência", async () => {
+    const r = await classifyTriage({
+      ...input,
+      others: [card(3, "Planilha")],
+      classify: classifier({ decisao: ["aceita", 0.9], categoria: ["duplicata", 0.9], duplicata: "SF-3" }).classify,
+    });
+    expect(r).toMatchObject({ verdict: "duvidosa", category: "duplicata", duplicateOf: "SF-3" });
+  });
+
+  it("as outras issues vão com a descrição: títulos genéricos não bastam para comparar", async () => {
+    const c = classifier({ decisao: ["aceita", 0.9] });
+    const a = { ...card(3, "Melhorias"), description: "Exportar o relatório em PDF." };
+    const b = { ...card(4, "Melhorias"), description: "Trocar a cor do botão de login." };
+    await classifyTriage({ ...input, others: [a, b], classify: c.classify });
+    const sent = JSON.stringify(c.seen[0]?.state);
+    expect(sent).toContain("Exportar o relatório em PDF.");
+    expect(sent).toContain("Trocar a cor do botão de login.");
+  });
+
+  it("a categoria segurança é para ação perigosa, não para issue que só trata do tema", async () => {
+    const c = classifier({ decisao: ["aceita", 0.9] });
+    await classifyTriage({ ...input, classify: c.classify });
+    const categoria = c.seen[0]?.questions.categoria as { criteria: Record<string, string> } | undefined;
+    expect(categoria?.criteria.seguranca).toMatch(/só trata de segurança como tema/);
   });
 
   it("recusa com categoria ok é contraditória: vai ao usuário", async () => {
