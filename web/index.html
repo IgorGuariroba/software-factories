@@ -16,9 +16,24 @@
         <span id="daemon" class="selo">daemon: …</span>
         <button type="button" id="alternar-daemon" disabled>Pausar daemon</button>
         <button type="button" id="buscar">Buscar na Fonte</button>
+        <button type="button" id="configurar-retros">Configurar publicações</button>
       </div>
     </header>
 
+    <dialog id="configuracao-retros" aria-labelledby="configuracao-retros-titulo">
+      <form id="form-retros" class="resposta">
+        <h2 id="configuracao-retros-titulo">Publicações de retrô</h2>
+        <p>Escolha o repositório GitHub onde as sugestões aprovadas serão publicadas como issues. Esta configuração é global para todos os projetos.</p>
+        <label for="repositorio-retros">Repositório público (dono/nome)</label>
+        <input id="repositorio-retros" name="repo" required maxlength="200" placeholder="usuario/software-factories" aria-describedby="retros-impacto" />
+        <p id="retros-impacto">Salvar não publica nada. Cada proposta continua exigindo revisão e aprovação. A escolha fica salva neste daemon e vale sem reinício; substitui o valor inicial do ambiente.</p>
+        <p id="retros-config-status" role="status"></p>
+        <div class="acoes">
+          <button type="submit" id="salvar-retros">Salvar configuração</button>
+          <button type="button" id="fechar-configuracao-retros">Fechar</button>
+        </div>
+      </form>
+    </dialog>
     <p id="aviso" class="aviso" role="alert" hidden></p>
 
     <div class="layout">

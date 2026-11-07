@@ -14,6 +14,7 @@ import {
   getQueue,
   getReminderPreview,
   getRetroPreview,
+  getRetroSettings,
   getSpecPreview,
   getTask,
   getTasks,
@@ -24,6 +25,7 @@ import {
   reorderTasks,
   resumeDaemon,
   resumeTask,
+  saveRetroSettings,
   vetoTask,
 } from "./api.js";
 import {
@@ -307,8 +309,19 @@ function reviewRetroButton(task, retro, proposal) {
         }
         notice.textContent =
           message === "repositório da fábrica não configurado"
-            ? "Publicação opcional indisponível: configure FACTORY_RETRO_REPO=dono/nome no ambiente do daemon e reinicie-o para publicar sugestões como issues. Isso não impede retomar a tarefa."
+            ? "Publicação opcional indisponível: escolha o repositório em Configurar publicações. Isso não impede retomar a tarefa."
             : `Não foi possível revisar esta publicação opcional: ${message}`;
+        if (
+          message === "repositório da fábrica não configurado" &&
+          !container.querySelector("[data-configurar-retros]")
+        )
+          container.append(
+            el("button", {
+              text: "Configurar repositório",
+              attrs: { type: "button", "data-configurar-retros": "" },
+              onClick: openRetroSettings,
+            }),
+          );
       }
     },
   });
@@ -823,6 +836,43 @@ function connect() {
     status.className = "selo alerta";
   });
 }
+
+async function openRetroSettings() {
+  const dialog = $("configuracao-retros");
+  const status = $("retros-config-status");
+  const save = $("salvar-retros");
+  status.textContent = "Carregando configuração…";
+  save.disabled = true;
+  $("repositorio-retros").disabled = true;
+  dialog.showModal();
+  try {
+    const settings = await getRetroSettings();
+    $("repositorio-retros").value = settings.repo ?? "";
+    $("repositorio-retros").disabled = !settings.available;
+    status.textContent = settings.available ? "" : "Adaptador de publicação indisponível neste daemon.";
+    save.disabled = !settings.available;
+    $("repositorio-retros").focus();
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+$("configurar-retros").addEventListener("click", openRetroSettings);
+$("fechar-configuracao-retros").addEventListener("click", () => $("configuracao-retros").close());
+$("form-retros").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const save = $("salvar-retros");
+  save.disabled = true;
+  try {
+    const settings = await saveRetroSettings($("repositorio-retros").value.trim());
+    $("repositorio-retros").value = settings.repo;
+    $("retros-config-status").textContent =
+      "Configuração salva e aplicada. Feche esta janela e revise novamente a publicação. Nenhuma issue foi publicada.";
+  } catch (err) {
+    $("retros-config-status").textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    save.disabled = false;
+  }
+});
 
 $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDaemon : pauseDaemon));
 $("buscar").addEventListener("click", () => run(pollSource));

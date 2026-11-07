@@ -254,6 +254,8 @@ export type ImplementationProgress = {
 };
 
 export type FactoryState = {
+  /** Escolha da interface web; prevalece sobre o valor inicial do ambiente. */
+  retroRepo?: string;
   daemonPaused: boolean;
   tasks: QueuedTask[];
 };

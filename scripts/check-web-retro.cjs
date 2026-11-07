@@ -19,6 +19,11 @@ const code = async (page) => {
   await page.route("**/tasks/sf/SF-26/retros/spec/1", (route) => route.fulfill({
     status: 409, contentType: "application/json", body: JSON.stringify({ error: "repositório da fábrica não configurado" }),
   }));
+  let configuredRepo = null;
+  await page.route("**/settings/retro", async (route) => {
+    if (route.request().method() === "POST") configuredRepo = route.request().postDataJSON().repo;
+    await route.fulfill({ json: { repo: configuredRepo, available: true } });
+  });
   await page.goto("http://127.0.0.1:7420/#/tarefa/sf/SF-26");
   await page.getByRole("button", { name: "Retomar tarefa", exact: true }).waitFor();
   const next = await page.locator("#detalhe-proximo").innerText();
@@ -29,6 +34,18 @@ const code = async (page) => {
   await page.getByRole("button", { name: "Revisar publicação pública" }).click();
   await page.getByText("Publicação opcional indisponível:", { exact: false }).waitFor();
   if (await page.locator("#aviso").isVisible()) throw new Error("Erro opcional vazou para alerta global");
+  await page.getByRole("button", { name: "Configurar repositório", exact: true }).click();
+  await page.getByRole("textbox", { name: "Repositório público (dono/nome)", exact: true }).fill("usuario/fabrica");
+  await page.getByRole("button", { name: "Salvar configuração", exact: true }).click();
+  await page.getByText("Configuração salva e aplicada.", { exact: false }).waitFor({ timeout: 5000 }).catch(async (error) => {
+    throw new Error(`${error.message}; status: ${await page.locator("#retros-config-status").innerText()}; repo: ${configuredRepo}`);
+  });
+  if (configuredRepo !== "usuario/fabrica") throw new Error("Destino não foi salvo");
+  await page.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page.getByRole("button", { name: "Configurar publicações", exact: true }).click();
+  await page.getByRole("button", { name: "Salvar configuração", exact: true }).waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("#repositorio-retros").value === "usuario/fabrica");
+  await page.getByRole("button", { name: "Fechar", exact: true }).click();
   if (!(await page.getByRole("button", { name: "Retomar tarefa", exact: true }).isEnabled()))
     throw new Error("Publicação opcional bloqueou retomada");
 };

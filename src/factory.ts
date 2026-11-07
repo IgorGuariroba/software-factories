@@ -55,6 +55,7 @@ import { type ManagementInterface, startManagementBridge } from "./management.js
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { resolveRepository } from "./repo-resolver.js";
+import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import { createReviewExtension, runReview } from "./review-stage.js";
@@ -288,12 +289,8 @@ export async function startFactory(opts: {
     const timer = setTimeout(callback, delayMs);
     return () => clearTimeout(timer);
   };
+  const retroSettings = { ...opts.retro };
   let events!: DurableEventLog;
-  if (!opts.retro?.sink || !opts.retro.repo)
-    console.warn(
-      "[fábrica] retrô sem repositório da fábrica: defina FACTORY_RETRO_REPO=dono/nome para abrir issues; " +
-        "as propostas da fábrica ficam só registradas nas Tarefas.",
-    );
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
     opts.projects.map((p) => {
@@ -335,7 +332,7 @@ export async function startFactory(opts: {
             task.review.head === progress.head
           );
         },
-        retro: opts.retro,
+        retro: retroSettings,
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
       return [p.config.name, { ...p, codeHost, writer, channel }] as const;
@@ -969,6 +966,11 @@ export async function startFactory(opts: {
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
+  retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
+  if (!retroSettings.repo)
+    console.warn(
+      "[fábrica] Configure o repositório das retrôs em Configurar publicações na web; nenhuma issue será publicada sem aprovação.",
+    );
   await reinspectPendingVetoes();
 
   /**
@@ -1410,6 +1412,7 @@ export async function startFactory(opts: {
   };
   const streams = new Set<ServerResponse>();
   const approvingRetros = new Set<string>();
+  let configuringRetro = false;
   const approvingQuestions = new Set<string>();
 
   /**
@@ -1438,6 +1441,28 @@ export async function startFactory(opts: {
       const route = `${req.method} ${url.pathname}`;
       const taskCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/(pause|resume|cancel)$/);
 
+      if (route === "GET /settings/retro")
+        return json(res, 200, { repo: retroSettings.repo ?? null, available: Boolean(retroSettings.sink) });
+      if (route === "POST /settings/retro") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { repo?: unknown } | undefined;
+        if (typeof body?.repo !== "string" || !isRetroRepository(body.repo.trim()))
+          return json(res, 400, { error: "Informe o repositório no formato dono/nome, sem URL." });
+        if (!retroSettings.sink) return json(res, 409, { error: "Adaptador de publicação indisponível neste daemon." });
+        if (configuringRetro || approvingRetros.size > 0)
+          return json(res, 409, { error: "Publicação ou configuração em andamento; tente novamente." });
+        configuringRetro = true;
+        try {
+          const repo = body.repo.trim();
+          await harness.commit(async (tx) => {
+            (await tx.doc(StateDoc)).retroRepo = repo;
+          }, context);
+          retroSettings.repo = repo;
+          return json(res, 200, { repo, available: true });
+        } finally {
+          configuringRetro = false;
+        }
+      }
       if (route === "GET /queue") return json(res, 200, await queue());
       if (route === "GET /tasks") return json(res, 200, (await readState()).tasks.map(taskSummary));
       const taskRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)$/);
@@ -1730,7 +1755,7 @@ export async function startFactory(opts: {
         const cardKey = decodeURIComponent(encodedKey as string);
         const taskId = `${projectName}/${cardKey}`;
         const lock = `${taskId}/${stage}/${number}`;
-        if (approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
+        if (configuringRetro || approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
           return json(res, 409, { error: "uma proposta já está sendo publicada; tente novamente" });
         if (req.method === "POST") approvingRetros.add(lock);
         try {
@@ -1741,15 +1766,15 @@ export async function startFactory(opts: {
             return json(res, 404, { error: "proposta não encontrada" });
           if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
             return json(res, 409, { error: "proposta não está disponível para revisão" });
-          if (!opts.retro?.sink || !opts.retro.repo)
+          if (!retroSettings.sink || !retroSettings.repo)
             return json(res, 409, { error: "repositório da fábrica não configurado" });
           const project = projectOf(projectName);
           const publication = {
             writer: project.writer,
             cardKey,
             config: project.config,
-            sink: opts.retro.sink,
-            repo: opts.retro.repo,
+            sink: retroSettings.sink,
+            repo: retroSettings.repo,
             stage: retro.stage,
             ref: task.ref,
             proposal,
@@ -1760,7 +1785,7 @@ export async function startFactory(opts: {
               title: preview.title,
               body: preview.body,
               revision: preview.revision,
-              repo: opts.retro.repo,
+              repo: publication.repo,
               dryRun: project.config.dryRun,
               blocked: preview.blocked,
             });

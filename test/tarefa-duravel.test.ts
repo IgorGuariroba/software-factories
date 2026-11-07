@@ -345,6 +345,7 @@ describe("schema da API", () => {
     expect(schema.openapi).toMatch(/^3\./);
     expect(Object.keys(schema.paths).sort()).toEqual(
       [
+        "/settings/retro",
         "/daemon",
         "/daemon/pause",
         "/daemon/resume",

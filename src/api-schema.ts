@@ -1,3 +1,5 @@
+import { RETRO_REPO_PATTERN } from "./retro-settings.js";
+
 /** Schema OpenAPI da API local da fábrica, servido em `GET /openapi.json`. */
 const taskPath = (summary: string) => ({
   post: {
@@ -422,6 +424,30 @@ export const API_SCHEMA = {
           "409": {
             description: "A tarefa não está aguardando veto (o prazo já passou ou ela não passa por veto); sem efeito",
           },
+        },
+      },
+    },
+    "/settings/retro": {
+      get: { summary: "Repositório público das retrôs e disponibilidade do adaptador", responses: ok },
+      post: {
+        summary: "Salva e aplica o repositório público global, sem publicar ou reiniciar",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repo"],
+                properties: { repo: { type: "string", maxLength: 200, pattern: RETRO_REPO_PATTERN } },
+              },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "400": { description: "Repositório inválido; use dono/nome" },
+          "409": { description: "Adaptador indisponível ou publicação/configuração em andamento" },
+          "415": { description: "Content-Type deve ser application/json" },
         },
       },
     },
