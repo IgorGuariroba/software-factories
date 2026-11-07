@@ -563,7 +563,9 @@ process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).statu
   });
 
   it("formatação é passo mecânico da fábrica: o formatador do repositório vira commit de estilo, sem ciclo TDD", async () => {
-    const repo = await createRemoteRepo(root, "app");
+    // Arquivo fora do padrão que a Tarefa não tocou: o formatador não pode puxá-lo para a branch.
+    const legado = "export const legado = 1;   \n";
+    const repo = await createRemoteRepo(root, "app", { files: { "src/legado.mjs": legado } });
     // Formatador de mentira: tira espaços no fim das linhas de todo .mjs, inclusive dos testes.
     const formatter = join(root, "formatar.mjs");
     await writeFile(

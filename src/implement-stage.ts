@@ -425,7 +425,16 @@ export async function runImplementation(opts: {
     });
     if (run.spawnError || run.timedOut)
       throw new StageBlocked(`o formatador do repositório não concluiu: ${run.spawnError ?? "tempo esgotado"}`);
-    const paths = await changedPaths(worktree);
+    // Só o que a Tarefa já tocou: formatar o resto do repositório poluiria a entrega com arquivos alheios.
+    const first = progress.commits[0]?.sha;
+    const base = progress.baseHead ?? (first ? `${first}^` : undefined);
+    const touched = base
+      ? new Set((await git(worktree, ["diff", "--name-only", "-z", base, "HEAD"])).split("\0").filter(Boolean))
+      : new Set<string>();
+    const changed = await changedPaths(worktree);
+    const outside = changed.filter((p) => !touched.has(p));
+    if (outside.length > 0) await discard(outside);
+    const paths = changed.filter((p) => touched.has(p));
     if (paths.length === 0) return;
     runtime.signal.throwIfAborted();
     await git(worktree, ["--literal-pathspecs", "add", "-A", "--", ...paths]);
