@@ -41,6 +41,25 @@ async function startWith(cards: Card[], opts: Parameters<typeof startTestFactory
 }
 
 describe("Telegram: eventos ao usuário", () => {
+  it("encaminha pergunta em dry-run e avisa quando a SPEC aguarda revisão", async () => {
+    const model = new FakeModel();
+    model.respond = (call) =>
+      call.input.includes("Resposta do PO") ? deliverSpec(DEFAULT_SPEC) : askPo("Qual calendário usar?");
+    const { telegram, f } = await startWith([card("PROJ-1", "A Fazer")], {
+      model,
+      dryRun: true,
+      config: { specApproval: true },
+    });
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Qual calendário usar?"));
+    telegram.say("/responder exemplo/PROJ-1 1 Dias úteis.");
+    await eventually(() =>
+      expect(telegram.texts().join("\n")).toContain("SPEC de PROJ-1 (exemplo) pronta para revisão"),
+    );
+    expect(model.calls[1]?.input).toContain("Dias úteis.");
+    expect(f.source.commentsOf("PROJ-1")).toEqual([]);
+  });
   it("avisa quando assume um card, com o título", async () => {
     const telegram = new FakeTelegram();
     factory = await startTestFactory({ cards: [card("PROJ-1", "A Fazer")], telegram });

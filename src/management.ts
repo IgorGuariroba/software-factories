@@ -93,6 +93,7 @@ const HELP = [
   "/pausar [card]: pausa a Tarefa (sem card, o daemon)",
   "/retomar [card]: retoma a Tarefa (sem card, o daemon)",
   "/cancelar <card>: cancela a Tarefa",
+  "/responder <card> <número> <texto>: responde uma pergunta sem publicar na Fonte",
   "<card> é a chave (PROJ-1) ou projeto/chave (exemplo/PROJ-1).",
 ].join("\n");
 
@@ -169,6 +170,15 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     const project = "project" in event ? event.project : undefined;
     const full = project === undefined || deps.content(project) === "full";
     switch (event.type) {
+      case "question": {
+        if (event.status !== "enviada") return null;
+        return {
+          text:
+            `Pergunta ${event.n} sobre ${event.target} (${event.project})` +
+            (full ? `: ${event.text}` : ". Consulte a interface web local para ver o conteúdo.") +
+            `\nPara responder: /responder ${event.project}/${event.target} ${event.n} <texto>`,
+        };
+      }
       case "assumed": {
         if (event.waitsVeto) return null;
         const id = `${event.project}/${event.target}`;
@@ -199,6 +209,22 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
           text: `Guardrail bloqueou ${event.action} em ${event.target} (${event.project})${full ? `: ${event.reason}` : "."}`,
         };
       case "task":
+        if (event.status === "aguardando-humano") {
+          // Falha de leitura não pode prender o cursor e bloquear os próximos avisos.
+          let tasks: QueuedTask[];
+          try {
+            tasks = await deps.tasks();
+          } catch {
+            return {
+              text: `A Tarefa ${event.key} (${event.project}) aguarda sua atenção. Consulte a interface web local.`,
+            };
+          }
+          const task = tasks.find((t) => t.id === event.id);
+          if (task?.specReview === "draft")
+            return {
+              text: `SPEC de ${event.key} (${event.project}) pronta para revisão. Consulte a interface web local para revisar e aprovar.`,
+            };
+        }
         if (event.status === "bloqueada")
           return {
             text: `A Tarefa ${event.key} (${event.project}) está bloqueada${full && event.reason ? `: ${event.reason}` : "."}`,
@@ -262,11 +288,19 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
       await commands.setDaemonPaused(command === "/pausar");
       return command === "/pausar" ? "Daemon pausado: nenhuma Tarefa nova começa." : "Daemon retomado.";
     }
-    if (!["/vetar", "/pausar", "/retomar", "/cancelar"].includes(command) || !arg) return HELP;
+    if (!["/vetar", "/pausar", "/retomar", "/cancelar", "/responder"].includes(command) || !arg) return HELP;
     const found = await resolveTask(arg);
     if ("error" in found) return found.error;
     const { id } = found;
     switch (command) {
+      case "/responder": {
+        const match = /^\S+\s+\S+\s+(\d+)\s+([\s\S]+)$/.exec(text.trim());
+        if (!match) return HELP;
+        const ok = await commands.answerQuestion?.(id, Number(match[1]), match[2] as string);
+        return ok
+          ? `Resposta registrada para ${id}, pergunta ${match[1]}.`
+          : "Não foi possível responder: confira o número, o texto e se a pergunta ainda está pendente.";
+      }
       case "/vetar": {
         const result = await commands.veto(id);
         if (result === "vetada") return `Tarefa ${id} vetada: ela não age mais no card.`;
