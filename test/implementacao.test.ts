@@ -624,6 +624,33 @@ for (const dir of ["src", "test"]) for (const f of readdirSync(dir, { withFileTy
   });
 });
 
+describe("retomada de TDD recusado no limite", { timeout: SLOW }, () => {
+  it("retomar a Tarefa bloqueada por TDD recusado dá novas tentativas na mesma fase, sem refazer o que foi commitado", async () => {
+    const repo = await createRemoteRepo(root, "app");
+    const model = new FakeModel();
+    const WRONG = `export const gerarCsv = () => "errado";\n`;
+    scriptImplementer(model, ONE_TICKET, [
+      write({ "test/csv.test.mjs": CSV_TEST }),
+      write({ "src/csv.mjs": WRONG }),
+      write({ "src/csv.mjs": WRONG }),
+      write({ "src/csv.mjs": WRONG }),
+      // Depois de alguém mudar o que impedia (config, ambiente), a retomada chama o implementador de novo.
+      write({ "src/csv.mjs": CSV_IMPL }),
+    ]);
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect(await repo.branchLog(BRANCH)).toEqual([
+      { subject: "test: adiciona teste para Gerar CSV", files: ["test/csv.test.mjs"] },
+      { subject: "feat: Gerar CSV", files: ["src/csv.mjs"] },
+    ]);
+  });
+});
+
 describe("guardrails da implementação", { timeout: SLOW }, () => {
   it("o modelo não tem shell e não escreve fora do clone: fora, absoluto, .git e symlink são recusados com aviso", async () => {
     const repo = await createRemoteRepo(root, "app");
