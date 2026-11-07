@@ -43,6 +43,20 @@ jobs:
           CONFIG.RESPONSE_LANGUAGE: "pt-BR"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "true"
-          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "false"
+          # Walkthrough como comentário (não reescreve a descrição do PR), no estilo do CodeRabbit.
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          PR_DESCRIPTION.PUBLISH_DESCRIPTION_AS_COMMENT: "true"
+          PR_DESCRIPTION.ENABLE_PR_DIAGRAM: "true"
+          # Achados também como comentários na linha, com risco, recomendação de merge e cenários de falha.
+          PR_REVIEWER.INLINE_KEY_ISSUES: "true"
+          PR_REVIEWER.NUM_MAX_FINDINGS: "8"
+          PR_REVIEWER.REQUIRE_RISK_ASSESSMENT: "true"
+          PR_REVIEWER.REQUIRE_MERGE_RECOMMENDATION: "true"
+          PR_REVIEWER.REQUIRE_FAILURE_MODES: "true"
+          PR_REVIEWER.ENABLE_HELP_TEXT: "false"
+          # Sugestões importantes (nota >= 7) viram sugestão aplicável na linha; sem autoavaliação válida, ficam só na tabela.
+          PR_CODE_SUGGESTIONS.DUAL_PUBLISHING_SCORE_THRESHOLD: "7"
+          PR_CODE_SUGGESTIONS.SUGGESTIONS_SCORE_THRESHOLD: "5"
+          PR_CODE_SUGGESTIONS.SCORE_ON_REFLECTION_FAILURE: "5"
           # Revisa também a cada push no PR (padrão ignora synchronize).
           GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
