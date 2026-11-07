@@ -57,6 +57,15 @@ describe("Telegram: eventos ao usuário", () => {
     await eventually(() =>
       expect(telegram.texts().join("\n")).toContain("SPEC de PROJ-1 (exemplo) pronta para revisão"),
     );
+    const notices = telegram
+      .texts()
+      .filter((text) => text.includes("SPEC de PROJ-1 (exemplo) pronta para revisão")).length;
+    factory = await f.restart();
+    await eventually(() =>
+      expect(
+        telegram.texts().filter((text) => text.includes("SPEC de PROJ-1 (exemplo) pronta para revisão")).length,
+      ).toBeGreaterThan(notices),
+    );
     expect(model.calls[1]?.input).toContain("Dias úteis.");
     expect(f.source.commentsOf("PROJ-1")).toEqual([]);
   });
