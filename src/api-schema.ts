@@ -298,7 +298,12 @@ export const API_SCHEMA = {
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          {
+            name: "stage",
+            in: "path",
+            required: true,
+            schema: { enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"] },
+          },
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         responses: {
@@ -332,7 +337,12 @@ export const API_SCHEMA = {
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          {
+            name: "stage",
+            in: "path",
+            required: true,
+            schema: { enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"] },
+          },
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         requestBody: {

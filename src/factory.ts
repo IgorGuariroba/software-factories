@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -321,7 +321,7 @@ export async function startFactory(opts: {
           const progress = task?.implementation;
           if (
             !progress ||
-            progress.worktree !== cwd ||
+            (await realpath(progress.worktree).catch(() => null)) !== cwd ||
             progress.branch !== draft.branch ||
             task.review?.status !== "aprovado"
           )
@@ -1189,18 +1189,29 @@ export async function startFactory(opts: {
   }
 
   /** Emite um evento para cada Tarefa que mudou de status desde a última vez. */
+  const lastEmitted = new Map<string, string>();
   async function emitStatusChanges(): Promise<void> {
     const state = await readState();
     const changed = state.tasks.filter((t) => known.get(t.id) !== t.status);
     known = new Map(state.tasks.map((t) => [t.id, t.status]));
     for (const t of changed) {
+      // Acompanhamento do PR/MR: cada consulta passa por "ativa"; só registra quando o estado observado muda.
+      const signature = `${t.status}|${t.reason ?? ""}`;
+      const last = lastEmitted.get(t.id);
+      if (t.status === "ativa" && last?.startsWith("aguardando-entrega|")) continue;
+      if (last === signature) continue;
+      lastEmitted.set(t.id, signature);
       await events.append({
         type: "task",
         project: t.project,
         id: t.id,
         key: t.key,
         status: t.status,
-        ...(t.reason && (t.status === "bloqueada" || t.status === "enfileirada" || t.status === "vetada")
+        ...(t.reason &&
+        (t.status === "bloqueada" ||
+          t.status === "enfileirada" ||
+          t.status === "vetada" ||
+          t.status === "aguardando-entrega")
           ? { reason: t.reason }
           : {}),
       });
