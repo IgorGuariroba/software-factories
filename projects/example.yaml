@@ -87,6 +87,9 @@ repositories:
     prefix: "[mobile]"
     test:
       command: [npm, test]
+    # Opcional: formatador rodado pela fábrica depois de cada ticket; o resultado vira um commit `style`, fora do TDD.
+    format:
+      command: [npx, biome, check, --write]
   - path: /home/voce/projetos/meu-backend
     prefix: PROJ
     test:

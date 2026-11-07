@@ -43,6 +43,16 @@ export const TestCommand = z.object({
 });
 export type TestCommand = z.infer<typeof TestCommand>;
 
+/**
+ * Formatador do repositório (ex.: `[npx, biome, check, --write]`): a fábrica o roda depois de cada ticket e commita o
+ * resultado como estilo. Formatação é mecânica e toca testes; não cabe num ciclo TDD.
+ */
+export const FormatCommand = z.object({
+  command: z.array(z.string().min(1)).min(1),
+  timeoutSeconds: z.number().int().positive().default(120),
+});
+export type FormatCommand = z.infer<typeof FormatCommand>;
+
 /** Cards cujo título ou chave começa com `prefix` vão para `path`. */
 export const RepoMapping = z
   .object({
@@ -50,6 +60,7 @@ export const RepoMapping = z
     path: z.string().min(1),
     prefix: z.string().min(1),
     test: TestCommand,
+    format: FormatCommand.optional(),
   })
   .strict();
 export type RepoMapping = z.infer<typeof RepoMapping>;
