@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { ChangeRequest } from "./code-host.js";
 import type { ModelRef, ProjectConfig } from "./config.js";
 import { copyOutOfCommit, type QueuedTask, StateDoc, type StepRuntime } from "./durable.js";
-import { git } from "./git.js";
+import { defaultBranch, git } from "./git.js";
 import { StageBlocked } from "./implement-stage.js";
 import { redactSecrets } from "./secrets.js";
 import { assertFactoryWorktree, confine } from "./workspace.js";
@@ -95,7 +95,9 @@ export async function runReview(opts: {
     throw new StageBlocked(
       "configure roles.reviewer com família identificada e diferente do implementador; não há fallback de review",
     );
-  const base = progress.baseHead ?? (await git(cwd, ["merge-base", "HEAD", "origin/HEAD"])).trim();
+  const base =
+    progress.baseHead ??
+    (await git(cwd, ["merge-base", "HEAD", `origin/${progress.defaultBranch ?? (await defaultBranch(cwd))}`])).trim();
   const diff = await git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--"]);
   if (diff.length > 120_000)
     throw new StageBlocked("diff excede o limite de review integral; divida a entrega antes de publicar");

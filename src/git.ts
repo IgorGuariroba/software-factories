@@ -88,3 +88,24 @@ export async function gitMaybe(cwd: string, args: readonly string[]): Promise<st
     throw err;
   }
 }
+
+/**
+ * Branch padrão do remoto `origin` (ex.: `main`). Usa `origin/HEAD` quando ele aponta para um ref que existe; um
+ * `origin/HEAD` pendente (branch apagada) ou ausente cai para o que o remoto anuncia em `ls-remote --symref`.
+ */
+export async function defaultBranch(cwd: string): Promise<string> {
+  const local = await git(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).catch(() => "");
+  const ref = local.trim();
+  if (
+    ref &&
+    (await git(cwd, ["rev-parse", "--verify", "--quiet", ref]).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return ref.replace(/^refs\/remotes\/origin\//, "");
+  const remote = await git(cwd, ["ls-remote", "--symref", "origin", "HEAD"]);
+  const match = /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(remote);
+  if (!match?.[1]) throw new GitError(["ls-remote", "--symref", "origin", "HEAD"], null, "remoto sem HEAD simbólico");
+  return match[1];
+}
