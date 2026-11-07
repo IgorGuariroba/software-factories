@@ -158,7 +158,7 @@ export const API_SCHEMA = {
     },
     "/tasks/{project}/{key}/spec/approve": {
       post: {
-        summary: "Aprova a revisão exata; a Tarefa publica SPEC e Tickets quando voltar a rodar",
+        summary: "Aprova localmente a revisão exata no modo atual; dry-run só registra SPEC e Tickets ao continuar",
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
@@ -173,7 +173,7 @@ export const API_SCHEMA = {
         },
         responses: {
           ...ok,
-          "409": { description: "Prévia mudou, indisponível ou dry-run" },
+          "409": { description: "Prévia mudou ou SPEC indisponível para aprovação" },
           "415": { description: "Content-Type inválido" },
         },
       },

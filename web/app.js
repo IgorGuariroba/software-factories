@@ -172,16 +172,19 @@ function reviewSpecButton(task) {
         const preview = await getSpecPreview(task.project, task.key);
         if (!container.isConnected) return;
         container.replaceChildren(
-          el("p", { text: `Comentários no Jira (${preview.card}):` }),
+          el("p", { text: `SPEC e Tickets de ${preview.card}:` }),
+          el("p", {
+            text: preview.dryRun
+              ? "Dry-run: a aprovação é local e continua o ensaio, sem publicar na Fonte."
+              : "A aprovação libera a continuação e a publicação na Fonte conforme a configuração do projeto.",
+          }),
+          el("button", {
+            text: preview.dryRun ? "Aprovar e continuar dry-run" : "Aprovar SPEC e Tickets",
+            attrs: { type: "button" },
+            onClick: () => run(() => approveSpec(task.project, task.key, preview.revision)),
+          }),
           el("pre", { className: "texto", text: preview.spec }),
           el("pre", { className: "texto", text: preview.tickets }),
-          preview.dryRun
-            ? el("p", { text: "Dry-run: a publicação real está desativada." })
-            : el("button", {
-                text: "Aprovar SPEC e Tickets",
-                attrs: { type: "button" },
-                onClick: () => run(() => approveSpec(task.project, task.key, preview.revision)),
-              }),
         );
         clearError();
       } catch (err) {

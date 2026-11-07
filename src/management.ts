@@ -82,6 +82,10 @@ export interface ManagementBridgeDeps {
   commands: FactoryCommands;
   /** Nível de conteúdo do projeto (`telegram.content`). */
   content(project: string): TelegramContent;
+  /** Próximo instante permitido para avisos automáticos deste projeto. */
+  availableAt?(project: string): number;
+  /** Identificação visível do contexto, sem inferir pelo nome do projeto. */
+  contextLabel?(project: string): string;
   now(): number;
   /** Timer no relógio da fábrica; devolve como desarmá-lo. */
   armTimer(callback: () => void, delayMs: number): () => void;
@@ -93,7 +97,9 @@ const HELP = [
   "/pausar [card]: pausa a Tarefa (sem card, o daemon)",
   "/retomar [card]: retoma a Tarefa (sem card, o daemon)",
   "/cancelar <card>: cancela a Tarefa",
-  "/responder <card> <número> <texto>: responde uma pergunta sem publicar na Fonte",
+  "/responder: escolha uma pergunta e envie sua resposta",
+  "/sair: cancela a resposta em andamento",
+  "/responder <card> <número> <texto>: registra uma resposta local explícita",
   "<card> é a chave (PROJ-1) ou projeto/chave (exemplo/PROJ-1).",
 ].join("\n");
 
@@ -108,6 +114,8 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
   const stored = await deps.progress.load();
   const progress: ManagementProgress = {
     eventCursor: stored?.eventCursor ?? deps.initialEventCount,
+    deferred: stored?.deferred ?? [],
+    answering: stored?.answering ?? {},
     updateOffset: stored?.updateOffset ?? 0,
     lastUpdateAt: stored?.lastUpdateAt ?? deps.now(),
   };
@@ -134,13 +142,13 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     });
 
   /** Publica com novas tentativas. `false` se a ponte parou antes de conseguir (a mensagem fica para o reinício). */
-  async function deliver(message: ManagementMessage): Promise<boolean> {
+  async function deliver(message: ManagementMessage, project?: string): Promise<boolean> {
     const safe: ManagementMessage = {
       text: redactSecrets(message.text),
       ...(message.buttons ? { buttons: message.buttons.map((b) => ({ ...b, label: redactSecrets(b.label) })) } : {}),
     };
     for (let attempt = 1; ; attempt++) {
-      if (stopped) return false;
+      if (stopped || (project !== undefined && (deps.availableAt?.(project) ?? deps.now()) > deps.now())) return false;
       try {
         await port.send(safe, abort.signal);
         return true;
@@ -176,7 +184,8 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
           text:
             `Pergunta ${event.n} sobre ${event.target} (${event.project})` +
             (full ? `: ${event.text}` : ". Consulte a interface web local para ver o conteúdo.") +
-            `\nPara responder: /responder ${event.project}/${event.target} ${event.n} <texto>`,
+            "\nToque em Responder para enviar sua resposta.",
+          buttons: [{ label: "Responder", command: `/responder ${event.project}/${event.target} ${event.n}` }],
         };
       }
       case "assumed": {
@@ -238,18 +247,127 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
 
   let publishing: Promise<void> = Promise.resolve();
   let publishPending = false;
+  let disarmDeferred: (() => void) | undefined;
+  const availableAt = (project: string) => deps.availableAt?.(project) ?? deps.now();
+  function withContextLabel(project: string, message: ManagementMessage): ManagementMessage {
+    const label = deps.contextLabel?.(project);
+    if (label && !message.text.startsWith(`[${label}]`)) return { ...message, text: `[${label}] ${message.text}` };
+    return message;
+  }
+  /** Filas legadas sem `source`: em minimal, não reenvia o texto full persistido. */
+  function legacyMinimalEnvelope(item: { project: string; message: ManagementMessage }): ManagementMessage {
+    const labeled = item.message.text.match(/^(\[[^\]]+\]\s*)?/);
+    const prefix = labeled?.[1] ?? "";
+    const bare = item.message.text.slice(prefix.length);
+    const question = /^(Pergunta(?: pendente)? \d+ sobre \S+ \(\S+\))(?::|\.)([\s\S]*)$/.exec(bare);
+    if (question) {
+      const body = question[2] ?? "";
+      const draft = body.includes("Rascunho não enviado")
+        ? "\nRascunho não enviado ao PO. Para publicar, revise e aprove na interface web local. /responder registra uma resposta local, sem publicar a pergunta."
+        : "";
+      const tip = body.includes("Toque em Responder") ? "\nToque em Responder para enviar sua resposta." : "";
+      return {
+        text: `${prefix}${question[1]}. Consulte a interface web local para ver o conteúdo.${draft}${tip}`,
+        ...(item.message.buttons ? { buttons: item.message.buttons } : {}),
+      };
+    }
+    const assumed = /^(Assumi o card \S+ \(\S+\))(?::|\.)([\s\S]*)$/.exec(bare);
+    if (assumed) {
+      return {
+        text: `${prefix}${assumed[1]}.`,
+        ...(item.message.buttons ? { buttons: item.message.buttons } : {}),
+      };
+    }
+    const blocked = /^(A Tarefa \S+ \(\S+\) está bloqueada)(?::|\.)([\s\S]*)$/.exec(bare);
+    if (blocked) return { text: `${prefix}${blocked[1]}.` };
+    const guard = /^(Guardrail bloqueou \S+ em \S+ \(\S+\))(?::|\.)([\s\S]*)$/.exec(bare);
+    if (guard) return { text: `${prefix}${guard[1]}.` };
+    const aviso = /^Aviso:(.+)$/s.exec(bare);
+    if (aviso)
+      return {
+        text: `${prefix}Aviso (conteúdo oculto) no projeto ${item.project}. Consulte a interface web local para ver o conteúdo.`,
+      };
+    return {
+      text: `${prefix}Aviso do projeto ${item.project}. Consulte a interface web local para ver o conteúdo.`,
+      ...(item.message.buttons ? { buttons: item.message.buttons } : {}),
+    };
+  }
+  async function resolveDeferred(item: {
+    project: string;
+    message: ManagementMessage;
+    source?: FactoryEvent;
+  }): Promise<ManagementMessage> {
+    if (item.source) {
+      const rendered = await render(item.source);
+      if (rendered) return withContextLabel(item.project, rendered);
+    }
+    if (deps.content(item.project) === "minimal") return legacyMinimalEnvelope(item);
+    return item.message;
+  }
+  function wakeDeferred(): void {
+    disarmDeferred?.();
+    const wakeAt = Math.min(...(progress.deferred ?? []).map((item) => availableAt(item.project)));
+    if (Number.isFinite(wakeAt) && !stopped) disarmDeferred = deps.armTimer(publish, Math.max(1, wakeAt - deps.now()));
+  }
+  async function automatic(project: string, message: ManagementMessage, source?: FactoryEvent): Promise<boolean> {
+    message = withContextLabel(project, message);
+    if (availableAt(project) <= deps.now() && (await deliver(message, project))) return true;
+    if (stopped) return false;
+    progress.deferred ??= [];
+    const queue = progress.deferred;
+    // A reconciliação no reinício não duplica um lembrete já enfileirado.
+    const fingerprint = source
+      ? `${source.type}:${"target" in source ? source.target : ""}:${"n" in source ? source.n : ""}:${"at" in source ? source.at : ""}`
+      : message.text;
+    if (
+      !queue.some((item) => {
+        if (item.project !== project) return false;
+        if (source && item.source) {
+          return (
+            item.source.type === source.type &&
+            item.source.at === source.at &&
+            ("target" in item.source ? item.source.target : undefined) ===
+              ("target" in source ? source.target : undefined) &&
+            ("n" in item.source ? item.source.n : undefined) === ("n" in source ? source.n : undefined)
+          );
+        }
+        return item.message.text === message.text || (!source && fingerprint === item.message.text);
+      })
+    ) {
+      queue.push({
+        project,
+        message: { ...message, text: redactSecrets(message.text) },
+        ...(source ? { source } : {}),
+      });
+      await save();
+    }
+    wakeDeferred();
+    return true;
+  }
   function publish(): void {
     if (publishPending || stopped) return;
     publishPending = true;
     publishing = publishing.then(async () => {
       publishPending = false;
       try {
+        for (const item of [...(progress.deferred ?? [])]) {
+          if (availableAt(item.project) > deps.now()) continue;
+          const message = await resolveDeferred(item);
+          if (!(await deliver(message, item.project))) {
+            wakeDeferred();
+            return;
+          }
+          progress.deferred = progress.deferred?.filter((entry) => entry !== item);
+          await save();
+        }
+        wakeDeferred();
         let advanced = false;
         for (;;) {
           const event = events.list()[progress.eventCursor ?? 0];
           if (!event || stopped) break;
           const message = await render(event);
-          if (message && !(await deliver(message))) break;
+          if (message && !(await ("project" in event ? automatic(event.project, message, event) : deliver(message))))
+            break;
           progress.eventCursor = (progress.eventCursor ?? 0) + 1;
           advanced = true;
           if (message) {
@@ -280,46 +398,71 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     return { id: (matches[0] as QueuedTask).id };
   }
 
-  async function execute(text: string): Promise<string> {
+  const answering = new Map<string, { id: string; n: number; draft?: string }>(
+    Object.entries(progress.answering ?? {}),
+  );
+  const saveDialogue = async () => {
+    progress.answering = Object.fromEntries(answering);
+    await save();
+  };
+
+  type ExecuteResult = { reply: string; registered?: boolean };
+
+  async function execute(text: string): Promise<ExecuteResult> {
     const [head = "", arg] = text.trim().split(/\s+/);
     const command = head.toLowerCase().replace(/@.*$/, "");
     const { commands } = deps;
     if ((command === "/pausar" || command === "/retomar") && !arg) {
       await commands.setDaemonPaused(command === "/pausar");
-      return command === "/pausar" ? "Daemon pausado: nenhuma Tarefa nova começa." : "Daemon retomado.";
+      return {
+        reply: command === "/pausar" ? "Daemon pausado: nenhuma Tarefa nova começa." : "Daemon retomado.",
+      };
     }
-    if (!["/vetar", "/pausar", "/retomar", "/cancelar", "/responder"].includes(command) || !arg) return HELP;
+    if (!["/vetar", "/pausar", "/retomar", "/cancelar", "/responder"].includes(command) || !arg) return { reply: HELP };
     const found = await resolveTask(arg);
-    if ("error" in found) return found.error;
+    if ("error" in found) return { reply: found.error };
     const { id } = found;
     switch (command) {
       case "/responder": {
         const match = /^\S+\s+\S+\s+(\d+)\s+([\s\S]+)$/.exec(text.trim());
-        if (!match) return HELP;
+        if (!match) return { reply: HELP };
         const ok = await commands.answerQuestion?.(id, Number(match[1]), match[2] as string);
         return ok
-          ? `Resposta registrada para ${id}, pergunta ${match[1]}.`
-          : "Não foi possível responder: confira o número, o texto e se a pergunta ainda está pendente.";
+          ? { reply: `Resposta registrada para ${id}, pergunta ${match[1]}.`, registered: true }
+          : {
+              reply: "Não foi possível responder: confira o número, o texto e se a pergunta ainda está pendente.",
+            };
       }
       case "/vetar": {
         const result = await commands.veto(id);
-        if (result === "vetada") return `Tarefa ${id} vetada: ela não age mais no card.`;
-        if (result === "inexistente") return `Não achei a Tarefa ${id}.`;
-        return `A Tarefa ${id} não está aguardando veto (o prazo já passou ou não houve).`;
+        if (result === "vetada") return { reply: `Tarefa ${id} vetada: ela não age mais no card.` };
+        if (result === "inexistente") return { reply: `Não achei a Tarefa ${id}.` };
+        return { reply: `A Tarefa ${id} não está aguardando veto (o prazo já passou ou não houve).` };
       }
       case "/pausar":
         await commands.pause(id);
-        return `Pausa pedida para a Tarefa ${id}.`;
+        return { reply: `Pausa pedida para a Tarefa ${id}.` };
       case "/retomar":
         await commands.resume(id);
-        return `Tarefa ${id} retomada.`;
+        return { reply: `Tarefa ${id} retomada.` };
       default:
         await commands.cancel(id);
-        return `Cancelamento pedido para a Tarefa ${id}.`;
+        return { reply: `Cancelamento pedido para a Tarefa ${id}.` };
     }
   }
 
   const authorized = (u: ManagementUpdate) => u.chat === deps.chat && (deps.user === undefined || u.user === deps.user);
+
+  async function acknowledge(update: ManagementUpdate, result: string, followUp?: ManagementMessage): Promise<void> {
+    if (update.buttonId !== undefined) {
+      await port.answerButton(update.buttonId, redactSecrets(result), abort.signal).catch((err) => {
+        console.error(`[fábrica] ${via}: falha ao responder ao botão:`, err instanceof Error ? err.message : err);
+      });
+      if (followUp) await deliver(followUp);
+      return;
+    }
+    await deliver(followUp ?? { text: result });
+  }
 
   async function handle(update: ManagementUpdate): Promise<void> {
     const text = redactSecrets(update.text);
@@ -328,15 +471,100 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
       await events.append({ type: "command", ...origin, accepted: false, result: "origem não autorizada; ignorado" });
       return;
     }
-    const reply = await execute(update.text);
-    await events.append({ type: "command", ...origin, accepted: true, result: reply });
-    if (update.buttonId !== undefined) {
-      await port.answerButton(update.buttonId, redactSecrets(reply), abort.signal).catch((err) => {
-        console.error(`[fábrica] ${via}: falha ao responder ao botão:`, err instanceof Error ? err.message : err);
-      });
-    } else {
-      await deliver({ text: reply });
+    const session = `${update.chat}/${update.user}`;
+    const selected = answering.get(session);
+    const input = update.text.trim();
+
+    if (input === "/responder") {
+      answering.delete(session);
+      await saveDialogue();
+      const tasks = await deps.tasks();
+      const buttons = tasks
+        .filter((t) => ["aguardando-humano", "pausada"].includes(t.status))
+        .flatMap((t) =>
+          (t.questions ?? [])
+            .filter((q) => q.answer === null && q.publication !== "sending")
+            .map((q) => ({ label: `${t.key} · pergunta ${q.n}`, command: `/responder ${t.id} ${q.n}` })),
+        );
+      const result = buttons.length ? "Escolha uma pergunta para responder:" : "Não há perguntas pendentes.";
+      await events.append({ type: "command", ...origin, accepted: true, result });
+      await acknowledge(update, result, { text: result, buttons });
+      return;
     }
+
+    const choose = /^\/responder\s+(\S+)\s+(\d+)$/.exec(input);
+    if (choose) {
+      const found = await resolveTask(choose[1] as string);
+      const task = "id" in found ? (await deps.tasks()).find((t) => t.id === found.id) : undefined;
+      const q = task?.questions?.find(
+        (q) => q.n === Number(choose[2]) && q.answer === null && q.publication !== "sending",
+      );
+      if (!task || !q || !["aguardando-humano", "pausada"].includes(task.status)) {
+        const result = "Essa pergunta não está mais disponível. Use /responder para escolher outra.";
+        await events.append({ type: "command", ...origin, accepted: true, result });
+        await acknowledge(update, result, { text: result });
+        return;
+      }
+      answering.set(session, { id: task.id, n: q.n });
+      await saveDialogue();
+      const result = `Envie sua resposta para ${task.key}, pergunta ${q.n}. Ela será registrada localmente, sem publicar na Fonte. Para sair, use /sair.`;
+      await events.append({ type: "command", ...origin, accepted: true, result });
+      // Ack curto no botão; a instrução de seleção segue como mensagem normal.
+      await acknowledge(update, "Envie sua resposta na conversa.", { text: result });
+      return;
+    }
+
+    if (input === "/sair") {
+      answering.delete(session);
+      await saveDialogue();
+      const result = "Resposta cancelada. Nenhuma alteração foi feita.";
+      await events.append({ type: "command", ...origin, accepted: true, result });
+      await acknowledge(update, result, { text: result });
+      return;
+    }
+
+    if (selected && !input.startsWith("/")) {
+      selected.draft = update.text;
+      await saveDialogue();
+      const result = `Confirmar resposta para ${selected.id}, pergunta ${selected.n}?\n\n${update.text}\n\nA resposta fica local, sem publicar na Fonte.`;
+      await events.append({ type: "command", ...origin, accepted: true, result });
+      await acknowledge(update, result, {
+        text: result,
+        buttons: [
+          { label: "Confirmar resposta", command: "/confirmar-resposta" },
+          { label: "Cancelar", command: "/sair" },
+        ],
+      });
+      return;
+    }
+
+    if (input === "/confirmar-resposta") {
+      if (!selected?.draft) {
+        const result = "Não há resposta para confirmar. Use /responder para escolher uma pergunta.";
+        await events.append({ type: "command", ...origin, accepted: true, result });
+        await acknowledge(update, result, { text: result });
+        return;
+      }
+      const ok = await deps.commands.answerQuestion?.(selected.id, selected.n, selected.draft);
+      const result = ok
+        ? `Resposta registrada para ${selected.id}, pergunta ${selected.n}.`
+        : "Não foi possível responder: confira o número, o texto e se a pergunta ainda está pendente.";
+      if (ok) {
+        answering.delete(session);
+        await saveDialogue();
+      }
+      await events.append({ type: "command", ...origin, accepted: true, result });
+      await acknowledge(update, result, { text: result });
+      return;
+    }
+
+    const { reply, registered } = await execute(update.text);
+    if (registered) {
+      answering.delete(session);
+      await saveDialogue();
+    }
+    await events.append({ type: "command", ...origin, accepted: true, result: reply });
+    await acknowledge(update, reply);
   }
 
   async function receiveLoop(): Promise<void> {
@@ -400,21 +628,22 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
         for (const q of pending) {
           const full = deps.content(task.project) === "full";
           if (
-            !(await deliver({
+            !(await automatic(task.project, {
               text:
                 `Pergunta pendente ${q.n} sobre ${task.key} (${task.project})` +
                 (full ? `: ${q.text}` : ". Consulte a interface web local para ver o conteúdo.") +
                 (q.publication === "draft"
                   ? "\nRascunho não enviado ao PO. Para publicar, revise e aprove na interface web local. /responder registra uma resposta local, sem publicar a pergunta."
                   : "") +
-                `\nPara responder: /responder ${task.project}/${task.key} ${q.n} <texto>`,
+                "\nToque em Responder para enviar sua resposta.",
+              buttons: [{ label: "Responder", command: `/responder ${task.id} ${q.n}` }],
             }))
           )
             return;
         }
         if (pending.length === 0 && task.specReview === "draft") {
           if (
-            !(await deliver({
+            !(await automatic(task.project, {
               text: `SPEC de ${task.key} (${task.project}) pronta para revisão. Consulte a interface web local para revisar e aprovar.`,
             }))
           )
@@ -434,6 +663,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     async stop() {
       stopped = true;
       unsubscribe();
+      disarmDeferred?.();
       abort.abort();
       for (const disarm of [...disarms]) disarm();
       await publishing;

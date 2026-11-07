@@ -41,6 +41,139 @@ async function startWith(cards: Card[], opts: Parameters<typeof startTestFactory
 }
 
 describe("Telegram: eventos ao usuário", () => {
+  it.each([
+    ["2026-11-07T10:00:00-03:00", "2026-11-10"],
+    ["2026-11-19T18:00:00-03:00", "2026-11-23"],
+    ["2026-07-09T10:00:00-03:00", "2026-07-10"],
+    ["2026-09-01T10:00:00-03:00", "2026-09-02"],
+    ["2026-04-03T10:00:00-03:00", "2026-04-06"],
+    ["2026-06-04T10:00:00-03:00", "2026-06-05"],
+  ])("aguarda expediente a partir de %s e retoma em %s", async (start, next) => {
+    const clock = new FakeClock(start);
+    const { f } = await startWith([card("PROJ-1", "A Fazer")], {
+      clock,
+      config: {
+        activity: "business-hours",
+        calendar: {
+          timezone: "America/Sao_Paulo",
+          workdays: ["mon", "tue", "wed", "thu", "fri"],
+          start: "09:00",
+          end: "18:00",
+          holidays: ["2026-11-09"],
+        },
+      },
+    });
+    await poll(f);
+    await settle();
+    expect(f.model.calls).toHaveLength(0);
+    clock.advanceTo(new Date(`${next}T08:59:00-03:00`));
+    await settle();
+    expect(f.model.calls).toHaveLength(0);
+    clock.advanceTo(new Date(`${next}T09:00:00-03:00`));
+    await waitForStatus(f, "PROJ-1", "concluida");
+  });
+  it("os prazos da pergunta também excluem os feriados legais da agenda", async () => {
+    const model = new FakeModel();
+    model.respond = () => askPo("Como deve funcionar?");
+    const clock = new FakeClock("2026-11-19T16:00:00-03:00");
+    const { f, telegram } = await startWith([card("PROJ-1", "A Fazer")], {
+      model,
+      clock,
+      config: {
+        activity: "business-hours",
+        calendar: {
+          timezone: "America/Sao_Paulo",
+          workdays: ["mon", "tue", "wed", "thu", "fri"],
+          start: "09:00",
+          end: "18:00",
+          holidays: [],
+        },
+      },
+    });
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("[Empresa] Pergunta"));
+    const reminders = () =>
+      f.source.commentsOf("PROJ-1").filter((comment) => comment.body.includes("Lembrete da pergunta 1"));
+    clock.advanceTo("2026-11-23T10:59:00-03:00");
+    await settle();
+    expect(reminders()).toHaveLength(0);
+    clock.advanceTo("2026-11-23T11:00:00-03:00");
+    await eventually(() => expect(reminders()).toHaveLength(1));
+    clock.advanceTo("2026-11-23T16:00:00-03:00");
+    await eventually(async () =>
+      expect(
+        (await events(f)).filter((event) => event.type === "notify" && event.reason === "pergunta-sem-resposta"),
+      ).toMatchObject([{ at: "2026-11-23T19:00:00.000Z" }]),
+    );
+  });
+  it("fluxo guiado /responder registra command e confirma botão em seleção, rascunho, sair e erro", async () => {
+    const model = new FakeModel();
+    model.respond = () => askPo("Qual calendário usar?");
+    const { telegram, f } = await startWith([card("PROJ-1", "A Fazer")], { model });
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    await eventually(() => expect(telegram.button("Responder")).toBeDefined());
+
+    telegram.say("/responder");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Escolha uma pergunta"));
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(expect.objectContaining({ text: "/responder", accepted: true })),
+    );
+
+    const chooseTap = telegram.tap(telegram.button("PROJ-1 · pergunta 1"));
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Envie sua resposta para PROJ-1"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: chooseTap,
+        text: expect.stringMatching(/Envie sua resposta|pergunta/),
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(
+        expect.objectContaining({ text: "/responder exemplo/PROJ-1 1", accepted: true }),
+      ),
+    );
+    // Mensagem de seleção permanece no chat além do ack do botão.
+    expect(telegram.texts().filter((t) => t.includes("Envie sua resposta para PROJ-1")).length).toBeGreaterThan(0);
+
+    telegram.say("Dias úteis.");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Confirmar resposta para exemplo/PROJ-1"));
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(expect.objectContaining({ text: "Dias úteis.", accepted: true })),
+    );
+
+    const cancelTap = telegram.tap(telegram.button("Cancelar"));
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Resposta cancelada"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: cancelTap,
+        text: expect.stringMatching(/cancelada|Resposta cancelada/i),
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(expect.objectContaining({ text: "/sair", accepted: true })),
+    );
+
+    // Caminho de erro: confirmar sem rascunho ainda registra e responde o botão.
+    const confirmOrphan = telegram.tap({
+      label: "Confirmar resposta",
+      command: "/confirmar-resposta",
+    });
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Não há resposta para confirmar"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: confirmOrphan,
+        text: expect.stringMatching(/Não há resposta para confirmar/),
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(
+        expect.objectContaining({ text: "/confirmar-resposta", accepted: true }),
+      ),
+    );
+  });
+
   it("encaminha pergunta em dry-run e avisa quando a SPEC aguarda revisão", async () => {
     const model = new FakeModel();
     model.respond = (call) =>
@@ -53,14 +186,39 @@ describe("Telegram: eventos ao usuário", () => {
     await poll(f);
     await waitForStatus(f, "PROJ-1", "aguardando-humano");
     await eventually(() => expect(telegram.texts().join("\n")).toContain("Qual calendário usar?"));
-    telegram.say("/responder exemplo/PROJ-1 1 Dias úteis.");
+    telegram.say("/responder");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Escolha uma pergunta"));
+    telegram.say("/responder exemplo/PROJ-1 1");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Envie sua resposta"));
+    telegram.say("Dias úteis.");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Confirmar resposta para exemplo/PROJ-1"));
+    expect(model.calls).toHaveLength(1);
+    factory = await f.restart();
+    const confirmedFactory = factory;
+    const confirmTap = telegram.tap(telegram.button("Confirmar resposta"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: confirmTap,
+        text: "Resposta registrada para exemplo/PROJ-1, pergunta 1.",
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(confirmedFactory)).toContainEqual(
+        expect.objectContaining({
+          text: "/confirmar-resposta",
+          accepted: true,
+          result: "Resposta registrada para exemplo/PROJ-1, pergunta 1.",
+        }),
+      ),
+    );
+    await eventually(() => expect(telegram.texts()).toContain("Resposta registrada para exemplo/PROJ-1, pergunta 1."));
     await eventually(() =>
       expect(telegram.texts().join("\n")).toContain("SPEC de PROJ-1 (exemplo) pronta para revisão"),
     );
     const notices = telegram
       .texts()
       .filter((text) => text.includes("SPEC de PROJ-1 (exemplo) pronta para revisão")).length;
-    factory = await f.restart();
+    factory = await factory.restart();
     await eventually(() =>
       expect(
         telegram.texts().filter((text) => text.includes("SPEC de PROJ-1 (exemplo) pronta para revisão")).length,
@@ -236,7 +394,7 @@ describe("Telegram: bloqueios e avisos", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContainEqual(
-        expect.stringMatching(/^A Tarefa PROJ-1 \(exemplo\) está bloqueada: .*não declara um/),
+        expect.stringMatching(/^\[Pessoal\] A Tarefa PROJ-1 \(exemplo\) está bloqueada: .*não declara um/),
       ),
     );
   });
@@ -253,7 +411,7 @@ describe("Telegram: bloqueios e avisos", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContainEqual(
-        expect.stringMatching(/^Guardrail bloqueou comment em PROJ-1 \(exemplo\): /),
+        expect.stringMatching(/^\[Pessoal\] Guardrail bloqueou comment em PROJ-1 \(exemplo\): /),
       ),
     );
   });
@@ -272,7 +430,9 @@ describe("Telegram: bloqueios e avisos", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContainEqual(
-        expect.stringMatching(/^Aviso: A pergunta 1 ao PO no card PROJ-1 .*DB_PASSWORD=\[segredo removido\] mesmo\?/),
+        expect.stringMatching(
+          /^\[Pessoal\] Aviso: A pergunta 1 ao PO no card PROJ-1 .*DB_PASSWORD=\[segredo removido\] mesmo\?/,
+        ),
       ),
     );
     expect(telegram.texts().join("\n")).not.toContain("2segredo");
@@ -288,7 +448,7 @@ describe("Telegram: conteúdo", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toContain(
-        "Assumi o card PROJ-1 (exemplo): Configurar integração com api_key: [segredo removido]",
+        "[Pessoal] Assumi o card PROJ-1 (exemplo): Configurar integração com api_key: [segredo removido]",
       ),
     );
     expect(telegram.texts().join("\n")).not.toContain("123segredo");
@@ -304,7 +464,10 @@ describe("Telegram: conteúdo", () => {
 
     await eventually(() =>
       expect(telegram.texts()).toEqual(
-        expect.arrayContaining(["Assumi o card PROJ-1 (exemplo).", "A Tarefa PROJ-2 (exemplo) está bloqueada."]),
+        expect.arrayContaining([
+          "[Pessoal] Assumi o card PROJ-1 (exemplo).",
+          "[Pessoal] A Tarefa PROJ-2 (exemplo) está bloqueada.",
+        ]),
       ),
     );
     expect(telegram.texts().join("\n")).not.toMatch(/Configurar|PO/);
@@ -328,8 +491,8 @@ describe("Telegram: falhas", () => {
 
     await advanceUntil(clock, () =>
       expect(telegram.texts()).toEqual([
-        "Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
-        "A Tarefa PROJ-1 (exemplo) terminou.",
+        "[Pessoal] Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
+        "[Pessoal] A Tarefa PROJ-1 (exemplo) terminou.",
       ]),
     );
     expect((await events(f)).filter((e) => e.type === "delivery")).toEqual([]);
@@ -342,13 +505,15 @@ describe("Telegram: falhas", () => {
     await poll(f);
     await waitForStatus(f, "PROJ-1", "concluida");
 
-    await advanceUntil(clock, () => expect(telegram.texts()).toEqual(["A Tarefa PROJ-1 (exemplo) terminou."]));
+    await advanceUntil(clock, () =>
+      expect(telegram.texts()).toEqual(["[Pessoal] A Tarefa PROJ-1 (exemplo) terminou."]),
+    );
     expect((await events(f)).filter((e) => e.type === "delivery")).toEqual([
       expect.objectContaining({
         via: "telegram",
         status: "descartada",
         attempts: 3,
-        text: "Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
+        text: "[Pessoal] Assumi o card PROJ-1 (exemplo): Ajustar filtro PROJ-1",
         error: expect.stringMatching(/fora do ar/),
       }),
     ]);

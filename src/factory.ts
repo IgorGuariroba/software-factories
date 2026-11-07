@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
-import { addBusinessHours, workdayHours } from "./business-hours.js";
+import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
@@ -282,6 +282,10 @@ export async function startFactory(opts: {
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
     opts.projects.map((p) => {
+      // Execução e SLAs usam o mesmo calendário efetivo, inclusive feriados legais.
+      if (p.config.activity === "business-hours") {
+        p = { ...p, config: { ...p.config, calendar: { ...p.config.calendar, legalHolidays: true } } };
+      }
       const codeHost = p.codeHost ?? gitCodeHost;
       const writer: EffectWriter = createEffectWriter({
         ...p,
@@ -318,6 +322,10 @@ export async function startFactory(opts: {
 
   const Tarefa = createTarefaTask({
     retryDelayMs,
+    availableAt(input) {
+      const config = projectOf(input.project).config;
+      return nextProjectActivity(config, clock.now());
+    },
     async run(input, step, runtime) {
       const project = projectOf(input.project);
       const { writer, source } = project;
@@ -395,7 +403,7 @@ export async function startFactory(opts: {
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
           if (!task) return;
-          approved = task.specReview === "approved";
+          approved = task.specReview === "approved" && task.specApprovedDryRun === project.config.dryRun;
           if (!approved) task.specReview = "draft";
         });
         if (!approved) return "aguardar";
@@ -697,6 +705,10 @@ export async function startFactory(opts: {
     },
     async escalate(input, runtime) {
       const project = projectOf(input.project);
+      if (project.config.activity === "business-hours") {
+        const next = nextProjectActivity(project.config, runtime.now());
+        if (next > runtime.now()) return next;
+      }
       let question: Question | undefined;
       await runtime.commit(async (tx) => {
         const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
@@ -940,6 +952,8 @@ export async function startFactory(opts: {
       const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
       if (!pending || pending.publication === "draft" || pending.publication === "sending") continue;
       try {
+        const config = projectOf(task.project).config;
+        if (nextProjectActivity(config, clock.now()) > clock.now()) continue;
         await sendTeamsNotice(task.id, task.project, task.key, pending.n);
         await checkAnswer(task, pending);
       } catch (err) {
@@ -1014,16 +1028,39 @@ export async function startFactory(opts: {
   let disarmRetry: (() => void) | undefined;
   let known = new Map((await readState()).tasks.map((t) => [t.id, t.status]));
 
+  /** Tarefas enfileiradas cujo projeto sumiu da config: já avisadas neste processo (evita loop via react). */
+  const missingProjectReported = new Set<string>();
+
   /** Ativa a próxima Tarefa se nenhuma estiver ativa. Abre o portão de uma Tarefa que estava pausada. */
   async function schedule(): Promise<void> {
     const state = await readState();
     if (state.daemonPaused || state.tasks.some((t) => t.status === "ativa")) return;
     const now = clock.now();
-    const next = state.tasks.find((t) => t.status === "enfileirada" && !t.pauseRequested && (t.notBefore ?? 0) <= now);
+    let next: QueuedTask | undefined;
+    let wakeAt = Number.POSITIVE_INFINITY;
+    for (const task of state.tasks) {
+      if (task.status !== "enfileirada" || task.pauseRequested) continue;
+      const project = projects.get(task.project);
+      if (!project) {
+        if (!missingProjectReported.has(task.id)) {
+          missingProjectReported.add(task.id);
+          await events.append({
+            type: "error",
+            project: task.project,
+            target: task.key,
+            message: `falha ao agendar: Projeto ${task.project} não está configurado`,
+          });
+        }
+        continue;
+      }
+      const at = Math.max(task.notBefore ?? 0, nextProjectActivity(project.config, now));
+      if (at <= now) {
+        if (!next) next = task;
+      } else if (at < wakeAt) {
+        wakeAt = at;
+      }
+    }
     if (!next) {
-      const wakeAt = Math.min(
-        ...state.tasks.filter((t) => t.status === "enfileirada" && t.notBefore).map((t) => t.notBefore as number),
-      );
       if (Number.isFinite(wakeAt) && !closing) {
         disarmRetry?.();
         disarmRetry = armTimer(react, Math.max(0, wakeAt - now));
@@ -1308,11 +1345,12 @@ export async function startFactory(opts: {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { revision?: unknown } | undefined;
         if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-        if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
+        // Aprovação é local; o escritor continua responsável por suprimir efeitos no dry-run.
         const approved = await harness.commit(async (tx) => {
           const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
           if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
           current.specReview = "approved";
+          current.specApprovedDryRun = project.config.dryRun;
           current.status = current.pauseRequested ? "pausada" : "enfileirada";
           return true;
         }, context);
@@ -1679,6 +1717,11 @@ export async function startFactory(opts: {
       tasks: async () => (await readState()).tasks,
       commands,
       content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
+      contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
+      availableAt: (name) => {
+        const config = projects.get(name)?.config;
+        return config ? nextProjectActivity(config, clock.now()) : clock.now();
+      },
       now: clock.now,
       armTimer,
     }));

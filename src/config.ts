@@ -91,6 +91,8 @@ export const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as con
 export const BusinessCalendar = z
   .object({
     /** Fuso IANA do expediente (ex.: America/Sao_Paulo). */
+    /** Inclui feriados legais BR/SP/Mogi; obrigatório implicitamente para activity: business-hours. */
+    legalHolidays: z.boolean().optional(),
     timezone: z.string().refine(isTimeZone, { message: "fuso horário IANA desconhecido" }).default("UTC"),
     workdays: z.array(z.enum(WEEKDAYS)).min(1).default(["mon", "tue", "wed", "thu", "fri"]),
     /** Início e fim do expediente, no fuso do calendário. */
@@ -153,6 +155,8 @@ const GitHubSourceConfig = z.object({
 
 export const ProjectConfig = z.object({
   name: z.string().min(1),
+  /** Execução e avisos automáticos: sempre (pessoal) ou somente no calendário do projeto (empresa). */
+  activity: z.enum(["always", "business-hours"]).default("always"),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
   dryRun: z.boolean().default(true),
   /** No ensaio, segura a pergunta para aprovação e não publica uma SPEC sem pergunta. */
