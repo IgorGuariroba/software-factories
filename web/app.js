@@ -173,8 +173,6 @@ function reviewSpecButton(task) {
         if (!container.isConnected) return;
         container.replaceChildren(
           el("p", { text: `SPEC e Tickets de ${preview.card}:` }),
-          el("pre", { className: "texto", text: preview.spec }),
-          el("pre", { className: "texto", text: preview.tickets }),
           el("p", {
             text: preview.dryRun
               ? "Dry-run: a aprovação é local e continua o ensaio, sem publicar na Fonte."
@@ -185,6 +183,8 @@ function reviewSpecButton(task) {
             attrs: { type: "button" },
             onClick: () => run(() => approveSpec(task.project, task.key, preview.revision)),
           }),
+          el("pre", { className: "texto", text: preview.spec }),
+          el("pre", { className: "texto", text: preview.tickets }),
         );
         clearError();
       } catch (err) {
