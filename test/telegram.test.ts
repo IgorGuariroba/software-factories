@@ -126,6 +126,7 @@ describe("Telegram: eventos ao usuário", () => {
     telegram.say("Dias úteis.");
     await eventually(() => expect(telegram.texts().join("\n")).toContain("Confirmar resposta para exemplo/PROJ-1"));
     expect(model.calls).toHaveLength(1);
+    factory = await f.restart();
     telegram.tap(telegram.button("Confirmar resposta"));
     await eventually(() =>
       expect(telegram.texts().join("\n")).toContain("SPEC de PROJ-1 (exemplo) pronta para revisão"),
@@ -133,7 +134,7 @@ describe("Telegram: eventos ao usuário", () => {
     const notices = telegram
       .texts()
       .filter((text) => text.includes("SPEC de PROJ-1 (exemplo) pronta para revisão")).length;
-    factory = await f.restart();
+    factory = await factory.restart();
     await eventually(() =>
       expect(
         telegram.texts().filter((text) => text.includes("SPEC de PROJ-1 (exemplo) pronta para revisão")).length,

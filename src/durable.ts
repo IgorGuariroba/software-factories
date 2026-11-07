@@ -239,6 +239,8 @@ export type ManagementProgress = {
   deferred?: { project: string; message: { text: string; buttons?: { label: string; command: string }[] } }[];
   /** Próximo update a receber (no Telegram, o `offset` do `getUpdates`). */
   updateOffset: number;
+  /** Diálogo de resposta por conversa/usuário autorizado, incluindo confirmação pendente. */
+  answering?: Record<string, { id: string; n: number; draft?: string }>;
   /** Instante do último comando ou reinício preventivo da sequência. */
   lastUpdateAt?: number;
 };

@@ -115,6 +115,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
   const progress: ManagementProgress = {
     eventCursor: stored?.eventCursor ?? deps.initialEventCount,
     deferred: stored?.deferred ?? [],
+    answering: stored?.answering ?? {},
     updateOffset: stored?.updateOffset ?? 0,
     lastUpdateAt: stored?.lastUpdateAt ?? deps.now(),
   };
@@ -320,7 +321,13 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     return { id: (matches[0] as QueuedTask).id };
   }
 
-  const answering = new Map<string, { id: string; n: number; draft?: string }>();
+  const answering = new Map<string, { id: string; n: number; draft?: string }>(
+    Object.entries(progress.answering ?? {}),
+  );
+  const saveDialogue = async () => {
+    progress.answering = Object.fromEntries(answering);
+    await save();
+  };
 
   async function execute(text: string): Promise<string> {
     const [head = "", arg] = text.trim().split(/\s+/);
@@ -375,6 +382,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     const input = update.text.trim();
     if (input === "/responder") {
       answering.delete(session);
+      await saveDialogue();
       const tasks = await deps.tasks();
       const buttons = tasks
         .filter((t) => ["aguardando-humano", "pausada"].includes(t.status))
@@ -401,6 +409,7 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
         return;
       }
       answering.set(session, { id: task.id, n: q.n });
+      await saveDialogue();
       if (update.buttonId) await port.answerButton(update.buttonId, "Envie sua resposta na conversa.", abort.signal);
       await deliver({
         text: `Envie sua resposta para ${task.key}, pergunta ${q.n}. Ela será registrada localmente, sem publicar na Fonte. Para sair, use /sair.`,
@@ -409,11 +418,13 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
     }
     if (input === "/sair") {
       answering.delete(session);
+      await saveDialogue();
       await deliver({ text: "Resposta cancelada. Nenhuma alteração foi feita." });
       return;
     }
     if (selected && !input.startsWith("/")) {
       selected.draft = update.text;
+      await saveDialogue();
       await deliver({
         text: `Confirmar resposta para ${selected.id}, pergunta ${selected.n}?\n\n${update.text}\n\nA resposta fica local, sem publicar na Fonte.`,
         buttons: [
@@ -431,7 +442,10 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
       input === "/confirmar-resposta" && selected?.draft
         ? await execute(`/responder ${selected.id} ${selected.n} ${selected.draft}`)
         : await execute(update.text);
-    if (selected && reply.startsWith("Resposta registrada")) answering.delete(session);
+    if (selected && reply.startsWith("Resposta registrada")) {
+      answering.delete(session);
+      await saveDialogue();
+    }
     await events.append({ type: "command", ...origin, accepted: true, result: reply });
     if (update.buttonId !== undefined) {
       await port.answerButton(update.buttonId, redactSecrets(reply), abort.signal).catch((err) => {

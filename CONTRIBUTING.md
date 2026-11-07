@@ -124,7 +124,7 @@ O Telegram é a interface de gestão do celular (porta `ManagementInterface`, `s
 
 Perguntas novas e lembretes de perguntas pendentes têm botão **Responder**. `/responder` sem argumentos lista as pendências; escolha uma, envie o texto e toque em **Confirmar resposta**. `/sair` ou **Cancelar** abandona o rascunho. A resposta é local, sem publicar comentário na Fonte. O atalho explícito `/responder projeto/card número texto` continua disponível e registra diretamente, sem o diálogo guiado.
 
-A seleção e o rascunho pertencem ao par conversa/usuário autorizado. São voláteis: após reiniciar, use `/responder` novamente; texto livre sem seleção nunca é associado automaticamente a um card. Os avisos automáticos indicam `[Empresa]` para `business-hours` e `[Pessoal]` para `always`. Ao iniciar, a ponte lembra perguntas abertas e SPECs esperando revisão; aprovação da SPEC continua na web local.
+A seleção e o rascunho pertencem ao par conversa/usuário autorizado e sobrevivem ao reinício no progresso durável da interface. Texto livre sem seleção nunca é associado automaticamente a um card. Os avisos automáticos indicam `[Empresa]` para `business-hours` e `[Pessoal]` para `always`. Ao iniciar, a ponte lembra perguntas abertas e SPECs esperando revisão; aprovação da SPEC continua na web local.
 
 #### Testes de contrato contra o Telegram real (opt-in)
 
