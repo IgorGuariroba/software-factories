@@ -116,6 +116,8 @@ export interface FactoryCommands {
   veto(id: string): Promise<VetoResult>;
   setDaemonPaused(paused: boolean): Promise<void>;
   reorder(ids: string[]): Promise<void>;
+  /** Responde localmente sem publicar na Fonte; false se a pergunta não está disponível. */
+  answerQuestion?(id: string, n: number, answer: string): Promise<boolean>;
 }
 
 export interface RunningFactory {
@@ -1104,6 +1106,28 @@ export async function startFactory(opts: {
 
   const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada", "recusada"]);
   const commands: FactoryCommands = {
+    async answerQuestion(id, n, answer) {
+      if (!Number.isSafeInteger(n) || n < 1 || !answer.trim() || answer.length > 20_000) return false;
+      const recorded = await harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        const task = state.tasks.find((t) => t.id === id);
+        const q = task?.questions?.find((item) => item.n === n);
+        if (
+          !task ||
+          !q ||
+          !["aguardando-humano", "pausada"].includes(task.status) ||
+          q.answer !== null ||
+          q.publication === "sending"
+        )
+          return undefined;
+        recordAnswer(state, id, n, answer.trim());
+        return { project: task.project, target: task.key, to: q.to, text: q.text };
+      }, context);
+      if (!recorded) return false;
+      await events.append({ type: "question", ...recorded, n, status: "respondida" });
+      react();
+      return true;
+    },
     pause: (id: string) =>
       updateTask(id, (task) => {
         if (TERMINAL.has(task.status)) return;
