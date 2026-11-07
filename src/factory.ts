@@ -1354,6 +1354,43 @@ export async function startFactory(opts: {
         });
         return json(res, 200, { ok: true });
       }
+      const answerRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)\/answer$/);
+      if (answerRoute && req.method === "POST") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { answer?: unknown } | undefined;
+        if (typeof body?.answer !== "string" || !body.answer.trim() || body.answer.length > 20_000)
+          return json(res, 400, { error: "resposta deve ter entre 1 e 20000 caracteres" });
+        const project = decodeURIComponent(answerRoute[1] as string);
+        const key = decodeURIComponent(answerRoute[2] as string);
+        const n = Number(answerRoute[3]);
+        const answer = body.answer.trim();
+        const recorded = await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          const task = state.tasks.find((t) => t.id === `${project}/${key}`);
+          const q = task?.questions?.find((item) => item.n === n);
+          if (!task || !q) return { code: 404, error: "pergunta não encontrada" };
+          if (
+            !["aguardando-humano", "pausada"].includes(task.status) ||
+            q.answer !== null ||
+            q.publication === "sending"
+          )
+            return { code: 409, error: "pergunta não está disponível para resposta" };
+          recordAnswer(state, task.id, n, answer);
+          return { code: 200, to: q.to, text: q.text };
+        }, context);
+        if (recorded.code !== 200) return json(res, recorded.code, { error: recorded.error });
+        await events.append({
+          type: "question",
+          project,
+          target: key,
+          n,
+          to: recorded.to as string,
+          text: recorded.text as string,
+          status: "respondida",
+        });
+        react();
+        return json(res, 200, { ok: true });
+      }
       const questionRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)(\/approve)?$/);
       if (questionRoute && (req.method === "GET" || req.method === "POST")) {
         const [, encodedProject, encodedKey, number, approval] = questionRoute;

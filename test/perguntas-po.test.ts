@@ -46,6 +46,19 @@ const specComments = (f: TestFactory, key: string) =>
   f.source.commentsOf(key).filter((c) => c.body.split("\n")[0] === "SPEC" && c.body.endsWith(MARK));
 
 describe("perguntas de negócio ao PO", () => {
+  it("resposta local em dry-run retoma a SPEC sem publicar na Fonte", async () => {
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o calendário?");
+    factory = await startTestFactory({ cards: [card("PROJ-1")], model, dryRun: true });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/questions/1/answer", {
+      answer: "Segunda a sexta, 9h às 18h; excluir feriados de Mogi das Cruzes/SP.",
+    });
+    await waitForStatus(factory, "PROJ-1", "concluida");
+    expect(model.calls[1]?.input).toContain("feriados de Mogi das Cruzes/SP");
+    expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
+  });
   it("permite revisar a pergunta antes de enviar ao Jira e avisar no Teams", async () => {
     const sent: unknown[] = [];
     const model = new FakeModel();
