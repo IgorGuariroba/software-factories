@@ -56,7 +56,10 @@ describe("revisão da SPEC antes de publicar", () => {
     await waitForStatus(factory, "PROJ-1", "aguardando-humano");
     const preview = await api<SpecPreview>(factory, "GET", "/tasks/exemplo/PROJ-1/spec");
     expect(preview.dryRun).toBe(true);
-    expect((await approve(factory, preview.revision)).status).toBe(409);
+    expect((await approve(factory, "inválida")).status).toBe(409);
+    expect((await approve(factory, preview.revision)).status).toBe(200);
+    await waitForStatus(factory, "PROJ-1", "concluida");
     await eventually(() => expect(factory?.source.commentsOf("PROJ-1")).toEqual([]));
+    expect((await approve(factory, preview.revision)).status).toBe(409);
   });
 });

@@ -1326,7 +1326,7 @@ export async function startFactory(opts: {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { revision?: unknown } | undefined;
         if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-        if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
+        // Aprovação é local; o escritor continua responsável por suprimir efeitos no dry-run.
         const approved = await harness.commit(async (tx) => {
           const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
           if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
