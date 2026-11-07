@@ -33,6 +33,7 @@ const STATUS = {
 };
 
 const STAGE = {
+  triagem: "Triagem",
   assumir: "Assumir o card",
   veto: "Prazo de veto",
   spec: "Grill e SPEC",
@@ -224,6 +225,27 @@ export function pipelineSteps(task) {
  */
 const WAITING = "Aguardando você.";
 
+/** Seção que resolve a pendência atual, sem depender dos canais externos.
+ * @param {Record<string, any>} task
+ */
+export function actionTab(task) {
+  if ((task.triage?.review ?? task.triageReview) === "draft" || task.specReview === "draft") return "spec";
+  if (task.questions?.some((q) => q.answer === null) || task.pendingQuestion) return "perguntas";
+  if (task.status === "aguardando-entrega" || ["implementacao", "review", "entrega"].includes(task.stage))
+    return "implementacao";
+  if (task.status === "pausada" && task.retros?.length) return "retros";
+  return "atividade";
+}
+
+/** @param {Record<string, any>} task */
+export function canAnswerQuestion(task, question) {
+  return (
+    ["aguardando-humano", "pausada"].includes(task.status) &&
+    question.answer === null &&
+    question.publication !== "sending"
+  );
+}
+
 export function nextAction(task) {
   if (task.status === "bloqueada") return `Bloqueada: ${task.reason ?? "motivo não informado"}`;
   if (task.status === "aguardando-entrega") return "PR/MR aberto; aguardando CI, comentários e o seu merge.";
@@ -241,7 +263,7 @@ export function nextAction(task) {
   if (task.status === "pausada") {
     const retro = task.retros?.at(-1);
     return retro && retro.status === "concluida"
-      ? `Revise a ${retroStageLabel(retro.stage)} e retome a Tarefa.`
+      ? "Tarefa pausada após a retrô. Retome para continuar; as sugestões da retrô são opcionais e não impedem a retomada."
       : "Pausada: retome quando quiser continuar.";
   }
   return null;

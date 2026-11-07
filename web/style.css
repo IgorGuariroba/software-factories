@@ -624,3 +624,55 @@ a {
 .selo.perigo {
   color: var(--perigo);
 }
+
+.proximo button {
+  display: block;
+  margin-top: 0.6rem;
+  border-color: var(--alerta);
+  font-weight: 600;
+}
+
+.pipeline button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-weight: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--destaque);
+  outline-offset: 3px;
+}
+
+#detalhe-perguntas {
+  list-style: none;
+  padding: 0;
+}
+
+#detalhe-perguntas > li {
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+}
+
+.resposta textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+@media (max-width: 600px) {
+  .pipeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .linha-do-tempo li {
+    grid-template-columns: 1fr;
+  }
+  .cabecalho {
+    flex-wrap: wrap;
+  }
+}

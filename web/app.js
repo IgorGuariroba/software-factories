@@ -28,8 +28,10 @@ import {
 } from "./api.js";
 import {
   actionsFor,
+  actionTab,
   activity,
   boardColumns,
+  canAnswerQuestion,
   cardHint,
   detailStatusLabel,
   formatCommit,
@@ -116,8 +118,12 @@ function answerForm(task, question) {
     if (!answer) return;
     send.disabled = true;
     run(async () => {
-      await answerQuestion(task.project, task.key, question.n, answer);
-      answerDrafts.delete(id);
+      try {
+        await answerQuestion(task.project, task.key, question.n, answer);
+        answerDrafts.delete(id);
+      } finally {
+        send.disabled = false;
+      }
     });
   });
   return form;
@@ -293,7 +299,16 @@ function reviewRetroButton(task, retro, proposal) {
         clearError();
       } catch (err) {
         button.disabled = false;
-        showError(err);
+        const message = err instanceof Error ? err.message : String(err);
+        let notice = container.querySelector('[role="status"]');
+        if (!notice) {
+          notice = el("p", { attrs: { role: "status" } });
+          container.append(notice);
+        }
+        notice.textContent =
+          message === "repositório da fábrica não configurado"
+            ? "Publicação opcional indisponível: configure FACTORY_RETRO_REPO=dono/nome no ambiente do daemon e reinicie-o para publicar sugestões como issues. Isso não impede retomar a tarefa."
+            : `Não foi possível revisar esta publicação opcional: ${message}`;
       }
     },
   });
@@ -410,7 +425,17 @@ function renderDaemon() {
   toggle.disabled = false;
 }
 
+let openedTask = null;
 function renderDetail(task) {
+  const focused = document.activeElement;
+  const editing =
+    focused?.matches("textarea") && $("detalhe").contains(focused)
+      ? { label: focused.getAttribute("aria-label"), start: focused.selectionStart, end: focused.selectionEnd }
+      : null;
+  if (openedTask !== task.id) {
+    openedTask = task.id;
+    showTab(actionTab(task));
+  }
   $("titulo-detalhe").textContent = task.title;
   $("detalhe-ref").textContent = `${task.project} · ${task.key}`;
   const facts = [stageLabel(task.stage), `${task.attempts} tentativa(s)`];
@@ -423,7 +448,25 @@ function renderDetail(task) {
   const next = nextAction(task);
   const proximo = $("detalhe-proximo");
   proximo.hidden = next === null;
-  proximo.textContent = next ?? "";
+  proximo.replaceChildren(
+    next ?? "",
+    ...(next
+      ? [
+          el("button", {
+            text: task.status === "pausada" ? "Retomar tarefa" : "Ver próxima ação",
+            attrs: { type: "button" },
+            onClick: () => {
+              if (task.status === "pausada") {
+                run(() => resumeTask(task.project, task.key));
+                return;
+              }
+              showTab(actionTab(task));
+              document.querySelector(`[data-painel="${actionTab(task)}"]`)?.scrollIntoView({ block: "nearest" });
+            },
+          }),
+        ]
+      : []),
+  );
   proximo.className = `proximo${task.status === "bloqueada" ? " bloqueado" : ""}`;
   const STATE = {
     feito: "concluída",
@@ -437,7 +480,21 @@ function renderDetail(task) {
       el(
         "li",
         { className: s.state, attrs: s.state === "atual" || s.state === "espera" ? { "aria-current": "step" } : {} },
-        s.label,
+        el("button", {
+          text: s.label,
+          attrs: { type: "button" },
+          onClick: () =>
+            showTab(
+              {
+                triagem: "spec",
+                spec: "spec",
+                implementacao: "implementacao",
+                review: "implementacao",
+                entrega: "implementacao",
+                merge: "implementacao",
+              }[s.key],
+            ),
+        }),
         el("span", { className: "estado-etapa", text: STATE[s.state] }),
       ),
     ),
@@ -464,8 +521,14 @@ function renderDetail(task) {
                       : `Resposta: ${q.answer}`,
             }),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
-            ...(q.answer === null && q.publication !== "draft" && q.publication !== "sending"
-              ? [answerForm(task, q)]
+            ...(canAnswerQuestion(task, q)
+              ? [
+                  el("p", {
+                    className: "vazio",
+                    text: "Responda por aqui para continuar. A resposta fica na fábrica, sem enviar mensagem aos canais externos.",
+                  }),
+                  answerForm(task, q),
+                ]
               : []),
             ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),
             ...(q.reminder === "sending"
@@ -550,6 +613,10 @@ function renderDetail(task) {
   $("detalhe-implementacao").replaceChildren(...implParts);
 
   $("detalhe-retros").replaceChildren(
+    el("h3", { text: "Sugestões opcionais da retrô" }),
+    el("p", {
+      text: "Estas sugestões de melhoria não são aprovações obrigatórias da tarefa. Se a tarefa estiver pausada, use Retomar tarefa para continuar o fluxo.",
+    }),
     ...(task.retros.length === 0
       ? [el("p", { className: "vazio", text: "Nenhuma retrô ainda." })]
       : task.retros.map((r) =>
@@ -568,6 +635,14 @@ function renderDetail(task) {
                   el("strong", { text: p.title }),
                   ` (${proposalLabel(p)}${p.issue ? `, issue #${p.issue.number}` : ""}${p.reason ? `: ${p.reason}` : ""}): `,
                   p.description,
+                  ...(p.kind === "conhecimento" && p.status === "pendente"
+                    ? [
+                        el("p", {
+                          className: "vazio",
+                          text: "Aprovação de conhecimento ainda não disponível nesta interface (M1-18). A sugestão fica registrada, sem impedir a retomada da tarefa.",
+                        }),
+                      ]
+                    : []),
                   ...(p.kind === "fabrica" && p.status === "pendente" && r.status === "concluida"
                     ? [reviewRetroButton(task, r, p)]
                     : []),
@@ -623,17 +698,48 @@ function renderDetail(task) {
   }
   $("detalhe").hidden = false;
   $("detalhe-vazio").hidden = true;
+  if (editing) {
+    const field = [...document.querySelectorAll("#detalhe textarea")].find(
+      (node) => node.getAttribute("aria-label") === editing.label,
+    );
+    if (field) {
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(editing.start, editing.end);
+    }
+  }
 }
 
 let currentTab = "atividade";
 function showTab(name) {
   currentTab = name;
-  for (const tab of document.querySelectorAll("[data-aba]"))
+  for (const tab of document.querySelectorAll("[data-aba]")) {
     tab.setAttribute("aria-selected", String(tab.dataset.aba === name));
+    tab.tabIndex = tab.dataset.aba === name ? 0 : -1;
+    tab.id = `aba-${tab.dataset.aba}`;
+    tab.setAttribute("aria-controls", `painel-${tab.dataset.aba}`);
+  }
+  for (const panel of document.querySelectorAll("[data-painel]")) {
+    panel.id = `painel-${panel.dataset.painel}`;
+    panel.setAttribute("aria-labelledby", `aba-${panel.dataset.painel}`);
+  }
   for (const panel of document.querySelectorAll("[data-painel]")) panel.hidden = panel.dataset.painel !== name;
 }
 for (const tab of document.querySelectorAll("[data-aba]"))
   tab.addEventListener("click", () => showTab(tab.dataset.aba));
+document.querySelector(".abas").addEventListener("keydown", (event) => {
+  const tabs = [...document.querySelectorAll("[data-aba]")];
+  const index = tabs.indexOf(event.target);
+  if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const target =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  showTab(tabs[target].dataset.aba);
+  tabs[target].focus();
+});
 showTab(currentTab);
 
 function readSelection() {
