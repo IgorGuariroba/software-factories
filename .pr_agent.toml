@@ -1,7 +1,7 @@
 [config]
-model = "openrouter/google/gemini-3.8-flash"
-fallback_models = ["openrouter/openai/gpt-5-mini"]
-custom_model_max_tokens = 400000
+model = "openrouter/anthropic/claude-sonnet-5.5"
+fallback_models = ["openrouter/openai/gpt-5.4"]
+custom_model_max_tokens = 1000000
 response_language = "pt-BR"
 
 [pr_reviewer]
