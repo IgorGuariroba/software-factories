@@ -10,8 +10,17 @@ permissions: {}
 
 jobs:
   pr-agent:
-    # Ignora bots (inclusive a própria fábrica e o CodeRabbit) e comentários fora de PR.
-    if: ${{ github.event.sender.type != 'Bot' && (github.event_name == 'pull_request' || github.event.issue.pull_request) }}
+    # Ignora bots (inclusive a fábrica e o CodeRabbit). Comandos por comentário só de quem tem acesso de escrita
+    # ao repositório e só /review ou /improve: evita gasto de tokens e uso do token por terceiros.
+    # PRs de fork ficam de fora de propósito: pull_request_target exporia secrets a contribuições externas.
+    if: >-
+      github.event.sender.type != 'Bot' && (
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (
+          github.event.issue.pull_request &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+          (startsWith(github.event.comment.body, '/review') || startsWith(github.event.comment.body, '/improve'))
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -20,8 +29,9 @@ jobs:
       pull-requests: write
     steps:
       - name: PR Agent (review e improve via OpenRouter)
-        # Fixado por SHA: the-pr-agent/pr-agent (MIT), 2026-11-07.
-        uses: the-pr-agent/pr-agent@455bd81d8e0ce3af80ef2cfc86df238a5b4b7c90
+        # Imagem fixada por digest (pragent/pr-agent 0.49.0-github_action), atestação verificada com
+        # `gh attestation verify oci://index.docker.io/pragent/pr-agent@<digest> --repo The-PR-Agent/pr-agent`.
+        uses: docker://pragent/pr-agent@sha256:b1ed6e8de56eb4d6e4169ee0d5c209bb5ed1ef071a01c0c042c64b80192a785c
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
