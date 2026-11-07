@@ -44,6 +44,16 @@ export class StageBlocked extends Error {
   override name = "StageBlocked";
 }
 
+/** Motivo persistido usado para reconhecer uma retomada que só precisa medir novamente o baseline. */
+export const baselineBlockedReason = (branch: string): string =>
+  `a suíte de testes já falha na branch ${branch} antes do primeiro teste novo (linha de base ` +
+  "vermelha); a fábrica não tem como verificar o TDD até a suíte voltar a passar";
+
+/** Bloqueio recuperável sem descartar um reparo versionado feito pela pessoa no clone. */
+export const baselineWorkspaceBlockedReason = (branch: string): string =>
+  `a branch ${branch} tem alterações versionadas pendentes antes da linha de base; ` +
+  "preserve o reparo fora deste clone e deixe índice e arquivos versionados limpos antes de retomar";
+
 /** Quantas vezes seguidas a fábrica recusa uma fase do TDD antes de bloquear a Tarefa. */
 export const MAX_TDD_REJECTIONS = 3;
 
@@ -386,15 +396,15 @@ export async function runImplementation(opts: {
     if (!progress.baseline) {
       // Progresso anterior à linha de base, já com commits: a fase de teste dele já foi aceita.
       if (progress.commits.length > 0) return;
+      // Não mede sobre reparos humanos que a verificação de fase poderia descartar depois.
+      // diff HEAD cobre índice e working tree, inclusive arquivos adicionados ao índice.
+      const pending = await git(worktree, ["diff", "--name-only", "-z", "--no-renames", "HEAD"]);
+      if (pending.length > 0) throw new StageBlocked(baselineWorkspaceBlockedReason(progress.branch));
       const run = await runSuite();
       progress.baseline = run.exitCode === 0 ? "verde" : "vermelha";
       await save(progress);
     }
-    if (progress.baseline === "vermelha")
-      throw new StageBlocked(
-        `a suíte de testes já falha na branch ${progress.branch} antes do primeiro teste novo (linha de base ` +
-          "vermelha); a fábrica não tem como verificar o TDD até a suíte voltar a passar",
-      );
+    if (progress.baseline === "vermelha") throw new StageBlocked(baselineBlockedReason(progress.branch));
   }
 
   /** Confere a fase: devolve os caminhos a commitar, ou por que recusou. */

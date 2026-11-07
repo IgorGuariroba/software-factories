@@ -368,7 +368,9 @@ export const API_SCHEMA = {
       },
     },
     "/tasks/{project}/{key}/pause": taskPath("Pausa a tarefa (a ativa para no próximo passo)"),
-    "/tasks/{project}/{key}/resume": taskPath("Retoma a tarefa pausada"),
+    "/tasks/{project}/{key}/resume": taskPath(
+      "Retoma tarefa pausada ou revalida baseline bloqueado antes do primeiro commit",
+    ),
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
     "/tasks/{project}/{key}/veto": {
       post: {

@@ -42,7 +42,13 @@ import {
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
-import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
+import {
+  baselineBlockedReason,
+  baselineWorkspaceBlockedReason,
+  createImplementationExtension,
+  runImplementation,
+  StageBlocked,
+} from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
@@ -1175,6 +1181,23 @@ export async function startFactory(opts: {
       updateTask(id, (task) => {
         task.pauseRequested = false;
         if (task.status === "pausada") task.status = "enfileirada";
+        // O usuário corrigiu o ambiente: nova tentativa mede o baseline, sem aceitar o vermelho como TDD.
+        if (
+          task.status === "bloqueada" &&
+          task.stage === "implementacao" &&
+          task.implementation &&
+          task.implementation.commits.length === 0 &&
+          ((task.implementation.baseline === "vermelha" &&
+            task.reason === baselineBlockedReason(task.implementation.branch)) ||
+            (task.implementation.baseline === null &&
+              task.reason === baselineWorkspaceBlockedReason(task.implementation.branch)))
+        ) {
+          task.implementation.baseline = null;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
       }),
     async cancel(id: string) {
       let durableId: number | null = null;
