@@ -112,7 +112,7 @@ export function formatBranchName(conventions: ResolvedConventions, card: { key: 
 /** Formata a mensagem de commit com base na convenção resolvida. */
 export function formatCommitMessage(
   conventions: Pick<ResolvedConventions, "commit">,
-  opts: { type: "test" | "feat" | "fix" | "chore"; summary: string; key: string },
+  opts: { type: "test" | "feat" | "fix" | "chore" | "style"; summary: string; key: string },
 ): string {
   // Uma linha só: o título do ticket vem do modelo e não pode quebrar a mensagem em várias.
   const summary = opts.summary.replace(/\s+/g, " ").trim();
