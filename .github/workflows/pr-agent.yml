@@ -1,0 +1,48 @@
+name: PR Agent
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  pr-agent:
+    # Ignora bots (inclusive a fábrica e o CodeRabbit). Comandos por comentário só de quem tem acesso de escrita
+    # ao repositório e só /review ou /improve: evita gasto de tokens e uso do token por terceiros.
+    # PRs de fork não têm review automático (pull_request_target exporia secrets); um mantenedor pode pedir
+    # /review ou /improve neles conscientemente: o agente só lê o diff, sem executar código do PR. Rascunhos esperam.
+    if: >-
+      github.event.sender.type != 'Bot' && (
+        (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository) || (
+          github.event.issue.pull_request &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+          (startsWith(github.event.comment.body, '/review') || startsWith(github.event.comment.body, '/improve'))
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: PR Agent (review e improve via OpenRouter)
+        # Imagem fixada por digest (pragent/pr-agent 0.49.0-github_action), atestação verificada com
+        # `gh attestation verify oci://index.docker.io/pragent/pr-agent@<digest> --repo The-PR-Agent/pr-agent`.
+        uses: docker://pragent/pr-agent@sha256:b1ed6e8de56eb4d6e4169ee0d5c209bb5ed1ef071a01c0c042c64b80192a785c
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
+          # Modelo no env: o .pr_agent.toml do repositório só vale a partir do branch padrão.
+          CONFIG.MODEL: "openrouter/anthropic/claude-sonnet-5.5"
+          CONFIG.FALLBACK_MODELS: '["openrouter/openai/gpt-5.4"]'
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "1000000"
+          CONFIG.RESPONSE_LANGUAGE: "pt-BR"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "false"
+          # Revisa também a cada push no PR (padrão ignora synchronize).
+          GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
