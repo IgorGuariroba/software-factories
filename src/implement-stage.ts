@@ -282,7 +282,7 @@ export async function runImplementation(opts: {
         if (progress.rejections >= MAX_TDD_REJECTIONS)
           // Só a primeira linha do veredito: o motivo vai para o Telegram, e a saída da suíte já está no progresso.
           throw new StageBlocked(
-            `TDD recusado ${progress.rejections} vezes na fase ${step.phase} do ticket ${step.ticket + 1}: ${verdict.split("\n")[0]?.slice(0, 160)}. Detalhes na atividade da Tarefa.`,
+            `TDD recusado ${progress.rejections} vezes na fase ${step.phase} do ticket ${step.ticket + 1}: ${redactSecrets(verdict.split("\n")[0] ?? "").slice(0, 160)}. Detalhes na atividade da Tarefa.`,
           );
         continue;
       }
@@ -423,8 +423,13 @@ export async function runImplementation(opts: {
       timeoutMs: format.timeoutSeconds * 1000,
       signal: runtime.signal,
     });
-    if (run.spawnError || run.timedOut)
+    if (run.spawnError || run.timedOut || runtime.signal.aborted) {
+      // Formatação pela metade não pode sobrar na árvore: entraria na próxima fase do TDD (inclusive em testes).
+      const partial = await changedPaths(worktree);
+      if (partial.length > 0) await discard(partial);
+      runtime.signal.throwIfAborted();
       throw new StageBlocked(`o formatador do repositório não concluiu: ${run.spawnError ?? "tempo esgotado"}`);
+    }
     // Só o que a Tarefa já tocou: formatar o resto do repositório poluiria a entrega com arquivos alheios.
     const first = progress.commits[0]?.sha;
     const base = progress.baseHead ?? (first ? `${first}^` : undefined);
