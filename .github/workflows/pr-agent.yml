@@ -60,3 +60,30 @@ jobs:
           PR_CODE_SUGGESTIONS.SCORE_ON_REFLECTION_FAILURE: "5"
           # Revisa também a cada push no PR (padrão ignora synchronize).
           GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
+
+  review-gate:
+    # Política do review: achado Critical ou Major do PR-Agent bloqueia o merge até a thread ser resolvida.
+    # Roda depois do review; ao resolver as threads, rode este job de novo (Re-run) para liberar.
+    needs: pr-agent
+    if: always() && github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # O script vem da base, nunca do PR: um PR não pode afrouxar o próprio portão.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: scripts/review-gate.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - name: Achados Critical/Major sem resolver
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/review-gate.mjs
