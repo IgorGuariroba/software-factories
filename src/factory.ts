@@ -44,6 +44,7 @@ import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
 import {
   baselineBlockedReason,
+  baselineWorkspaceBlockedReason,
   createImplementationExtension,
   runImplementation,
   StageBlocked,
@@ -1184,9 +1185,12 @@ export async function startFactory(opts: {
         if (
           task.status === "bloqueada" &&
           task.stage === "implementacao" &&
-          task.implementation?.baseline === "vermelha" &&
-          task.reason === baselineBlockedReason(task.implementation.branch) &&
-          task.implementation.commits.length === 0
+          task.implementation &&
+          task.implementation.commits.length === 0 &&
+          ((task.implementation.baseline === "vermelha" &&
+            task.reason === baselineBlockedReason(task.implementation.branch)) ||
+            (task.implementation.baseline === null &&
+              task.reason === baselineWorkspaceBlockedReason(task.implementation.branch)))
         ) {
           task.implementation.baseline = null;
           task.durableId = null;

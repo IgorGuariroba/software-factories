@@ -6,7 +6,17 @@ import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
 import { AUTOMATION_MARK } from "../src/effect-writer.js";
 import { FakeModel, type SpecDelivery, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
-import { api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
+import {
+  api,
+  events,
+  eventually,
+  poll,
+  startTestFactory,
+  type TestFactory,
+  tasks,
+  USER,
+  waitForStatus,
+} from "./harness.js";
 
 const SLOW = 60_000;
 const DONE_WITHIN = 45_000;
@@ -359,6 +369,55 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
     expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
     expect(await repo.branches()).toEqual(["main"]);
     expect(factory.codeHost.pushed).toEqual([]);
+  });
+
+  it.each([false, true])("preserva reparo versionado pendente na retomada (staged: %s)", async (staged) => {
+    const original = '{"ok":false}\n';
+    const repair = '{"ok":true}\n';
+    const repo = await createRemoteRepo(root, "app", {
+      files: { "ambiente.json": original, ".gitignore": "node_modules/\n" },
+    });
+    const wrapper = join(root, "testar.mjs");
+    await writeFile(
+      wrapper,
+      `import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (!existsSync("node_modules/pronto") && !JSON.parse(readFileSync("ambiente.json", "utf8")).ok) process.exit(1);
+process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).status ?? 1);
+`,
+    );
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      config: { repositories: [mapping(repo, { test: { ...NODE_TEST, command: [process.execPath, wrapper] } })] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+    const clone = join(factory.stateDir, "worktrees", "exemplo", "PROJ-1");
+    await writeFile(join(clone, "ambiente.json"), repair);
+    if (staged) await git(clone, "add", "ambiente.json");
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await eventually(async () =>
+      expect(await tasks(factory as TestFactory)).toMatchObject([
+        { status: "bloqueada", reason: expect.stringContaining("alterações versionadas pendentes") },
+      ]),
+    );
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await readFile(join(clone, "ambiente.json"), "utf8")).toBe(repair);
+    expect(await repo.branches()).toEqual(["main"]);
+    // A pessoa remove o reparo pendente e instala dependências ignoradas: pode retomar sem perda de trabalho.
+    await git(clone, "restore", "--staged", "--worktree", "ambiente.json");
+    await mkdir(join(clone, "node_modules"));
+    await writeFile(join(clone, "node_modules", "pronto"), "");
+    factory = await factory.restart();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
   });
 
   it("retoma baseline bloqueado após corrigir o ambiente e revalida antes de chamar o implementador", async () => {
