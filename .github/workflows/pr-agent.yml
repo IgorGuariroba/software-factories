@@ -72,7 +72,8 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      # O script vem da base, nunca do PR: um PR não pode afrouxar o próprio portão.
+      # O script vem da base, não do PR. O YAML deste workflow, porém, vem do PR: mudança em .github/ precisa de
+      # revisão humana, porque é por ela que um PR poderia afrouxar o portão.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -82,6 +83,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
+      # Falha fechado: sem review publicado (pr-agent falhou ou foi pulado), não há como afirmar que não há achados.
+      - name: Review do PR-Agent concluído
+        if: needs.pr-agent.result != 'success'
+        run: |
+          echo "::error::o job pr-agent terminou como '${{ needs.pr-agent.result }}'; sem review, o portão não libera"
+          exit 1
       - name: Achados Critical/Major sem resolver
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
