@@ -949,11 +949,11 @@ export async function startFactory(opts: {
   /** Confere, na Fonte, a resposta de cada Tarefa que aguarda uma pessoa. */
   async function checkAnswers(): Promise<void> {
     for (const task of (await readState()).tasks) {
-      const config = projectOf(task.project).config;
-      if (nextProjectActivity(config, clock.now()) > clock.now()) continue;
       const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
       if (!pending || pending.publication === "draft" || pending.publication === "sending") continue;
       try {
+        const config = projectOf(task.project).config;
+        if (nextProjectActivity(config, clock.now()) > clock.now()) continue;
         await sendTeamsNotice(task.id, task.project, task.key, pending.n);
         await checkAnswer(task, pending);
       } catch (err) {
@@ -1028,20 +1028,39 @@ export async function startFactory(opts: {
   let disarmRetry: (() => void) | undefined;
   let known = new Map((await readState()).tasks.map((t) => [t.id, t.status]));
 
+  /** Tarefas enfileiradas cujo projeto sumiu da config: já avisadas neste processo (evita loop via react). */
+  const missingProjectReported = new Set<string>();
+
   /** Ativa a próxima Tarefa se nenhuma estiver ativa. Abre o portão de uma Tarefa que estava pausada. */
   async function schedule(): Promise<void> {
     const state = await readState();
     if (state.daemonPaused || state.tasks.some((t) => t.status === "ativa")) return;
     const now = clock.now();
-    const availableAt = (task: QueuedTask) => {
-      const config = projectOf(task.project).config;
-      return Math.max(task.notBefore ?? 0, nextProjectActivity(config, now));
-    };
-    const next = state.tasks.find((t) => t.status === "enfileirada" && !t.pauseRequested && availableAt(t) <= now);
+    let next: QueuedTask | undefined;
+    let wakeAt = Number.POSITIVE_INFINITY;
+    for (const task of state.tasks) {
+      if (task.status !== "enfileirada" || task.pauseRequested) continue;
+      const project = projects.get(task.project);
+      if (!project) {
+        if (!missingProjectReported.has(task.id)) {
+          missingProjectReported.add(task.id);
+          await events.append({
+            type: "error",
+            project: task.project,
+            target: task.key,
+            message: `falha ao agendar: Projeto ${task.project} não está configurado`,
+          });
+        }
+        continue;
+      }
+      const at = Math.max(task.notBefore ?? 0, nextProjectActivity(project.config, now));
+      if (at <= now) {
+        if (!next) next = task;
+      } else if (at < wakeAt) {
+        wakeAt = at;
+      }
+    }
     if (!next) {
-      const wakeAt = Math.min(
-        ...state.tasks.filter((t) => t.status === "enfileirada" && !t.pauseRequested).map(availableAt),
-      );
       if (Number.isFinite(wakeAt) && !closing) {
         disarmRetry?.();
         disarmRetry = armTimer(react, Math.max(0, wakeAt - now));
