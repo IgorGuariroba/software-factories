@@ -562,6 +562,41 @@ process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).statu
     ]);
   });
 
+  it("formatação é passo mecânico da fábrica: o formatador do repositório vira commit de estilo, sem ciclo TDD", async () => {
+    const repo = await createRemoteRepo(root, "app");
+    // Formatador de mentira: tira espaços no fim das linhas de todo .mjs, inclusive dos testes.
+    const formatter = join(root, "formatar.mjs");
+    await writeFile(
+      formatter,
+      `import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+for (const dir of ["src", "test"]) for (const f of readdirSync(dir, { withFileTypes: true }).filter((e) => e.name.endsWith(".mjs")))
+  writeFileSync(dir + "/" + f.name, readFileSync(dir + "/" + f.name, "utf8").replace(/[ ]+$/gm, ""));
+`,
+    );
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, [
+      write({ "test/csv.test.mjs": CSV_TEST.replace("\n", "   \n") }),
+      write({ "src/csv.mjs": CSV_IMPL }),
+    ]);
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      config: {
+        repositories: [mapping(repo, { format: { command: [process.execPath, formatter], timeoutSeconds: 30 } })],
+      },
+    });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect(await repo.branchLog(BRANCH)).toEqual([
+      { subject: "test: adiciona teste para Gerar CSV", files: ["test/csv.test.mjs"] },
+      { subject: "feat: Gerar CSV", files: ["src/csv.mjs"] },
+      { subject: "style: aplica o formatador do repositório", files: ["test/csv.test.mjs"] },
+    ]);
+    expect(await repo.show(BRANCH, "test/csv.test.mjs")).toBe(CSV_TEST.trim());
+  });
+
   it("código que não faz os testes passarem é recusado até o limite: a Tarefa bloqueia e nada é enviado", async () => {
     const repo = await createRemoteRepo(root, "app");
     const model = new FakeModel();
@@ -579,6 +614,9 @@ process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).statu
 
     const blocked = (await events(factory)).find((e) => e.type === "task" && e.status === "bloqueada");
     expect(blocked?.reason).toContain("TDD recusado 3 vezes");
+    // O motivo vai para o Telegram: resumo curto, sem a saída da suíte (ela fica no progresso da Tarefa).
+    expect(blocked?.reason).not.toContain("código de saída");
+    expect(String(blocked?.reason).length).toBeLessThan(300);
     expect(await repo.branches()).toEqual(["main"]);
     expect(factory.codeHost.pushed).toEqual([]);
   });
