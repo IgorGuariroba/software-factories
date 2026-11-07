@@ -33,6 +33,9 @@ describe("revisão da SPEC antes de publicar", () => {
     await waitForStatus(factory, "PROJ-1", "aguardando-humano");
     expect(titled(factory, "SPEC")).toEqual([]);
     expect(titled(factory, "Tickets")).toEqual([]);
+    // A lista traz o que o cartão do quadro precisa para pedir a ação certa, sem abrir o detalhe.
+    const [listed] = await api<{ specReview: string | null }[]>(factory, "GET", "/tasks");
+    expect(listed?.specReview).toBe("draft");
 
     factory = await factory.restart();
     await poll(factory);
