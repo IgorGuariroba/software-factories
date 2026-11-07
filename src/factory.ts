@@ -407,17 +407,27 @@ export async function startFactory(opts: {
       }
       if (step === "entregar") {
         for (let batch = 0; batch < 3; batch++) {
-          const outcome = await runDelivery({
-            taskId: input.id,
-            runtime,
-            config: project.config,
-            codeHost: project.codeHost,
-            writer,
-            worktreesRoot: implementationDeps.worktreesRoot,
-          });
-          const publication = (await readState()).tasks.find((t) => t.id === input.id)?.publication;
-          if (publication)
-            await progressOnce(`PR/MR ${publication.status}${publication.url ? `: ${publication.url}` : ""}`);
+          const publishProgress = async () => {
+            const publication = (await readState()).tasks.find((t) => t.id === input.id)?.publication;
+            if (publication)
+              await progressOnce(`PR/MR ${publication.status}${publication.url ? `: ${publication.url}` : ""}`);
+          };
+          let outcome: Awaited<ReturnType<typeof runDelivery>>;
+          try {
+            outcome = await runDelivery({
+              taskId: input.id,
+              runtime,
+              config: project.config,
+              codeHost: project.codeHost,
+              writer,
+              worktreesRoot: implementationDeps.worktreesRoot,
+            });
+          } catch (err) {
+            // CI reprovada: o status gravado aparece no progresso antes do bloqueio seguir.
+            await publishProgress();
+            throw err;
+          }
+          await publishProgress();
           if (outcome !== "revisar") return outcome;
           const feedback = (await readState()).tasks.find((t) => t.id === input.id)?.publication?.pendingFeedback ?? [];
           await reviewLoop(feedback);
@@ -486,12 +496,13 @@ export async function startFactory(opts: {
         });
       }
 
-      async function progressOnce(message: string): Promise<void> {
-        const last = events
+      /** Registra progresso sem repetir: `ever` compara com todo o histórico (review recuperado), senão só com o último. */
+      async function progressOnce(message: string, ever = false): Promise<void> {
+        const previous = events
           .list()
           .filter((e) => e.type === "progress" && e.project === input.project && e.target === input.key)
-          .at(-1);
-        if (last?.type !== "progress" || last.message !== message)
+          .map((e) => (e.type === "progress" ? e.message : ""));
+        if (ever ? !previous.includes(message) : previous.at(-1) !== message)
           await events.append({ type: "progress", project: input.project, target: input.key, message });
       }
 
@@ -507,12 +518,11 @@ export async function startFactory(opts: {
             feedback,
           });
           const reviewed = (await readState()).tasks.find((t) => t.id === input.id)?.review;
-          await events.append({
-            type: "progress",
-            project: input.project,
-            target: input.key,
-            message: `Review ${verdict ?? "concluído"}${reviewed ? ` do HEAD ${reviewed.head.slice(0, 8)}: ${reviewed.summary.slice(0, 400)}` : ""}`,
-          });
+          if (verdict && reviewed)
+            await progressOnce(
+              `Review ${verdict} do HEAD ${reviewed.head.slice(0, 8)}: ${reviewed.summary.slice(0, 400)}`,
+              true,
+            );
           if (verdict !== "corrigir") return;
           await implement();
         }

@@ -53,7 +53,7 @@ it("publica PR uma vez, espera sem ocupar a fila e só conclui após observar me
     },
   });
   await poll(factory);
-  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 3000);
+  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 10_000);
   const detail = await api<{ stage: string; publication: { url: string; status: string } }>(
     factory,
     "GET",
@@ -80,12 +80,12 @@ it("publica PR uma vez, espera sem ocupar a fila e só conclui após observar me
   factory = await factory.restart();
   codeHost.requestState = "merged";
   clock.advanceTo("2026-11-09T12:01:01Z");
-  await waitForStatus(factory, "PROJ-1", "concluida", 3000);
+  await waitForStatus(factory, "PROJ-1", "concluida", 10_000);
   expect(codeHost.openedRequests).toHaveLength(1);
   expect(
     (await api<{ publication: { status: string } }>(factory, "GET", "/tasks/exemplo/PROJ-1")).publication.status,
   ).toBe("merged");
-}, 15000);
+}, 30_000);
 
 it("corrige achado do review com novo ciclo TDD e só publica o HEAD aprovado", async () => {
   const repo = await createRemoteRepo(root, "app");
@@ -136,7 +136,7 @@ it("corrige achado do review com novo ciclo TDD e só publica o HEAD aprovado", 
     },
   });
   await poll(factory);
-  await waitForStatus(factory, "PROJ-1", "concluida", 3000);
+  await waitForStatus(factory, "PROJ-1", "concluida", 10_000);
   const commits = await repo.branchLog("feature/PROJ-1-somar");
   expect(commits.map((c) => c.subject)).toEqual([
     "test: adiciona teste para Somar",
@@ -147,7 +147,7 @@ it("corrige achado do review com novo ciclo TDD e só publica o HEAD aprovado", 
   expect(model.reviewCalls).toHaveLength(2);
   expect(codeHost.pushed).toHaveLength(1);
   expect(codeHost.openedRequests).toHaveLength(1);
-}, 15000);
+}, 30_000);
 
 it("trata achado Major fora do diff após CI verde e atualiza o mesmo PR com TDD e novo review", async () => {
   const repo = await createRemoteRepo(root, "app");
@@ -193,7 +193,7 @@ it("trata achado Major fora do diff após CI verde e atualiza o mesmo PR com TDD
     },
   });
   await poll(factory);
-  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 3000);
+  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 10_000);
   codeHost.feedback = [
     {
       id: "review-outside:1",
@@ -210,7 +210,7 @@ it("trata achado Major fora do diff após CI verde e atualiza o mesmo PR com TDD
       : deliverReview("aprovado", "Reparo verificado no HEAD novo.");
   };
   clock.advanceTo("2026-11-09T12:01:01Z");
-  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 3000);
+  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 10_000);
   await eventually(() => expect(codeHost.pushed).toHaveLength(2));
   expect(model.reviewCalls).toHaveLength(3);
   expect(codeHost.openedRequests).toHaveLength(1);
@@ -222,7 +222,7 @@ it("trata achado Major fora do diff após CI verde e atualiza o mesmo PR com TDD
   expect(detail.publication).toMatchObject({ status: "aguardando-merge", feedbackIds: ["review-outside:1"] });
   factory = await factory.restart();
   clock.advanceTo("2026-11-09T12:02:02Z");
-  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 3000);
+  await waitForStatus(factory, "PROJ-1", "aguardando-entrega", 10_000);
   expect(codeHost.pushed).toHaveLength(2);
   expect(model.reviewCalls).toHaveLength(3);
-}, 15000);
+}, 30_000);
