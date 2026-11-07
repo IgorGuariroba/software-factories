@@ -238,7 +238,13 @@ export type ManagementProgress = {
   /** Próximo evento do log a publicar (índice). `null`: interface nova, começa pelos eventos que vierem. */
   eventCursor: number | null;
   /** Avisos aguardando o expediente do respectivo projeto; sobrevivem ao reinício. */
-  deferred?: { project: string; message: { text: string; buttons?: { label: string; command: string }[] } }[];
+  deferred?: {
+    project: string;
+    /** Envelope já renderizado; filas legadas podem ter conteúdo full sem `source`. */
+    message: { text: string; buttons?: { label: string; command: string }[] };
+    /** Evento de origem: na entrega a política de conteúdo atual é reaplicada. */
+    source?: FactoryEvent;
+  }[];
   /** Próximo update a receber (no Telegram, o `offset` do `getUpdates`). */
   updateOffset: number;
   /** Diálogo de resposta por conversa/usuário autorizado, incluindo confirmação pendente. */

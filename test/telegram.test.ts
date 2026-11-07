@@ -107,6 +107,73 @@ describe("Telegram: eventos ao usuário", () => {
       ).toMatchObject([{ at: "2026-11-23T19:00:00.000Z" }]),
     );
   });
+  it("fluxo guiado /responder registra command e confirma botão em seleção, rascunho, sair e erro", async () => {
+    const model = new FakeModel();
+    model.respond = () => askPo("Qual calendário usar?");
+    const { telegram, f } = await startWith([card("PROJ-1", "A Fazer")], { model });
+    await poll(f);
+    await waitForStatus(f, "PROJ-1", "aguardando-humano");
+    await eventually(() => expect(telegram.button("Responder")).toBeDefined());
+
+    telegram.say("/responder");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Escolha uma pergunta"));
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(expect.objectContaining({ text: "/responder", accepted: true })),
+    );
+
+    const chooseTap = telegram.tap(telegram.button("PROJ-1 · pergunta 1"));
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Envie sua resposta para PROJ-1"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: chooseTap,
+        text: expect.stringMatching(/Envie sua resposta|pergunta/),
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(
+        expect.objectContaining({ text: "/responder exemplo/PROJ-1 1", accepted: true }),
+      ),
+    );
+    // Mensagem de seleção permanece no chat além do ack do botão.
+    expect(telegram.texts().filter((t) => t.includes("Envie sua resposta para PROJ-1")).length).toBeGreaterThan(0);
+
+    telegram.say("Dias úteis.");
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Confirmar resposta para exemplo/PROJ-1"));
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(expect.objectContaining({ text: "Dias úteis.", accepted: true })),
+    );
+
+    const cancelTap = telegram.tap(telegram.button("Cancelar"));
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Resposta cancelada"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: cancelTap,
+        text: expect.stringMatching(/cancelada|Resposta cancelada/i),
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(expect.objectContaining({ text: "/sair", accepted: true })),
+    );
+
+    // Caminho de erro: confirmar sem rascunho ainda registra e responde o botão.
+    const confirmOrphan = telegram.tap({
+      label: "Confirmar resposta",
+      command: "/confirmar-resposta",
+    });
+    await eventually(() => expect(telegram.texts().join("\n")).toContain("Não há resposta para confirmar"));
+    await eventually(() =>
+      expect(telegram.answers).toContainEqual({
+        buttonId: confirmOrphan,
+        text: expect.stringMatching(/Não há resposta para confirmar/),
+      }),
+    );
+    await eventually(async () =>
+      expect(await commandEvents(f)).toContainEqual(
+        expect.objectContaining({ text: "/confirmar-resposta", accepted: true }),
+      ),
+    );
+  });
+
   it("encaminha pergunta em dry-run e avisa quando a SPEC aguarda revisão", async () => {
     const model = new FakeModel();
     model.respond = (call) =>
