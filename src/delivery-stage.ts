@@ -2,7 +2,7 @@ import type { CodeHost } from "./code-host.js";
 import type { ProjectConfig } from "./config.js";
 import { copyOutOfCommit, type QueuedTask, StateDoc, type StepRuntime } from "./durable.js";
 import type { EffectWriter } from "./effect-writer.js";
-import { git } from "./git.js";
+import { defaultBranch, git } from "./git.js";
 import { StageBlocked } from "./implement-stage.js";
 import { redactSecrets } from "./secrets.js";
 import { assertFactoryWorktree } from "./workspace.js";
@@ -41,9 +41,7 @@ export async function runDelivery(opts: {
       if (queued?.implementation) queued.implementation.pushed = true;
     });
   }
-  const base =
-    progress.defaultBranch ??
-    (await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).trim().replace(/^origin\//, "");
+  const base = progress.defaultBranch ?? (await defaultBranch(cwd));
   const remote =
     task.publication?.number && !config.dryRun
       ? await opts.codeHost.inspectRequest(cwd, task.publication.number)
