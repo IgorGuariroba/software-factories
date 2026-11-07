@@ -41,7 +41,7 @@ export type Question = {
   /** Número da pergunta na Tarefa (1, 2, …). */
   n: number;
   /** Quem levantou a pergunta: o grill ou a própria fábrica, diante de um card vazio ou raso. */
-  origin: "grill" | "card-raso";
+  origin: "grill" | "card-raso" | "tecnica";
   /** Pessoa do projeto a quem foi feita. */
   to: string;
   text: string;
@@ -55,6 +55,9 @@ export type Question = {
   reminded: boolean;
   notified: boolean;
   answer: string | null;
+  /** Resposta não resolutiva do usuário, preservada para encaminhar ao tech lead. */
+  userResponse?: string;
+  needsForwarding?: boolean;
   /** Rascunho de ensaio; `sending` indica resultado potencialmente incerto após uma interrupção. */
   publication?: "draft" | "sending" | "sent";
   /** Lembrete em revisão: rascunho aguardando aprovação, em envio (incerto se interrompido) ou enviado. */

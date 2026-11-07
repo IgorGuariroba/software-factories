@@ -38,12 +38,15 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
     ...taskSummary(task),
     pauseRequested: task.pauseRequested,
     vetoUntil: task.status === "aguardando-veto" && task.veto ? new Date(task.veto.until).toISOString() : null,
-    questions: (task.questions ?? []).map(({ n, to, text, askedAt, answer, teamsNotice, publication, reminder }) => ({
+    questions: (task.questions ?? []).map(({ n, to, text, askedAt, answer, teamsNotice, publication, reminder, origin, userResponse, needsForwarding }) => ({
       n,
       to,
       text,
       askedAt: new Date(askedAt).toISOString(),
       answer,
+      origin,
+      userResponse: userResponse ?? null,
+      needsForwarding: needsForwarding ?? false,
       teamsNotice: teamsNotice?.status ?? null,
       publication: publication ?? "sent",
       reminder: reminder ?? null,

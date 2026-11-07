@@ -20,6 +20,8 @@ import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
+import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
+import { respostaNaoSei } from "./resposta-tecnica.js";
 import {
   copyOutOfCommit,
   createTarefaTask,
@@ -570,10 +572,12 @@ export async function startFactory(opts: {
             knowledge: await readKnowledge(project.knowledgeDir),
             answered,
           }),
-          followUp: last && questions.at(-1)?.origin === "grill" ? answerFollowUp(last) : undefined,
+          followUp: last && questions.at(-1)?.origin === "tecnica"
+            ? `Resposta do usuário à pergunta técnica "${last.text}":\n\n${last.answer}\n\nSiga com a SPEC.`
+            : last && questions.at(-1)?.origin === "grill" ? answerFollowUp(last) : undefined,
         });
         if (outcome.kind === "question") {
-          await ask(questions, outcome.text, "grill");
+          await ask(questions, outcome.text, outcome.technical ? "tecnica" : "grill");
           return "aguardar";
         }
         if (project.config.questionApproval && !project.config.specApproval)
@@ -640,17 +644,25 @@ export async function startFactory(opts: {
 
       /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */
       async function ask(previous: Question[], text: string, origin: Question["origin"]): Promise<void> {
-        const po = project.config.people.find((p) => p.role === "po");
+        const tecnica = origin === "tecnica";
+        if (tecnica) {
+          try {
+            validarDestinatarioDoProjeto(project.config.people.map((p) => p.id), project.config.source.assignee);
+          } catch (erro) {
+            throw new StageBlocked((erro as Error).message);
+          }
+        }
+        const po = project.config.people.find((p) => tecnica ? p.id === project.config.source.assignee : p.role === "po");
         if (!po)
           throw new StageBlocked(`o grill precisa perguntar ao PO, mas o projeto ${input.project} não declara um`);
-        if (po.teamsUserId && (!project.config.source.baseUrl || !opts.teams))
+        if (!tecnica && po.teamsUserId && (!project.config.source.baseUrl || !opts.teams))
           throw new StageBlocked("aviso ao PO no Teams configurado sem origem Jira ou conexão MCP");
         if (previous.length >= MAX_PO_QUESTIONS)
           throw new StageBlocked(
             `o grill já fez ${MAX_PO_QUESTIONS} perguntas ao PO e ainda quer perguntar: "${text}"`,
           );
         const n = previous.length + 1;
-        const ref = project.config.questionApproval
+        const ref = tecnica || project.config.questionApproval
           ? { card: input.key, to: po.id, before: [] }
           : await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
         const askedAt = clock.now();
@@ -667,8 +679,8 @@ export async function startFactory(opts: {
           reminded: false,
           notified: false,
           answer: null,
-          ...(project.config.questionApproval ? { publication: "draft" as const } : {}),
-          ...(po.teamsUserId && project.config.source.baseUrl && !project.config.dryRun
+          ...(!tecnica && project.config.questionApproval ? { publication: "draft" as const } : {}),
+          ...(!tecnica && po.teamsUserId && project.config.source.baseUrl && !project.config.dryRun
             ? {
                 teamsNotice: {
                   userId: po.teamsUserId,
@@ -682,7 +694,7 @@ export async function startFactory(opts: {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
           if (task && !task.questions?.some((q) => q.n === n)) task.questions = [...(task.questions ?? []), question];
         });
-        if (project.config.questionApproval) return;
+        if (!tecnica && project.config.questionApproval) return;
         await sendTeamsNotice(input.id, input.project, input.key, n);
         await events.append({
           type: "question",
@@ -705,6 +717,9 @@ export async function startFactory(opts: {
       });
       if (!question) return null;
       const q = question;
+      // As perguntas técnicas são respondidas localmente, não pelo comentário no card.
+      // O encaminhamento ao tech lead é tratado pelo fluxo técnico, não pelo lembrete ao PO.
+      if (q.origin === "tecnica") return null;
       if (q.publication === "draft" || q.publication === "sending") return runtime.now() + 60_000;
       if (await checkAnswer(input, q)) return null;
 
@@ -915,6 +930,7 @@ export async function startFactory(opts: {
 
   /** Lê a resposta pelo Canal; se chegou, registra e devolve a Tarefa à fila. */
   async function checkAnswer(task: { id: string; project: string; key: string }, q: Question): Promise<boolean> {
+    if (q.origin === "tecnica") return false;
     const answer = await projectOf(task.project).channel.answer(q.ref);
     if (answer === undefined) return false;
     const recorded = await harness.commit(
@@ -1120,11 +1136,23 @@ export async function startFactory(opts: {
           q.publication === "sending"
         )
           return undefined;
-        recordAnswer(state, id, n, answer.trim());
-        return { project: task.project, target: task.key, to: q.to, text: q.text };
+        const resposta = answer.trim();
+        const encaminhar = q.origin === "tecnica" && respostaNaoSei(resposta);
+        if (encaminhar) {
+          q.userResponse = resposta;
+          q.needsForwarding = true;
+        } else {
+          recordAnswer(state, id, n, resposta);
+          q.needsForwarding = false;
+        }
+        return {
+          project: task.project, target: task.key, to: q.to,
+          text: encaminhar ? resposta : q.text,
+          status: encaminhar ? "encaminhar" as const : "respondida" as const,
+        };
       }, context);
       if (!recorded) return false;
-      await events.append({ type: "question", ...recorded, n, status: "respondida" });
+      await events.append({ type: "question", ...recorded, n });
       react();
       return true;
     },
@@ -1387,33 +1415,15 @@ export async function startFactory(opts: {
         const project = decodeURIComponent(answerRoute[1] as string);
         const key = decodeURIComponent(answerRoute[2] as string);
         const n = Number(answerRoute[3]);
-        const answer = body.answer.trim();
-        const recorded = await harness.commit(async (tx) => {
-          const state = await tx.doc(StateDoc);
-          const task = state.tasks.find((t) => t.id === `${project}/${key}`);
-          const q = task?.questions?.find((item) => item.n === n);
-          if (!task || !q) return { code: 404, error: "pergunta não encontrada" };
-          if (
-            !["aguardando-humano", "pausada"].includes(task.status) ||
-            q.answer !== null ||
-            q.publication === "sending"
-          )
-            return { code: 409, error: "pergunta não está disponível para resposta" };
-          recordAnswer(state, task.id, n, answer);
-          return { code: 200, to: q.to, text: q.text };
-        }, context);
-        if (recorded.code !== 200) return json(res, recorded.code, { error: recorded.error });
-        await events.append({
-          type: "question",
-          project,
-          target: key,
-          n,
-          to: recorded.to as string,
-          text: recorded.text as string,
-          status: "respondida",
-        });
-        react();
-        return json(res, 200, { ok: true });
+        const id = `${project}/${key}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task?.questions?.some((q) => q.n === n))
+          return json(res, 404, { error: "pergunta não encontrada" });
+        // Web e Telegram usam a mesma classificação e o mesmo despertar atômico.
+        const ok = await commands.answerQuestion?.(id, n, body.answer.trim());
+        return ok
+          ? json(res, 200, { ok: true })
+          : json(res, 409, { error: "pergunta não está disponível para resposta" });
       }
       const questionRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)(\/approve)?$/);
       if (questionRoute && (req.method === "GET" || req.method === "POST")) {

@@ -3,8 +3,15 @@ import type { TeamsNotifier } from "./teams-mcp.js";
 export interface OpcoesNotificadorDoProjeto {
   destinatariosPermitidos: readonly string[];
   notificador: TeamsNotifier;
-  /** Canal de aviso interno; nunca deve encaminhar a pergunta ao destinatário. */
+  /** Canal interno de aviso, separado do destinatário da pergunta. */
   avisar: (aviso: string) => void | Promise<void>;
+}
+
+/** Autorização por identidade exata, compartilhada pelos canais do projeto. */
+export function validarDestinatarioDoProjeto(permitidos: readonly string[], userId: string): void {
+  if (!userId.trim() || !permitidos.includes(userId)) {
+    throw new Error(`Envio bloqueado: destinatário ${JSON.stringify(userId)} não pertence à lista de pessoas do projeto.`);
+  }
 }
 
 /** Fronteira comum de autorização para os envios ao usuário e ao tech lead. */
@@ -13,20 +20,17 @@ export function criarNotificadorDoProjeto({
   notificador,
   avisar,
 }: OpcoesNotificadorDoProjeto): TeamsNotifier {
-  // Copia a configuração para impedir alterações acidentais na lista original.
-  const permitidos = new Set(destinatariosPermitidos.filter((id) => id.trim().length > 0));
-
+  const permitidos = [...destinatariosPermitidos];
   return {
     async send({ userId, text }) {
-      // A autorização é por identidade exata e ocorre antes de acessar o transporte.
-      if (!permitidos.has(userId)) {
-        const aviso = `Envio bloqueado: destinatário ${JSON.stringify(userId)} não pertence à lista de pessoas do projeto.`;
-        // Nem o aviso nem a exceção incluem o conteúdo da pergunta.
+      try {
+        validarDestinatarioDoProjeto(permitidos, userId);
+      } catch (erro) {
+        const bloqueio = erro as Error;
         try {
-          await avisar(aviso);
+          await avisar(bloqueio.message);
         } finally {
-          // Uma falha no canal de aviso também não pode liberar o envio.
-          throw new Error(aviso);
+          throw bloqueio;
         }
       }
       await notificador.send({ userId, text });
