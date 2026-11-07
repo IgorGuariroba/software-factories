@@ -210,7 +210,16 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
         };
       case "task":
         if (event.status === "aguardando-humano") {
-          const task = (await deps.tasks()).find((t) => t.id === event.id);
+          // Falha de leitura não pode prender o cursor e bloquear os próximos avisos.
+          let tasks: QueuedTask[];
+          try {
+            tasks = await deps.tasks();
+          } catch {
+            return {
+              text: `A Tarefa ${event.key} (${event.project}) aguarda sua atenção. Consulte a interface web local.`,
+            };
+          }
+          const task = tasks.find((t) => t.id === event.id);
           if (task?.specReview === "draft")
             return {
               text: `SPEC de ${event.key} (${event.project}) pronta para revisão. Consulte a interface web local para revisar e aprovar.`,
