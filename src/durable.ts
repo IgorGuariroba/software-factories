@@ -9,7 +9,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { QuestionRef } from "./channel.js";
-import type { CardState, TestCommand } from "./config.js";
+import type { CardState, FormatCommand, TestCommand } from "./config.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TriageResult } from "./triage.js";
@@ -220,6 +220,8 @@ export type ImplementationProgress = {
   commitPattern: string;
   /** Comando de teste do repositório, fixado no início da etapa. */
   test: TestCommand;
+  /** Formatador do repositório, fixado no início da etapa. Ausente: progresso antigo (vale o da config) ou nenhum. */
+  format?: FormatCommand;
   /** Conversa do implementador; as ferramentas acham a Tarefa (e o clone) por ela. */
   conversationId: ConversationId;
   /** HEAD depois do último commit registrado. Um HEAD diferente na retomada é um commit que caiu antes do registro. */

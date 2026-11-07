@@ -239,6 +239,8 @@ export async function runImplementation(opts: {
   const conventions = { commit: progress.commitPattern };
 
   await reconcile();
+  // Retomada: o que ficou fora do padrão (ex.: testes de antes do formatador) entra antes do próximo passo.
+  await applyFormatter();
   const done = () => new Set(progress.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket));
   await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
 
@@ -278,8 +280,9 @@ export async function runImplementation(opts: {
           message: `TDD recusado no ticket ${step.ticket + 1} (${step.phase}): ${redactSecrets(verdict).slice(0, 300)}`,
         });
         if (progress.rejections >= MAX_TDD_REJECTIONS)
+          // Só a primeira linha do veredito: o motivo vai para o Telegram, e a saída da suíte já está no progresso.
           throw new StageBlocked(
-            `TDD recusado ${progress.rejections} vezes na fase ${step.phase} do ticket ${step.ticket + 1}: ${verdict}`,
+            `TDD recusado ${progress.rejections} vezes na fase ${step.phase} do ticket ${step.ticket + 1}: ${redactSecrets(verdict.split("\n")[0] ?? "").slice(0, 160)}. Detalhes na atividade da Tarefa.`,
           );
         continue;
       }
@@ -301,6 +304,7 @@ export async function runImplementation(opts: {
       if (step.phase === "implementacao")
         await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
       await save(progress);
+      if (step.phase === "implementacao") await applyFormatter();
       break;
     }
   }
@@ -348,6 +352,7 @@ export async function runImplementation(opts: {
         branchOrigin: adopted ? "adotada" : "criada",
         commitPattern: conventions.commit,
         test: copyOutOfCommit(mapping.test),
+        ...(mapping.format ? { format: copyOutOfCommit(mapping.format) } : {}),
         conversationId: conversation.id,
         head,
         baseHead: head,
@@ -374,6 +379,13 @@ export async function runImplementation(opts: {
     const head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
     if (head === progress.head) return;
     const parent = (await git(worktree, ["rev-parse", "HEAD^"]).catch(() => "")).trim();
+    // Commit de estilo que caiu antes do registro: não é passo do TDD, só avança o HEAD.
+    if (parent === progress.head && (await git(worktree, ["log", "-1", "--format=%s"])).trim() === styleMessage()) {
+      progress.head = head;
+      progress.pushed = false;
+      await save(progress);
+      return;
+    }
     const next = stepsOf(delivery).find(
       (s) => !progress.commits.some((c) => c.ticket === s.ticket && c.phase === s.phase),
     );
@@ -386,6 +398,61 @@ export async function runImplementation(opts: {
     progress.rejections = 0;
     progress.feedback = null;
     await save(progress);
+  }
+
+  function styleMessage(): string {
+    return formatCommitMessage(conventions, {
+      type: "style",
+      summary: "aplica o formatador do repositório",
+      key: card.key,
+    });
+  }
+
+  /**
+   * Passo mecânico: roda o formatador do repositório e commita o que mudou como estilo, inclusive em testes. O código
+   * de saída não importa (formatadores saem com erro quando sobra achado que não sabem corrigir); não executar, sim.
+   */
+  async function applyFormatter(): Promise<void> {
+    const format = progress.format ?? resolveRepository(config.repositories, card)?.format;
+    if (!format) return;
+    // Só sobre o HEAD limpo: não mistura tentativa não aceita do implementador num commit de estilo.
+    if ((await changedPaths(worktree)).length > 0) return;
+    const run = await deps.testRunner.run({
+      cwd: worktree,
+      command: format.command,
+      timeoutMs: format.timeoutSeconds * 1000,
+      signal: runtime.signal,
+    });
+    if (run.spawnError || run.timedOut || runtime.signal.aborted) {
+      // Formatação pela metade não pode sobrar na árvore: entraria na próxima fase do TDD (inclusive em testes).
+      const partial = await changedPaths(worktree);
+      if (partial.length > 0) await discard(partial);
+      runtime.signal.throwIfAborted();
+      throw new StageBlocked(`o formatador do repositório não concluiu: ${run.spawnError ?? "tempo esgotado"}`);
+    }
+    // Só o que a Tarefa já tocou: formatar o resto do repositório poluiria a entrega com arquivos alheios.
+    const first = progress.commits[0]?.sha;
+    const base = progress.baseHead ?? (first ? `${first}^` : undefined);
+    const touched = base
+      ? new Set((await git(worktree, ["diff", "--name-only", "-z", base, "HEAD"])).split("\0").filter(Boolean))
+      : new Set<string>();
+    const changed = await changedPaths(worktree);
+    const outside = changed.filter((p) => !touched.has(p));
+    if (outside.length > 0) await discard(outside);
+    const paths = changed.filter((p) => touched.has(p));
+    if (paths.length === 0) return;
+    runtime.signal.throwIfAborted();
+    await git(worktree, ["--literal-pathspecs", "add", "-A", "--", ...paths]);
+    await git(worktree, ["commit", "--quiet", "-m", styleMessage()]);
+    progress.head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
+    progress.pushed = false;
+    await save(progress);
+    await deps.events.append({
+      type: "progress",
+      project: config.name,
+      target: card.key,
+      message: `Commit ${progress.head.slice(0, 8)}: formatador do repositório (${paths.length} arquivo(s))`,
+    });
   }
 
   /** Roda a suíte configurada no clone. Um comando que nem executa bloqueia a Tarefa. */
