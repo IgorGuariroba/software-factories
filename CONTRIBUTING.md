@@ -205,3 +205,9 @@ Para testar a fábrica lendo a fila e cards do Jira de verdade sem aplicar nenhu
    npm start
    ```
 5. No log do console e no stream de eventos, o daemon listará a fila real de cards atribuídos a você e registrará no log cada escrita que faria (com prefixo de automação e dados higienizados), sem alterar nada no Jira. O dry-run lembra, no estado durável, as escritas que já registrou: um reinício no meio do ensaio não registra de novo a mesma escrita (mesmo destino, ação e conteúdo).
+
+## Review automático (PR-Agent)
+
+Cada achado do PR-Agent traz severidade (Critical, Major, Minor ou Trivial) e categoria. O check `review-gate` falha
+enquanto houver achado **Critical** ou **Major** em thread não resolvida; Minor e Trivial não bloqueiam. Depois de
+tratar e resolver as threads, rode o job `review-gate` de novo (Re-run) para liberar o merge.
