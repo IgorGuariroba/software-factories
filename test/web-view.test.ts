@@ -192,3 +192,25 @@ describe("pipeline e atividade na página da Tarefa", () => {
     ]);
   });
 });
+
+describe("quadro por etapa", () => {
+  it("agrupa as tarefas nas colunas do fluxo e as encerradas no fim", async () => {
+    const { boardColumns } = await import("../web/view.js");
+    const tasks = [
+      { id: "a", status: "aguardando-humano", stage: "triagem" },
+      { id: "b", status: "ativa", stage: "implementacao" },
+      { id: "c", status: "aguardando-entrega", stage: "entrega" },
+      { id: "d", status: "concluida", stage: "entrega" },
+      { id: "e", status: "enfileirada", stage: null },
+      { id: "f", status: "pausada", stage: "assumir" },
+    ];
+    expect(boardColumns(tasks).map((c) => [c.key, c.tasks.map((t) => t.id)])).toEqual([
+      ["triagem", ["a", "e", "f"]],
+      ["spec", []],
+      ["implementacao", ["b"]],
+      ["review", []],
+      ["entrega", ["c"]],
+      ["encerradas", ["d"]],
+    ]);
+  });
+});

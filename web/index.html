@@ -22,28 +22,21 @@
     <p id="aviso" class="aviso" role="alert" hidden></p>
 
     <div class="layout">
-      <aside class="lateral" aria-label="Tarefas">
-        <section aria-labelledby="titulo-fila">
-          <h2 id="titulo-fila">Em andamento <span id="fila-contagem" class="contagem"></span></h2>
-          <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa na fila.</p>
-          <ol id="fila" class="cartoes"></ol>
-        </section>
+      <main class="quadro-area" aria-label="Quadro de tarefas">
+        <div class="barra">
+          <h2 id="titulo-fila">Tarefas <span id="fila-contagem" class="contagem"></span></h2>
+          <details class="elegiveis">
+            <summary>Cards elegíveis na Fonte</summary>
+            <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
+            <ul id="elegiveis" class="lista"></ul>
+          </details>
+        </div>
+        <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa ainda.</p>
+        <div id="quadro" class="quadro"></div>
+      </main>
 
-        <details>
-          <summary>Encerradas <span id="encerradas-contagem" class="contagem"></span></summary>
-          <p id="encerradas-vazia" class="vazio" hidden>Nenhuma tarefa encerrada.</p>
-          <ol id="encerradas" class="cartoes"></ol>
-        </details>
-
-        <details>
-          <summary>Cards elegíveis na Fonte</summary>
-          <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
-          <ul id="elegiveis" class="lista"></ul>
-        </details>
-      </aside>
-
-      <main class="painel">
-        <p id="detalhe-vazio" class="vazio centro">Selecione uma tarefa à esquerda para ver o que a fábrica está fazendo.</p>
+      <aside class="gaveta" aria-label="Detalhe da tarefa">
+        <p id="detalhe-vazio" hidden></p>
 
         <article id="detalhe" aria-labelledby="titulo-detalhe" hidden>
           <header class="cabecalho">
@@ -112,7 +105,7 @@
             </table>
           </section>
         </article>
-      </main>
+      </aside>
     </div>
   </body>
 </html>

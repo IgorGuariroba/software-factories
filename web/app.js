@@ -28,6 +28,7 @@ import {
 import {
   actionsFor,
   activity,
+  boardColumns,
   detailStatusLabel,
   formatCommit,
   isTerminal,
@@ -315,8 +316,9 @@ function statusPill(task) {
   return el("span", { className: `selo ${tone}`, text: statusLabel(task.status) });
 }
 
-function taskCard(task, open) {
+function taskCard(task) {
   const isSelected = selected && task.project === selected.project && task.key === selected.key;
+  const open = !isTerminal(task);
   const card = el(
     "a",
     {
@@ -326,13 +328,12 @@ function taskCard(task, open) {
         ...(isSelected ? { "aria-current": "page" } : {}),
       },
     },
-    el("span", { className: "meta" }, el("strong", { text: task.key }), `· ${task.project}`),
+    el("span", { className: "chave", text: `${task.key} · ${task.project}` }),
     el("span", { className: "titulo", text: task.title }),
     el(
       "span",
       { className: "meta" },
       statusPill(task),
-      stageLabel(task.stage),
       ...(open ? [el("span", { className: "mover" }, moveButton(task, -1), moveButton(task, 1))] : []),
     ),
   );
@@ -340,14 +341,26 @@ function taskCard(task, open) {
 }
 
 function renderTasks() {
-  const open = tasks.filter((t) => !isTerminal(t));
-  const closed = tasks.filter(isTerminal);
-  $("fila").replaceChildren(...open.map((t) => taskCard(t, true)));
-  $("fila-contagem").textContent = `(${open.length})`;
-  $("fila-vazia").hidden = open.length > 0;
-  $("encerradas").replaceChildren(...closed.map((t) => taskCard(t, false)));
-  $("encerradas-contagem").textContent = `(${closed.length})`;
-  $("encerradas-vazia").hidden = closed.length > 0;
+  const columns = boardColumns(tasks);
+  $("quadro").replaceChildren(
+    ...columns.map((c) =>
+      el(
+        "section",
+        { className: "coluna", attrs: { "data-coluna": c.key, "aria-label": c.label } },
+        el(
+          "h3",
+          {},
+          el("span", { className: "ponto" }),
+          c.label,
+          el("span", { className: "contagem", text: String(c.tasks.length) }),
+        ),
+        el("ol", { className: "cartoes" }, ...c.tasks.map(taskCard)),
+      ),
+    ),
+  );
+  const open = tasks.filter((t) => !isTerminal(t)).length;
+  $("fila-contagem").textContent = `(${open} em andamento)`;
+  $("fila-vazia").hidden = tasks.length > 0;
 }
 
 function renderDaemon() {

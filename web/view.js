@@ -263,3 +263,19 @@ export function activity(events) {
   const kept = events.filter((e, i) => !(e.type === "task" && events[i + 1]?.type === "task"));
   return kept.map((e) => ({ at: e.at, kind: ACTIVITY_KIND[e.type] ?? "evento", text: describeEvent(e) })).reverse();
 }
+
+/**
+ * Colunas do quadro: uma por etapa do fluxo (quem não começou fica em Triagem) e as encerradas no fim.
+ * @template {{status: string, stage?: string | null}} T
+ * @param {T[]} tasks
+ * @returns {{key: string, label: string, tasks: T[]}[]}
+ */
+export function boardColumns(tasks) {
+  const columns = PIPELINE.slice(0, 5).map(([key, label]) => ({ key, label, tasks: /** @type {T[]} */ ([]) }));
+  const closed = { key: "encerradas", label: "Encerradas", tasks: /** @type {T[]} */ ([]) };
+  for (const task of tasks) {
+    if (isTerminal(task)) closed.tasks.push(task);
+    else columns[STAGE_INDEX[task.stage ?? ""] ?? 0].tasks.push(task);
+  }
+  return [...columns, closed];
+}
