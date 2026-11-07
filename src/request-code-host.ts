@@ -132,7 +132,11 @@ export async function inspectRequest(cwd: string, number: number): Promise<Chang
     };
   }
   const request = GlRequest.parse(await t.api(endpoint));
-  const notes = (await t.pages(`${endpoint}/notes`)).map((n) => Note.parse(n));
+  const [plain, discussions] = await Promise.all([t.pages(`${endpoint}/notes`), t.pages(`${endpoint}/discussions`)]);
+  const threaded = discussions.flatMap((d) => z.object({ notes: z.array(z.unknown()).default([]) }).parse(d).notes);
+  const notes = [
+    ...new Map([...plain, ...threaded].map((raw) => Note.parse(raw)).map((n) => [n.id, n] as const)).values(),
+  ];
   const pipeline = request.head_pipeline;
   return {
     number,
