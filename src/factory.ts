@@ -49,7 +49,7 @@ import { createImplementationExtension, runImplementation, StageBlocked } from "
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
-import { resolveRepository } from "./repo-resolver.js";
+import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import { redactSecrets } from "./secrets.js";
@@ -372,7 +372,24 @@ export async function startFactory(opts: {
         if (!delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
+        const current = (await readState()).tasks.find((task) => task.id === input.id);
+        const repository = current?.repositoryPath !== undefined
+          ? project.config.repositories?.find((candidate) => candidate.path === current.repositoryPath)
+          : resolveRepository(project.config.repositories, card);
+        if (project.config.repositories?.length && !repository) {
+          if (current && pendingQuestion(current)) return "aguardar";
+          // Registrar a resolução recusada preserva a auditoria, mas não encerra
+          // uma Tarefa que pode obter a decisão pelo fluxo técnico existente.
+          await events.append({
+            type: "blocked", project: input.project, target: input.key,
+            action: "resolver-repositorio", content: card.title,
+            reason: `nenhum repositório mapeado para o card ${input.key}; necessária decisão humana no projeto ${input.project}`,
+          });
+          await ask(current?.questions ?? [], repositoryQuestion(card, project.config.repositories), "tecnica", "repositorio");
+          return "aguardar";
+        }
         await runImplementation({
+          repositoryPath: repository?.path,
           harness,
           runtime,
           taskId: input.id,
@@ -644,7 +661,7 @@ export async function startFactory(opts: {
       }
 
       /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */
-      async function ask(previous: Question[], text: string, origin: Question["origin"]): Promise<void> {
+      async function ask(previous: Question[], text: string, origin: Question["origin"], purpose?: Question["purpose"]): Promise<void> {
         const tecnica = origin === "tecnica";
         if (tecnica) {
           try {
@@ -671,6 +688,7 @@ export async function startFactory(opts: {
         const question: Question = {
           n,
           origin,
+          ...(purpose ? { purpose } : {}),
           to: po.id,
           text,
           ref,
@@ -1156,6 +1174,12 @@ export async function startFactory(opts: {
           return undefined;
         const resposta = answer.trim();
         const encaminhar = q.origin === "tecnica" && respostaNaoSei(resposta);
+        if (q.purpose === "repositorio" && !encaminhar) {
+          const mapping = repositoryFromAnswer(projectOf(task.project).config.repositories, resposta);
+          // Texto vago, caminho arbitrário ou prefixo ambíguo não são resolução.
+          if (!mapping) return undefined;
+          task.repositoryPath = mapping.path;
+        }
         if (encaminhar) {
           q.userResponse = resposta;
           q.needsForwarding = true;

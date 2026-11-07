@@ -43,6 +43,8 @@ export type Question = {
   n: number;
   /** Quem levantou a pergunta: o grill ou a própria fábrica, diante de um card vazio ou raso. */
   origin: "grill" | "card-raso" | "tecnica";
+  /** Decisão estruturada que esta pergunta técnica aguarda. */
+  purpose?: "repositorio";
   /** Pessoa do projeto a quem foi feita. */
   to: string;
   text: string;
@@ -171,6 +173,8 @@ export type QueuedTask = {
   retroHeld?: ("spec" | "implementacao")[];
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
+  /** Repositório escolhido explicitamente para esta Tarefa, ainda sujeito à configuração atual. */
+  repositoryPath?: string;
   /**
    * Identificador opaco e estável da Tarefa, sem relação com o projeto nem com o card: é a única referência a ela que
    * sai para o repositório público da fábrica.
@@ -562,7 +566,7 @@ export function createTarefaTask(steps: TarefaSteps) {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
       // A resposta chegou e é a vez desta Tarefa: volta à etapa que esperava (triagem ou SPEC).
       if (queued.status === "ativa" && !awaitsHuman(queued))
-        return { status: "running", checkpoint: { phase: queued.stage === "triagem" ? "triar" : "spec" } };
+        return { status: "running", checkpoint: { phase: queued.stage === "triagem" ? "triar" : queued.stage === "implementacao" ? "implementar" : "spec" } };
       if (queued.status === "ativa") queued.status = "aguardando-humano";
       const until = pendingQuestion(queued) && wakeAt !== null ? wakeAt : runtime.now() + TEN_YEARS_MS;
       const gate = await tx.createTask(DeadlineGateTask, { until }, { ownership: { kind: "task", taskId: task.id } });
