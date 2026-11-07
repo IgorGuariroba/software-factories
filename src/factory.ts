@@ -42,7 +42,12 @@ import {
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { gitCodeHost } from "./git-code-host.js";
-import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
+import {
+  baselineBlockedReason,
+  createImplementationExtension,
+  runImplementation,
+  StageBlocked,
+} from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
@@ -1180,6 +1185,7 @@ export async function startFactory(opts: {
           task.status === "bloqueada" &&
           task.stage === "implementacao" &&
           task.implementation?.baseline === "vermelha" &&
+          task.reason === baselineBlockedReason(task.implementation.branch) &&
           task.implementation.commits.length === 0
         ) {
           task.implementation.baseline = null;

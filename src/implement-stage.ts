@@ -44,6 +44,11 @@ export class StageBlocked extends Error {
   override name = "StageBlocked";
 }
 
+/** Motivo persistido usado para reconhecer uma retomada que só precisa medir novamente o baseline. */
+export const baselineBlockedReason = (branch: string): string =>
+  `a suíte de testes já falha na branch ${branch} antes do primeiro teste novo (linha de base ` +
+  "vermelha); a fábrica não tem como verificar o TDD até a suíte voltar a passar";
+
 /** Quantas vezes seguidas a fábrica recusa uma fase do TDD antes de bloquear a Tarefa. */
 export const MAX_TDD_REJECTIONS = 3;
 
@@ -390,11 +395,7 @@ export async function runImplementation(opts: {
       progress.baseline = run.exitCode === 0 ? "verde" : "vermelha";
       await save(progress);
     }
-    if (progress.baseline === "vermelha")
-      throw new StageBlocked(
-        `a suíte de testes já falha na branch ${progress.branch} antes do primeiro teste novo (linha de base ` +
-          "vermelha); a fábrica não tem como verificar o TDD até a suíte voltar a passar",
-      );
+    if (progress.baseline === "vermelha") throw new StageBlocked(baselineBlockedReason(progress.branch));
   }
 
   /** Confere a fase: devolve os caminhos a commitar, ou por que recusou. */
