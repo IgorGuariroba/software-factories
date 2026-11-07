@@ -501,6 +501,20 @@ export function createTarefaTask(steps: TarefaSteps) {
     try {
       outcome = await abortable(steps.run(task.input, step, stepRuntimeOf(task, runtime, context)), runtime.signal);
     } catch (err) {
+      if (runtime.signal.aborted) throw err;
+      // Fechamento do expediente (ou outra janela de activity): não conta como falha; dorme no portão até poder de novo.
+      const availableAt = steps.availableAt?.(task.input) ?? runtime.now();
+      if (availableAt > runtime.now()) {
+        await runtime.commit(async (tx) => {
+          const queued = findTask(await tx.doc(StateDoc), task.input.id);
+          const gate = await tx.createTask(GateTask, {}, { ownership: { kind: "task", taskId: task.id } });
+          queued.status = "enfileirada";
+          queued.notBefore = availableAt;
+          queued.gateId = gate;
+          return { status: "waiting", checkpoint: { phase: step }, on: [gate], policy: "allSettled" };
+        }, context);
+        return;
+      }
       return fail(task, err, runtime, context);
     }
 

@@ -92,6 +92,18 @@ export function nextProjectActivity(config: Pick<ProjectConfig, "activity" | "ca
     : now;
 }
 
+/**
+ * Fim do trecho de atividade atual: o `end` de hoje no fuso, se `now` está dentro do expediente; senão `null`
+ * (já fora, ou projeto `always`). Às 18:00 exatamente o expediente já acabou (`null`).
+ */
+export function projectActivityUntil(config: Pick<ProjectConfig, "activity" | "calendar">, now: number): number | null {
+  if (config.activity !== "business-hours") return null;
+  if (nextProjectActivity(config, now) > now) return null;
+  const calendar = { ...config.calendar, legalHolidays: true };
+  const p = partsIn(now, calendar.timezone);
+  return wallClockToMs({ year: p.year, month: p.month, day: p.day }, calendar.end, calendar.timezone);
+}
+
 function isWorkday(calendar: BusinessCalendar, date: LocalDate): boolean {
   const weekday = WEEKDAYS[new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()];
   return (

@@ -61,7 +61,7 @@ Em `business-hours`, o calendário efetivo inclui os feriados legais nacionais, 
 
 Avisos fora do expediente ficam em uma fila durável por projeto: não são descartados nem bloqueiam mensagens pessoais. A abertura é agendada no relógio da fábrica, sem precisar reiniciar. Respostas a comandos explícitos do usuário continuam disponíveis fora do expediente.
 
-**Limitação atual:** uma etapa já em execução não é interrompida no fechamento do expediente. A política é verificada entre passos; não representa ainda uma proibição estrita de processamento após as 18h. Não ativar como garantia de interrupção imediata.
+No fechamento do expediente, a fábrica aborta as conversas (modelo e ferramentas) da Tarefa ativa de `business-hours`, devolve a Tarefa à fila até o próximo útil sem cancelá-la nem contá-la como falha, e libera a fila para projetos `always`. A retomada reabre o portão no mesmo passo; entregas já gravadas no estado durável não são refeitas. Escrita externa já disparada (comentário/transição em voo) pode concluir depois das 18h — a interrupção cobre o motor de conversa/ferramentas, não cancela HTTP a meio caminho.
 
 ### Perguntas ao PO e horas úteis
 
