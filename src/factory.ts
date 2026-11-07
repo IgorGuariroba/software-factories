@@ -415,6 +415,9 @@ export async function startFactory(opts: {
             writer,
             worktreesRoot: implementationDeps.worktreesRoot,
           });
+          const publication = (await readState()).tasks.find((t) => t.id === input.id)?.publication;
+          if (publication)
+            await progressOnce(`PR/MR ${publication.status}${publication.url ? `: ${publication.url}` : ""}`);
           if (outcome !== "revisar") return outcome;
           const feedback = (await readState()).tasks.find((t) => t.id === input.id)?.publication?.pendingFeedback ?? [];
           await reviewLoop(feedback);
@@ -483,6 +486,15 @@ export async function startFactory(opts: {
         });
       }
 
+      async function progressOnce(message: string): Promise<void> {
+        const last = events
+          .list()
+          .filter((e) => e.type === "progress" && e.project === input.project && e.target === input.key)
+          .at(-1);
+        if (last?.type !== "progress" || last.message !== message)
+          await events.append({ type: "progress", project: input.project, target: input.key, message });
+      }
+
       async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
         for (;;) {
           const verdict = await runReview({
@@ -493,6 +505,13 @@ export async function startFactory(opts: {
             worktreesRoot: implementationDeps.worktreesRoot,
             tools: reviewTools,
             feedback,
+          });
+          const reviewed = (await readState()).tasks.find((t) => t.id === input.id)?.review;
+          await events.append({
+            type: "progress",
+            project: input.project,
+            target: input.key,
+            message: `Review ${verdict ?? "concluído"}${reviewed ? ` do HEAD ${reviewed.head.slice(0, 8)}: ${reviewed.summary.slice(0, 400)}` : ""}`,
           });
           if (verdict !== "corrigir") return;
           await implement();

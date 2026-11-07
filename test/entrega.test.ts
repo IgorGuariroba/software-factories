@@ -63,6 +63,17 @@ it("publica PR uma vez, espera sem ocupar a fila e só conclui após observar me
   expect(detail.publication).toMatchObject({ url: "https://code.test/pull/1", status: "aguardando-merge" });
   expect(codeHost.openedRequests).toHaveLength(1);
   expect(model.reviewCalls).toHaveLength(1);
+  const progress = (
+    await api<{ events: { type: string; message?: string }[] }>(factory, "GET", "/tasks/exemplo/PROJ-1")
+  ).events
+    .filter((e) => e.type === "progress")
+    .map((e) => e.message);
+  expect(progress).toEqual([
+    expect.stringMatching(/^Commit \w{8}: ticket 1\/1 \(teste RED\)/),
+    expect.stringMatching(/^Commit \w{8}: ticket 1\/1 \(implementação GREEN\)/),
+    expect.stringMatching(/^Review aprovado do HEAD/),
+    "PR/MR aguardando-merge: https://code.test/pull/1",
+  ]);
   expect(model.reviewCalls[0]?.tools).not.toContain("escrever_arquivo");
   expect(codeHost.openedRequests[0]?.body).toContain("*mensagem automatizada*");
   expect(await repo.branches()).toContain("main");

@@ -91,6 +91,14 @@ export type FactoryEvent =
       error: string;
     }
   | {
+      /** Passo de trabalho da fábrica numa Tarefa (commit TDD, review, publicação), para acompanhar ao vivo. */
+      type: "progress";
+      at: string;
+      project: string;
+      target: string;
+      message: string;
+    }
+  | {
       /** Uma retrô terminou (`concluida`) ou desistiu depois das tentativas (`falhou`), sem bloquear a Tarefa. */
       type: "retro";
       at: string;
