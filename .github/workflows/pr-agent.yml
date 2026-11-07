@@ -25,6 +25,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
+          # Modelo no env: o .pr_agent.toml do repositório só vale a partir do branch padrão.
+          CONFIG.MODEL: "openrouter/google/gemini-3.8-flash"
+          CONFIG.FALLBACK_MODELS: '["openrouter/openai/gpt-5-mini"]'
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "400000"
+          CONFIG.RESPONSE_LANGUAGE: "pt-BR"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "true"
           GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "false"
