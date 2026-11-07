@@ -382,6 +382,49 @@ export async function startManagementBridge(deps: ManagementBridgeDeps): Promise
   }
 
   const unsubscribe = events.subscribe(() => publish());
+  // Reconcilia o estado atual: o cursor antigo pode já ter consumido eventos
+  // que versões anteriores ainda não sabiam apresentar ao usuário.
+  publishing = publishing
+    .then(async () => {
+      let tasks: QueuedTask[];
+      try {
+        tasks = await deps.tasks();
+      } catch {
+        console.error(`[fábrica] ${via}: não foi possível consultar as pendências ao iniciar`);
+        return;
+      }
+      for (const task of tasks) {
+        if (stopped) return;
+        if (!["aguardando-humano", "pausada"].includes(task.status)) continue;
+        const pending = task.questions?.filter((q) => q.answer === null && q.publication !== "sending") ?? [];
+        for (const q of pending) {
+          const full = deps.content(task.project) === "full";
+          if (
+            !(await deliver({
+              text:
+                `Pergunta pendente ${q.n} sobre ${task.key} (${task.project})` +
+                (full ? `: ${q.text}` : ". Consulte a interface web local para ver o conteúdo.") +
+                (q.publication === "draft"
+                  ? "\nRascunho não enviado ao PO. Para publicar, revise e aprove na interface web local. /responder registra uma resposta local, sem publicar a pergunta."
+                  : "") +
+                `\nPara responder: /responder ${task.project}/${task.key} ${q.n} <texto>`,
+            }))
+          )
+            return;
+        }
+        if (pending.length === 0 && task.specReview === "draft") {
+          if (
+            !(await deliver({
+              text: `SPEC de ${task.key} (${task.project}) pronta para revisão. Consulte a interface web local para revisar e aprovar.`,
+            }))
+          )
+            return;
+        }
+      }
+    })
+    .catch(() => {
+      if (!stopped) console.error(`[fábrica] ${via}: erro ao reconciliar pendências`);
+    });
   publish();
   const receiving = receiveLoop().catch((err) => {
     if (!stopped) console.error(`[fábrica] ${via}: recepção parou:`, err);
