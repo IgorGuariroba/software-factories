@@ -319,21 +319,30 @@ function statusPill(task) {
 function taskCard(task) {
   const isSelected = selected && task.project === selected.project && task.key === selected.key;
   const open = !isTerminal(task);
+  const action = nextAction(task);
+  const hint = action === "Aguardando você." ? task.reason : action;
   const card = el(
     "a",
     {
-      className: `cartao${isSelected ? " selecionada" : ""}`,
+      className: `cartao${isSelected ? " selecionada" : ""}${hint && task.status !== "bloqueada" ? " sua-vez" : ""}`,
       attrs: {
         href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}`,
         ...(isSelected ? { "aria-current": "page" } : {}),
       },
     },
-    el("span", { className: "chave", text: `${task.key} · ${task.project}` }),
-    el("span", { className: "titulo", text: task.title }),
+    el(
+      "span",
+      { className: "cabeca" },
+      el("span", { className: "chave", text: task.key }),
+      el("span", { className: "projeto", text: task.project }),
+    ),
+    el("span", { className: "titulo" }, el("span", { className: `situacao ${task.status}` }), task.title),
+    ...(hint ? [el("span", { className: "dica", text: hint })] : []),
     el(
       "span",
       { className: "meta" },
       statusPill(task),
+      el("span", { className: "tentativas", text: `${task.attempts}×` }),
       ...(open ? [el("span", { className: "mover" }, moveButton(task, -1), moveButton(task, 1))] : []),
     ),
   );
