@@ -48,18 +48,6 @@ const offeredTools = (context: Context): string[] => {
   return [...tools];
 };
 
-/** Rejeita quando o signal do harness aborta a chamada do modelo. */
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted)
-    return Promise.reject(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
-}
-
 export interface SpecDelivery {
   spec: string;
   tickets: { titulo: string; aceite: string }[];
@@ -94,20 +82,19 @@ export class FakeModel {
   static readonly PROVIDER = "faux";
   readonly faux = fauxProvider({ provider: FakeModel.PROVIDER, models: [{ id: "spec-a" }, { id: "spec-b" }] });
   readonly calls: ModelCall[] = [];
-  /** Como responder a cada chamada. Padrão: entrega uma SPEC genérica. O signal aborta modelos lentos nos testes. */
-  respond: (call: ModelCall, signal?: AbortSignal) => AssistantMessage | Promise<AssistantMessage> = () =>
-    deliverSpec(DEFAULT_SPEC);
+  /** Como responder a cada chamada. Padrão: entrega uma SPEC genérica. */
+  respond: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () => deliverSpec(DEFAULT_SPEC);
   /**
    * Chamadas da retrô (as que oferecem `entregar_retro`), separadas de `calls`: a retrô roda ao fim de cada etapa e não
    * deve mudar o que os testes das outras etapas contam.
    */
   readonly retroCalls: ModelCall[] = [];
   /** Como responder à retrô. Padrão: uma retrô sem propostas. */
-  respondRetro: (call: ModelCall, signal?: AbortSignal) => AssistantMessage | Promise<AssistantMessage> = () =>
+  respondRetro: (call: ModelCall) => AssistantMessage | Promise<AssistantMessage> = () =>
     deliverRetro("Sem observações.");
 
   constructor() {
-    const step: FauxResponseFactory = async (context, options, _state, model) => {
+    const step: FauxResponseFactory = async (context, _options, _state, model) => {
       this.faux.appendResponses([step]);
       const call: ModelCall = {
         model: model.id,
@@ -127,16 +114,12 @@ export class FakeModel {
             : [],
         ),
       };
-      const signal = options?.signal;
-      let reply: AssistantMessage | Promise<AssistantMessage>;
       if (call.tools.includes("entregar_retro")) {
         this.retroCalls.push(call);
-        reply = this.respondRetro(call, signal);
-      } else {
-        this.calls.push(call);
-        reply = this.respond(call, signal);
+        return this.respondRetro(call);
       }
-      return await raceAbort(Promise.resolve(reply), signal);
+      this.calls.push(call);
+      return this.respond(call);
     };
     this.faux.setResponses([step]);
   }

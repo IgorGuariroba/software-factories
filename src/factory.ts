@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
-import { addBusinessHours, nextProjectActivity, projectActivityUntil, workdayHours } from "./business-hours.js";
+import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
@@ -569,8 +569,7 @@ export async function startFactory(opts: {
           taskId: runtime.taskId,
           model: project.config.roles.spec,
           context: runtime.context,
-          // Depois de uma interrupção (ex.: expediente), o mesmo id devolveria a submissão unanswered.
-          requestId: `spec-${questions.length}-${runtime.now()}`,
+          requestId: `spec-${questions.length}`,
           exclude: await triageConversations(),
           input: specInput({
             card,
@@ -1027,43 +1026,7 @@ export async function startFactory(opts: {
 
   let closing = false;
   let disarmRetry: (() => void) | undefined;
-  let disarmActivity: (() => void) | undefined;
   let known = new Map((await readState()).tasks.map((t) => [t.id, t.status]));
-
-  /**
-   * No fechamento do expediente, aborta as conversas (modelo/ferramentas) da Tarefa ativa de `business-hours`.
-   * A própria Tarefa não é abortada (isso a cancelaria): o passo em curso vê a conversa interrompida e dorme no
-   * portão até o próximo útil, liberando a fila.
-   */
-  async function enforceActivity(): Promise<void> {
-    const state = await readState();
-    const now = clock.now();
-    let nextEnd = Number.POSITIVE_INFINITY;
-    for (const task of state.tasks) {
-      if (task.status !== "ativa" || task.durableId === null) continue;
-      const config = projectOf(task.project).config;
-      const until = projectActivityUntil(config, now);
-      if (until !== null) {
-        nextEnd = Math.min(nextEnd, until);
-        continue;
-      }
-      if (config.activity !== "business-hours") continue;
-      const ownerTaskId = task.durableId as TaskId;
-      const conversationIds = await harness.commit(
-        async (tx) => (await tx.scanConversations({ ownerTaskId }, 50)).items.map((c) => c.id),
-        context,
-      );
-      for (const id of conversationIds) {
-        const conversation = await harness.conversation(id, context);
-        if (conversation) await conversation.abort(context);
-      }
-    }
-    disarmActivity?.();
-    disarmActivity = undefined;
-    if (Number.isFinite(nextEnd) && !closing) {
-      disarmActivity = armTimer(() => react(), Math.max(0, nextEnd - clock.now()));
-    }
-  }
 
   /** Ativa a próxima Tarefa se nenhuma estiver ativa. Abre o portão de uma Tarefa que estava pausada. */
   async function schedule(): Promise<void> {
@@ -1136,7 +1099,6 @@ export async function startFactory(opts: {
       if (closing) return;
       try {
         await emitStatusChanges();
-        await enforceActivity();
         await schedule();
       } catch (err) {
         if (!closing) console.error("[fábrica] erro no agendador:", err);
@@ -1754,7 +1716,6 @@ export async function startFactory(opts: {
       await bridge?.stop();
       if (pollTimer) clearInterval(pollTimer);
       disarmRetry?.();
-      disarmActivity?.();
       for (const stream of streams) stream.end();
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       await polling;
