@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
+import { synchronizeBase } from "./base-sync.js";
 import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
@@ -405,6 +406,15 @@ export async function startFactory(opts: {
           };
           let outcome: Awaited<ReturnType<typeof runDelivery>>;
           try {
+            const currentTask = (await readState()).tasks.find((t) => t.id === input.id);
+            const remote =
+              currentTask?.publication?.number && currentTask.implementation && !project.config.dryRun
+                ? await project.codeHost.inspectRequest(
+                    currentTask.implementation.worktree,
+                    currentTask.publication.number,
+                  )
+                : undefined;
+            if ((!remote || remote.state === "open") && (await syncBase())) await reviewLoop();
             outcome = await runDelivery({
               taskId: input.id,
               runtime,
@@ -470,6 +480,7 @@ export async function startFactory(opts: {
         if (!current?.delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
+        if (current.implementation?.synchronization?.status === "iniciada") await syncBase();
         await runImplementation({
           harness,
           runtime,
@@ -520,7 +531,18 @@ export async function startFactory(opts: {
           await events.append({ type: "progress", project: input.project, target: input.key, message });
       }
 
+      async function syncBase(): Promise<boolean> {
+        return synchronizeBase({
+          taskId: input.id,
+          runtime,
+          harness,
+          config: project.config,
+          deps: implementationDeps,
+        });
+      }
+
       async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
+        await syncBase();
         // Um reinício dentro da implementação de correções deve retomá-la antes de pedir outro review normal.
         const interrupted = (await readState()).tasks.find((t) => t.id === input.id);
         if (interrupted?.implementation && interrupted.delivery) {
@@ -1354,6 +1376,14 @@ export async function startFactory(opts: {
         }
         // TDD recusado no limite: quem retoma mudou o que impedia (config, formatador, ambiente). Novas tentativas na
         // mesma fase; os commits aceitos ficam.
+        if (blockedResumeKind(task as QueuedTask) === "base-sync" && task.implementation) {
+          if (task.implementation.synchronization?.status === "iniciada")
+            task.implementation.synchronization.attempts = 0;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
         if (blockedResumeKind(task as QueuedTask) === "tdd" && task.implementation) {
           task.implementation.rejections = 0;
           task.implementation.feedback = null;

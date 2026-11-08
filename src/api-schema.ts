@@ -644,6 +644,11 @@ export const API_SCHEMA = {
                     description: "criada pela fábrica (aceita force-push) ou adotada do remoto (só push normal)",
                   },
                   commits: { type: "array", items: { type: "object" } },
+                  synchronization: {
+                    type: ["object", "null"],
+                    description:
+                      "Integração da base na branch da fábrica, com recibo, HEAD e diagnóstico; exige novo review antes de publicar",
+                  },
                   verifiedTickets: {
                     type: "array",
                     description:

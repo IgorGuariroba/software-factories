@@ -38,6 +38,7 @@ jobs:
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
           # Evita HTTP 402 por reservar 65536 tokens, sem dispensar review ou suggestions.
           OPENROUTER__MAX_TOKENS: "16384"
+          OPENROUTER__REASONING_MAX_TOKENS: "2048"
           # Modelo no env: o .pr_agent.toml do repositório só vale a partir do branch padrão.
           CONFIG.MODEL: "openrouter/deepseek/deepseek-v4.1-flash-1017"
           CONFIG.FALLBACK_MODELS: '["openrouter/z-ai/glm-5.3-flash"]'

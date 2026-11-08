@@ -7,6 +7,8 @@ response_language = "pt-BR"
 [openrouter]
 # Limita a reserva de saída sem reduzir o contexto nem desativar review/portão.
 max_tokens = 16384
+# Reserva espaço para a resposta: reasoning não pode consumir toda a saída.
+reasoning_max_tokens = 2048
 
 [pr_reviewer]
 extra_instructions = """

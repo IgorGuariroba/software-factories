@@ -75,6 +75,12 @@ Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta
 - Dry-run: pergunta e lembrete viram só eventos `write` (`action: "mention"`); a leitura das respostas continua real.
 - Nos testes, a fábrica roda num relógio falso (`test/fakes/fake-clock.ts`, opção `clock` de `startTestFactory`), que move o relógio do motor durável e do agendador.
 
+### Base atualizada e conflitos na entrega
+
+O clone inicial já busca o remoto; uma tarefa longa também precisa incorporar o avanço posterior da branch padrão. Antes do review e antes de publicar, a fábrica busca novamente `origin` e confere a ancestralidade da base. Somente em branch criada pela própria fábrica, limpa e sem divergência humana remota, integra a base por merge normal — sem rebase ou force-push.
+
+Conflitos são resolvidos pelo implementador, limitado aos caminhos da integração e a três tentativas. A fábrica exige ausência de marcadores, suíte GREEN e novo review independente do HEAD integrado antes do push. Isso não autoriza merge do PR/MR nem muda as fases TDD aceitas. Um recibo durável em `implementation.synchronization` permite retomar uma resolução interrompida ou reconhecer o commit feito antes de uma queda. Falhas preservam clone e evidências; a retomada explícita reinicia o limite de tentativas. Alterações humanas, branches protegidas ou adotadas não são sobrescritas automaticamente.
+
 ### Correções de review já atendidas
 
 Uma correção pode ficar atendida por outro reparo da mesma tarefa (por exemplo, “manter a suíte verde” após corrigir o lint). Nesses casos, não crie teste que chama a suíte inteira, script auxiliar sem função no produto, RED artificial ou commit vazio só para satisfazer o protocolo.

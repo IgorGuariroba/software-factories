@@ -102,6 +102,7 @@ export async function runReview(opts: {
       "configure roles.reviewer com família identificada e diferente do implementador; não há fallback de review",
     );
   const base =
+    (progress.synchronization?.status === "concluida" ? progress.synchronization.base : undefined) ??
     progress.baseHead ??
     (await git(cwd, ["merge-base", "HEAD", await remoteDefaultRef(cwd, progress.defaultBranch)])).trim();
   const diff = await git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--"]);

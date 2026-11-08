@@ -233,6 +233,16 @@ export type ImplementationProgress = {
   commits: { ticket: number; phase: TddPhase; sha: string }[];
   /** Critérios de correção já atendidos: suíte no HEAD limpo e review independente, nunca fases RED/GREEN fictícias. */
   verifiedTickets?: { ticket: number; sha: string; diagnostic: string }[];
+  /** Integração da base: recibo antes do merge, prova de suíte e novo HEAD; nunca altera fases TDD aceitas. */
+  synchronization?: {
+    base: string;
+    previousHead: string;
+    head?: string;
+    status: "iniciada" | "concluida";
+    attempts: number;
+    paths: string[];
+    diagnostic?: string;
+  };
   /** Reparos humanos aprovados por revisão exata e suíte verde; distintos das fases executadas pelo modelo. */
   repairs?: { sha: string; ticket: number; revision: string }[];
   /** Pedidos feitos ao modelo; numera o próximo para que uma nova tentativa não reaproveite um pedido recusado. */
