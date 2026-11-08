@@ -379,16 +379,7 @@ export async function startFactory(opts: {
             : resolveRepository(project.config.repositories, card);
         if (project.config.repositories?.length && !repository) {
           if (current && pendingQuestion(current)) return "aguardar";
-          // Registrar a resolução recusada preserva a auditoria, mas não encerra
-          // uma Tarefa que pode obter a decisão pelo fluxo técnico existente.
-          await events.append({
-            type: "blocked",
-            project: input.project,
-            target: input.key,
-            action: "resolver-repositorio",
-            content: card.title,
-            reason: `nenhum repositório mapeado para o card ${input.key}; necessária decisão humana no projeto ${input.project}`,
-          });
+          // Falta de mapeamento exige uma decisão humana, não é violação de guardrail.
           await ask(
             current?.questions ?? [],
             repositoryQuestion(card, project.config.repositories),
