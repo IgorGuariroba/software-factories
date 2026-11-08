@@ -63,6 +63,7 @@ const $ = (id) => document.getElementById(id);
 function el(tag, opts = {}, ...children) {
   const node = document.createElement(tag);
   if (opts.text !== undefined) node.textContent = opts.text;
+  if (opts.icon) node.append(svgIcon(opts.icon));
   if (opts.className) node.className = opts.className;
   for (const [name, value] of Object.entries(opts.attrs ?? {})) node.setAttribute(name, value);
   if (opts.onClick) node.addEventListener("click", opts.onClick);
@@ -367,11 +368,37 @@ function actionButtons(task) {
   });
 }
 
+/* Ícones SVG 16px, stroke 1.75, herdam a cor do texto. Montados por DOM, sem HTML a partir de string. */
+const ICON_PATHS = {
+  up: "M8 13V3M3.5 7.5 8 3l4.5 4.5",
+  down: "M8 3v10M3.5 8.5 8 13l4.5-4.5",
+};
+function svgIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [attr, value] of Object.entries({
+    viewBox: "0 0 16 16",
+    width: "16",
+    height: "16",
+    "aria-hidden": "true",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "1.75",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+  }))
+    svg.setAttribute(attr, value);
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", ICON_PATHS[name]);
+  svg.append(path);
+  return svg;
+}
+
 function moveButton(task, delta) {
   const order = moveTask(tasks, task.id, delta);
   const label = delta < 0 ? "Subir" : "Descer";
   const button = el("button", {
-    text: delta < 0 ? "↑" : "↓",
+    className: "mover-botao",
+    icon: delta < 0 ? "up" : "down",
     attrs: { type: "button", title: label, "aria-label": `${label} ${task.key} na fila` },
     onClick: () => order && run(() => reorderTasks(order)),
   });
@@ -426,7 +453,7 @@ function renderTasks() {
   for (const button of document.querySelectorAll("[data-modo]"))
     button.setAttribute("aria-pressed", String(button.dataset.modo === taskView));
   $("resultado-contagem").textContent =
-    `${visible.length} de ${tasks.length} tarefas · ${taskView === "lista" ? "Pendências primeiro" : "Organizadas por etapa"}`;
+    `${visible.length} de ${tasks.length} · ${taskView === "lista" ? "pendências primeiro" : "por etapa"}`;
   $("quadro").classList.toggle("modo-lista", taskView === "lista");
   const columns = boardColumns(visible);
   $("quadro").replaceChildren(
@@ -478,7 +505,6 @@ function renderDetail(task) {
       : null;
   if (openedTask !== task.id) {
     openedTask = task.id;
-    $("fluxo-tarefa").open = false;
     $("menu-acoes-tarefa").open = false;
     showTab(actionTab(task));
   }
@@ -774,7 +800,31 @@ function readSelection() {
   pendingRef = retro ? retro[1] : null;
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
+  syncSheet();
 }
+
+/* O detalhe abre como folha sobre o quadro, com origem no cartão clicado; fechar devolve o foco a ele. */
+let sheetOrigin = null;
+function syncSheet() {
+  const gaveta = $("gaveta");
+  if (selected && !gaveta.open) {
+    const card = document.activeElement?.closest?.(".cartao");
+    if (card) {
+      const box = card.getBoundingClientRect();
+      gaveta.style.setProperty("--origem-x", `${box.left + box.width / 2}px`);
+      gaveta.style.setProperty("--origem-y", `${box.top + box.height / 2}px`);
+      sheetOrigin = card;
+    }
+    gaveta.showModal();
+  } else if (!selected && gaveta.open) {
+    gaveta.close();
+  }
+}
+$("gaveta").addEventListener("close", () => {
+  if (selected) location.hash = "";
+  sheetOrigin?.focus?.({ preventScroll: true });
+  sheetOrigin = null;
+});
 
 async function refreshDetail() {
   if (!selected) {

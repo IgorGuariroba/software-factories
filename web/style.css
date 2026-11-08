@@ -9,6 +9,18 @@
   --perigo: #b3261e;
   --ok: #1e7a3c;
   --alerta: #8a5a00;
+  --r-controle: 6px;
+  --r-cartao: 10px;
+  --r-painel: 14px;
+  --sombra: 0 1px 2px rgb(20 20 40 / 4%), 0 2px 6px rgb(20 20 40 / 4%);
+  --sombra-flutuante: 0 1px 2px rgb(20 20 40 / 6%), 0 12px 28px -6px rgb(20 20 40 / 14%);
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
   font-family: system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.45;
@@ -32,7 +44,7 @@ dialog {
   max-width: min(560px, calc(100vw - 3rem));
   padding: 1.5rem;
   border: 1px solid var(--borda);
-  border-radius: 12px;
+  border-radius: var(--r-painel);
   background: var(--superficie);
   color: var(--texto);
 }
@@ -42,12 +54,12 @@ dialog::backdrop {
 }
 
 dialog input {
-  padding: 0.6rem;
+  padding: var(--sp-3);
   font: inherit;
   color: inherit;
   background: var(--fundo);
   border: 1px solid var(--borda);
-  border-radius: 6px;
+  border-radius: var(--r-controle);
   min-width: 0;
 }
 
@@ -66,8 +78,8 @@ body {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 1.25rem 1.5rem;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-6);
   border-bottom: 1px solid var(--borda);
   background: var(--superficie);
 }
@@ -129,11 +141,11 @@ body {
 /* Cor de cada etapa: cabeçalho em pílula tingida, ponto e borda do cartão. */
 .coluna {
   --etapa: var(--suave);
-  border-radius: 12px;
-  padding: 0.6rem;
+  border-radius: var(--r-painel);
+  padding: var(--sp-2);
   min-height: 60vh;
-  border: 1px solid color-mix(in srgb, var(--etapa) 12%, var(--borda));
-  background: color-mix(in srgb, var(--etapa) 5%, var(--fundo));
+  border: 1px solid var(--borda);
+  background: var(--superficie);
 }
 
 .coluna[data-coluna="spec"] {
@@ -159,72 +171,88 @@ body {
 .coluna h3 {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin: 0 0 0.5rem;
-  padding: 0.45rem 0.65rem;
-  border-radius: 8px;
-  font-size: 0.85rem;
-  background: color-mix(in srgb, var(--etapa) 16%, var(--superficie));
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-controle);
+  font-size: 0.875rem;
+  font-weight: 600;
+  background: var(--fundo);
   position: sticky;
   top: 0;
 }
 
 .ponto {
-  width: 0.65rem;
-  height: 0.65rem;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  border: 2px solid var(--etapa);
-  background: linear-gradient(90deg, var(--etapa) 50%, transparent 50%);
-}
-
-.coluna[data-coluna="triagem"] .ponto {
-  background: none;
-}
-
-.coluna[data-coluna="encerradas"] .ponto {
   background: var(--etapa);
 }
 
 .coluna-vazia {
-  margin: 1rem 0;
+  margin: var(--sp-4) 0;
   text-align: center;
-  font-size: 0.8rem;
+  font-size: 0.8125rem;
   color: var(--suave);
 }
 
 .gaveta {
-  width: min(760px, 55vw);
-  flex-shrink: 0;
-  border-left: 1px solid var(--borda);
+  /* Folha modal: nasce do cartão clicado (--origem-x/y, definidos em app.js) e fecha mais rápido do que abre. */
+  width: min(820px, calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: var(--sp-6);
+  border: 1px solid var(--borda);
+  border-radius: var(--r-painel);
   background: var(--superficie);
-  padding: 1rem 1.25rem;
+  color: var(--texto);
+  box-shadow: var(--sombra-flutuante);
   overflow-y: auto;
-  max-height: calc(100vh - 56px);
-  position: sticky;
-  top: 0;
-  box-sizing: border-box;
+  transform-origin: var(--origem-x, 50%) var(--origem-y, 50%);
 }
 
-.gaveta:has(#detalhe[hidden]) {
+.gaveta[open] {
+  animation: entrar-folha 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.gaveta[open]::backdrop {
+  animation: escurecer 0.2s ease-out;
+  background: rgb(10 10 20 / 40%);
+}
+
+.gaveta:not([open]) {
   display: none;
+}
+
+@keyframes entrar-folha {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes escurecer {
+  from {
+    opacity: 0;
+  }
 }
 
 @media (max-width: 960px) {
   .gaveta {
-    position: static;
-    width: 100%;
-    max-height: none;
-    min-height: 100dvh;
-    overflow: visible;
-    border-left: 0;
-    box-shadow: none;
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100dvh;
+    height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
   }
-  body:has(#detalhe:not([hidden])) > .topo,
-  .layout:has(#detalhe:not([hidden])) > .quadro-area {
-    display: none;
-  }
-  .layout:has(#detalhe:not([hidden])) {
-    min-height: 100dvh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gaveta[open],
+  .gaveta[open]::backdrop {
+    animation: none;
   }
 }
 
@@ -233,45 +261,51 @@ body {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.4rem;
+  gap: var(--sp-2);
 }
 
 .cartao {
   display: grid;
-  gap: 0.35rem;
-  padding: 1rem;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
   border: 1px solid var(--borda);
-  border-radius: 10px;
+  border-radius: var(--r-cartao);
   background: var(--superficie);
   color: inherit;
   text-decoration: none;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  box-shadow: var(--sombra);
   transition:
-    box-shadow 0.15s,
-    border-color 0.15s;
+    border-color 0.15s ease-out,
+    background-color 0.15s ease-out;
+  transform-origin: center;
 }
 
 .cartao:hover {
-  border-color: color-mix(in srgb, var(--etapa) 60%, var(--borda));
-  box-shadow: 0 3px 10px rgb(0 0 0 / 10%);
+  border-color: color-mix(in srgb, var(--texto) 22%, var(--borda));
 }
 
+.cartao:active {
+  transform: scale(0.99);
+}
+
+
+
 .cartao.selecionada {
-  border-color: var(--destaque);
-  box-shadow: inset 3px 0 0 var(--destaque);
+  border-color: var(--texto);
+  box-shadow: var(--sombra), inset 2px 0 0 var(--texto);
 }
 
 .resposta {
   display: grid;
-  gap: 0.4rem;
-  margin-top: 0.4rem;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }
 
 .resposta textarea {
   font: inherit;
-  padding: 0.4rem;
+  padding: var(--sp-2);
   border: 1px solid var(--borda);
-  border-radius: 6px;
+  border-radius: var(--r-controle);
   background: var(--superficie);
   color: inherit;
 }
@@ -280,10 +314,8 @@ body {
   justify-self: start;
 }
 
-.cartao.sua-vez {
-  box-shadow:
-    inset 3px 0 0 var(--alerta),
-    0 1px 2px rgb(0 0 0 / 6%);
+.cartao.sua-vez .dica {
+  color: var(--alerta);
 }
 
 .cartao .cabeca {
@@ -294,9 +326,9 @@ body {
 }
 
 .cartao .projeto {
-  padding: 0 0.4rem;
+  padding: 0 var(--sp-2);
   border: 1px solid var(--borda);
-  border-radius: 999px;
+  border-radius: var(--r-controle);
 }
 
 .cartao .titulo {
@@ -310,9 +342,9 @@ body {
 
 .situacao {
   display: inline-block;
-  width: 0.55rem;
-  height: 0.55rem;
-  margin-right: 0.4rem;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--sp-2);
   border-radius: 50%;
   vertical-align: 0.05rem;
   background: var(--alerta);
@@ -337,9 +369,11 @@ body {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: 0.78rem;
-  color: var(--alerta);
+  font-size: 0.8125rem;
+  color: var(--suave);
 }
+
+
 
 .cartao .tentativas {
   margin-left: auto;
@@ -350,19 +384,19 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  font-size: 0.8125rem;
   color: var(--suave);
 }
 
 .mover {
   margin-left: auto;
   display: flex;
-  gap: 0.2rem;
+  gap: var(--sp-1);
 }
 
 .mover button {
-  padding: 0.25rem 0.5rem;
+  padding: var(--sp-1) var(--sp-2);
   min-width: 36px;
   min-height: 36px;
 }
@@ -381,14 +415,14 @@ body {
 }
 
 .cabecalho h2 {
-  margin: 0.1rem 0 0.35rem;
-  font-size: 1.3rem;
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-size: 1.25rem;
 }
 
 .linha-estado {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: var(--sp-2);
   align-items: center;
   margin: 0;
   color: var(--suave);
@@ -396,9 +430,9 @@ body {
 }
 
 .proximo {
-  margin: 1rem 0 0;
-  padding: 0.65rem 0.85rem;
-  border-radius: 8px;
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-controle);
   border: 1px solid var(--alerta);
   background: color-mix(in srgb, var(--alerta) 10%, transparent);
   font-weight: 500;
@@ -409,55 +443,117 @@ body {
   background: color-mix(in srgb, var(--perigo) 10%, transparent);
 }
 
+/* Stepper: nós numerados ligados por uma linha; o passo atual é o único com peso e anel de tinta. */
 .pipeline {
+  --no: 24px;
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.35rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0;
   padding: 0;
-  margin: 1.25rem 0;
+  margin: 0;
   counter-reset: etapa;
 }
 
 .pipeline li {
   counter-increment: etapa;
-  padding: 0.5rem 0.6rem;
-  border-radius: 8px;
-  border: 1px solid var(--borda);
-  font-size: 0.82rem;
+  position: relative;
+  display: grid;
+  justify-items: start;
+  gap: var(--sp-1);
+  padding-top: var(--sp-2);
+  font-size: 0.8125rem;
+  line-height: 1.3;
   color: var(--suave);
 }
 
 .pipeline li::before {
-  content: counter(etapa) " · ";
+  content: counter(etapa);
+  display: grid;
+  place-items: center;
+  width: var(--no);
+  height: var(--no);
+  border-radius: 50%;
+  border: 1px solid var(--borda);
+  background: var(--superficie);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+}
+
+/* Linha que liga os nós (do nó até o próximo). */
+.pipeline li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--sp-2) + var(--no) / 2);
+  left: calc(var(--no) + var(--sp-1));
+  right: calc(-1 * var(--sp-1));
+  height: 1px;
+  background: var(--borda);
 }
 
 .pipeline li .estado-etapa {
   display: block;
   font-size: 0.75rem;
+  color: var(--suave);
+}
+
+.pipeline button {
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.pipeline .feito::before {
+  background: var(--texto);
+  color: var(--superficie);
+  border-color: var(--texto);
 }
 
 .pipeline .feito {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 50%, var(--borda));
+  color: var(--texto);
 }
 
-.pipeline .atual {
-  color: var(--destaque);
-  border-color: var(--destaque);
+.pipeline .atual::before {
+  border-color: var(--texto);
+  box-shadow: 0 0 0 4px var(--fundo);
+  outline: 1px solid var(--texto);
+  outline-offset: 2px;
+  color: var(--texto);
+  font-weight: 700;
+}
+
+.pipeline .atual,
+.pipeline .atual .estado-etapa {
+  color: var(--texto);
   font-weight: 600;
 }
 
-.pipeline .espera {
+.pipeline .espera::before,
+.pipeline .espera .estado-etapa {
   color: var(--alerta);
-  border-color: var(--alerta);
-  font-weight: 600;
 }
 
-.pipeline .bloqueado {
+.pipeline .espera::before {
+  border-color: var(--alerta);
+}
+
+.pipeline .bloqueado::before,
+.pipeline .bloqueado .estado-etapa {
   color: var(--perigo);
+}
+
+.pipeline .bloqueado::before {
   border-color: var(--perigo);
-  font-weight: 600;
+}
+
+.pipeline li .estado-etapa:empty {
+  display: none;
 }
 
 .abas {
@@ -476,7 +572,7 @@ body {
   background: none;
   white-space: nowrap;
   flex-shrink: 0;
-  padding: 0.7rem;
+  padding: var(--sp-3);
   color: var(--suave);
 }
 
@@ -495,15 +591,15 @@ body {
 .linha-do-tempo li {
   display: grid;
   grid-template-columns: 9.5rem 6.5rem 1fr;
-  gap: 0.5rem;
-  padding: 0.4rem 0;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
   border-bottom: 1px solid var(--borda);
-  font-size: 0.88rem;
+  font-size: 0.875rem;
 }
 
 .tipo {
   font-size: 0.75rem;
-  padding: 0.05rem 0.45rem;
+  padding: 0 var(--sp-2);
   border-radius: 999px;
   border: 1px solid var(--borda);
   color: var(--suave);
@@ -527,9 +623,9 @@ body {
 
 .ticket {
   border: 1px solid var(--borda);
-  border-radius: 8px;
-  padding: 0.55rem 0.75rem;
-  margin-bottom: 0.5rem;
+  border-radius: var(--r-cartao);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-2);
 }
 
 .ticket h4 {
@@ -537,13 +633,15 @@ body {
 }
 
 h2 {
-  margin: 0.25rem 0 0.75rem;
-  font-size: 1.05rem;
+  margin: var(--sp-1) 0 var(--sp-3);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
 h3 {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 0.95rem;
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: 0.9375rem;
 }
 
 table {
@@ -555,7 +653,7 @@ th,
 td {
   text-align: left;
   vertical-align: top;
-  padding: 0.35rem 0.5rem;
+  padding: var(--sp-2);
   border-bottom: 1px solid var(--borda);
 }
 
@@ -569,9 +667,9 @@ button {
   font: inherit;
   font-size: 0.85rem;
   min-height: 40px;
-  padding: 0.5rem 0.85rem;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--borda);
-  border-radius: 6px;
+  border-radius: var(--r-controle);
   background: var(--fundo);
   color: var(--texto);
   cursor: pointer;
@@ -595,11 +693,12 @@ a {
 }
 
 .selo {
-  font-size: 0.8rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 999px;
+  font-size: 0.8125rem;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-controle);
   border: 1px solid var(--borda);
   color: var(--suave);
+  line-height: 1.5;
 }
 
 .selo.ok {
@@ -674,18 +773,7 @@ a {
 
 .proximo button {
   display: block;
-  margin-top: 0.6rem;
-  border-color: var(--alerta);
-  font-weight: 600;
-}
-
-.pipeline button {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  font-weight: inherit;
+  margin-top: var(--sp-3);
 }
 
 button:focus-visible,
@@ -740,8 +828,29 @@ summary:focus-visible {
   }
 }
 
+/* Demais botões do topo: neutros, sem disputar a ação primária. */
+.controles > button:not(#buscar),
+.controles .menu-config summary {
+  background: transparent;
+  border-color: transparent;
+  color: var(--suave);
+}
+
+.controles > button:not(#buscar):hover:not(:disabled) {
+  color: var(--texto);
+  border-color: var(--borda);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .cartao {
+  .cartao,
+  .cartao:active {
+    transition: none;
+    transform: none;
+  }
+  .menu-config[open] > .menu-conteudo {
+    animation: none;
+  }
+  .metrica {
     transition: none;
   }
 }
@@ -753,8 +862,7 @@ summary:focus-visible {
     min-width: 44px;
   }
   .topo,
-  .quadro-area,
-  .gaveta {
+  .quadro-area {
     padding: 1rem;
   }
   .barra {
@@ -771,7 +879,8 @@ summary:focus-visible {
     scroll-snap-align: start;
   }
   .pipeline {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    row-gap: var(--sp-4);
   }
   .linha-do-tempo li {
     grid-template-columns: 1fr;
@@ -816,41 +925,38 @@ summary:focus-visible {
   text-align: left;
 }
 
-.fluxo-compacto {
-  margin: 1rem 0;
-  padding: 0.85rem 0;
-  border-bottom: 1px solid var(--borda);
+/* Fluxo da tarefa: bloco principal do detalhe, sempre visível. */
+.fluxo {
+  margin: var(--sp-6) 0 0;
 }
 
-.fluxo-compacto > summary {
+.fluxo-cabeca {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  cursor: pointer;
-  list-style: none;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
 }
 
-.fluxo-compacto > summary::-webkit-details-marker {
-  display: none;
-}
-
-.fluxo-compacto strong {
-  font-size: 0.9rem;
+.fluxo-cabeca h3 {
+  margin: 0;
+  font-size: 0.9375rem;
   font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
-.fluxo-expandir {
-  flex-shrink: 0;
-  color: var(--destaque);
-  font-size: 0.75rem;
+.fluxo-atual {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--suave);
+  font-variant-numeric: tabular-nums;
 }
 
 .bloco-detalhe {
-  margin: 1rem 0;
-  padding: 1rem;
+  margin: var(--sp-4) 0;
+  padding: var(--sp-4);
   border: 1px solid var(--borda);
-  border-radius: 12px;
+  border-radius: var(--r-painel);
 }
 
 .bloco-detalhe > h3 {
@@ -890,9 +996,6 @@ summary:focus-visible {
   }
   .detalhe-navegacao .menu-config summary {
     font-size: 0.8rem;
-  }
-  .fluxo-compacto {
-    padding: 0.85rem 0;
   }
   .bloco-detalhe {
     padding: 0.85rem;
@@ -1103,64 +1206,79 @@ summary:focus-visible {
 
 .menu-conteudo {
   position: absolute;
-  top: 100%;
+  top: calc(100% + var(--sp-1));
   right: 0;
   z-index: 3;
   min-width: 220px;
-  padding: 0.75rem;
+  padding: var(--sp-2);
   border: 1px solid var(--borda);
-  border-radius: 12px;
+  border-radius: var(--r-painel);
   background: var(--superficie);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 12%);
+  box-shadow: var(--sombra-flutuante);
+  transform-origin: top right;
+}
+
+/* Entrada a partir do gatilho (180ms); a saída é a troca instantânea do details, mais rápida que a entrada. */
+.menu-config[open] > .menu-conteudo {
+  animation: abrir-a-partir-do-gatilho 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes abrir-a-partir-do-gatilho {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-4px);
+  }
 }
 
 .quadro-area {
-  padding: 2rem clamp(1rem, 3vw, 3rem);
+  padding: var(--sp-8) clamp(16px, 3vw, 48px);
 }
 
 .visao-geral {
-  margin-bottom: 2rem;
+  margin-bottom: var(--sp-6);
 }
 
 .sobretitulo {
-  margin: 0 0 0.5rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: var(--suave);
+  display: none;
 }
 
 #titulo-visao {
   margin: 0;
-  font-size: clamp(1.65rem, 3vw, 2.25rem);
-  font-weight: 650;
-  letter-spacing: -0.045em;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
 .introducao {
-  margin: 0.5rem 0 1.5rem;
+  margin: var(--sp-1) 0 var(--sp-4);
 }
 
 .resumo {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.8rem;
+  gap: var(--sp-2);
 }
 
 .metrica {
   display: grid;
-  gap: 0.5rem;
-  padding: 1rem 1.2rem;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
   text-align: left;
-  border-radius: 12px;
+  border-radius: var(--r-painel);
   background: var(--superficie);
+  box-shadow: var(--sombra);
+}
+
+.metrica span {
+  color: var(--suave);
+  font-size: 0.8125rem;
 }
 
 .metrica strong {
-  font-size: 2rem;
-  line-height: 1;
+  font-size: 1.5rem;
+  line-height: 1.2;
   font-weight: 600;
-  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
 }
 
 .metrica small {
@@ -1169,29 +1287,25 @@ summary:focus-visible {
 }
 
 .metrica[aria-pressed="true"] {
-  border-color: var(--destaque);
-  box-shadow: 0 0 0 1px var(--destaque);
+  box-shadow: var(--sombra), inset 0 2px 0 var(--texto);
 }
 
-.metrica[data-filtro="atencao"] strong {
-  color: var(--alerta);
-}
-
+.metrica[data-filtro="atencao"] strong,
 .metrica[data-filtro="bloqueadas"] strong {
-  color: var(--perigo);
+  color: var(--texto);
 }
 
 .ferramentas {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 1rem;
-  margin-top: 1rem;
+  gap: var(--sp-4);
+  margin-top: var(--sp-6);
 }
 
 .busca {
   display: grid;
-  gap: 0.35rem;
+  gap: var(--sp-1);
   flex: 1;
   max-width: 420px;
   font-size: 0.75rem;
@@ -1202,21 +1316,21 @@ summary:focus-visible {
   width: 100%;
   min-width: 0;
   min-height: 44px;
-  padding: 0.65rem 0.85rem;
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--borda);
-  border-radius: 8px;
+  border-radius: var(--r-controle);
   background: var(--superficie);
   color: var(--texto);
   font: inherit;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
 }
 
 .modos {
   display: flex;
-  padding: 3px;
+  padding: var(--sp-1);
   border: 1px solid var(--borda);
-  border-radius: 9px;
-  gap: 3px;
+  border-radius: var(--r-controle);
+  gap: var(--sp-1);
 }
 
 .modos button {
@@ -1228,7 +1342,9 @@ summary:focus-visible {
 .modos button[aria-pressed="true"] {
   background: var(--superficie);
   border-color: var(--borda);
-  color: var(--destaque);
+  color: var(--texto);
+  font-weight: 600;
+  box-shadow: var(--sombra);
 }
 
 .quadro.modo-lista {
@@ -1237,15 +1353,15 @@ summary:focus-visible {
 }
 
 .lista-tarefas {
-  gap: 0.5rem;
+  gap: var(--sp-2);
 }
 
 .lista-tarefas .cartao {
   grid-template-columns: 8.5rem minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.5rem 1rem;
+  gap: var(--sp-2) var(--sp-4);
   box-shadow: none;
-  padding: 0.9rem 1rem;
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .lista-tarefas .cabeca {
@@ -1266,13 +1382,6 @@ summary:focus-visible {
   max-width: 250px;
 }
 
-.lista-tarefas .cartao.sua-vez {
-  box-shadow: inset 3px 0 0 var(--alerta);
-}
-
-.gaveta {
-  box-shadow: -12px 0 40px rgb(0 0 0 / 4%);
-}
 
 @media (max-width: 1200px) {
   .resumo {
@@ -1295,7 +1404,7 @@ summary:focus-visible {
 
 @media (max-width: 600px) {
   .topo {
-    gap: 0.75rem;
+    gap: var(--sp-3);
   }
   .controles {
     width: 100%;
@@ -1304,14 +1413,13 @@ summary:focus-visible {
     font-size: 0.75rem;
   }
   .quadro-area {
-    padding: 1.5rem 1rem;
+    padding: var(--sp-6) var(--sp-4);
   }
   .resumo {
-    gap: 0.65rem;
+    gap: var(--sp-2);
   }
   .metrica {
-    padding: 0.85rem;
-    gap: 0.65rem;
+    padding: var(--sp-3);
   }
   .metrica small {
     display: none;
@@ -1331,6 +1439,549 @@ summary:focus-visible {
     min-height: 44px;
   }
   .visao-geral {
-    margin-bottom: 1.5rem;
+    margin-bottom: var(--sp-4);
+  }
+}
+
+/* Ação primária da tarefa (retomar / próxima ação): a única preenchida do detalhe. */
+.proximo button {
+  background: var(--destaque);
+  border-color: var(--destaque);
+  color: var(--superficie);
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .proximo button {
+    color: var(--fundo);
+  }
+}
+
+/* ===== Auditoria de componentes base (propaga para todas as telas) ===== */
+
+/* Botão: altura por escala, alinhamento e todos os estados interativos. */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  white-space: nowrap;
+  min-height: 36px;
+  line-height: 1.2;
+  transition:
+    background-color 0.15s ease-out,
+    border-color 0.15s ease-out,
+    color 0.15s ease-out,
+    transform 0.15s ease-out;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--destaque);
+  outline-offset: 2px;
+}
+
+button:disabled,
+button[aria-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+/* Carregando: spinner dentro do botão, sem trocar a largura. */
+button[aria-busy="true"] {
+  position: relative;
+  color: transparent;
+  pointer-events: none;
+}
+
+button[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--texto);
+  border-right-color: transparent;
+  animation: girar 0.7s linear infinite;
+}
+
+@keyframes girar {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Botão primário: ação de decisão; os demais são secundários/ghost. */
+#buscar,
+#salvar-retros,
+.proximo button {
+  box-shadow: var(--sombra);
+}
+
+#buscar:hover:not(:disabled),
+#salvar-retros:hover:not(:disabled),
+.proximo button:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+/* Destrutivo: vermelho só no hover/confirmação. */
+button.perigo:hover:not(:disabled) {
+  color: var(--perigo);
+  border-color: color-mix(in srgb, var(--perigo) 40%, var(--borda));
+  background: color-mix(in srgb, var(--perigo) 6%, var(--superficie));
+}
+
+/* Stepper: rótulos com largura fixa para não desalinhar os nós. */
+.pipeline li {
+  min-width: 0;
+}
+
+.pipeline li > button,
+.pipeline li > span {
+  overflow-wrap: anywhere;
+}
+
+/* Áreas de toque em viewports móveis: 44px. */
+@media (max-width: 600px) {
+  button {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  button:active:not(:disabled) {
+    transition: none;
+    transform: none;
+  }
+  button[aria-busy="true"]::after {
+    animation: none;
+  }
+}
+
+/* Folha: não exibir anel de foco no próprio dialog (o foco vai para o primeiro controle). */
+.gaveta:focus,
+.gaveta:focus-visible {
+  outline: none;
+}
+
+/* Stepper: rótulos alinhados pelo topo; cada passo ocupa a mesma altura de texto. */
+.pipeline li {
+  align-content: start;
+  min-height: 56px;
+}
+
+.pipeline li > button,
+.pipeline li > span {
+  line-height: 1.3;
+}
+
+/* Rótulo do passo fica dentro da própria coluna: quebra em duas linhas em vez de invadir o vizinho. */
+.pipeline li {
+  padding-right: var(--sp-2);
+}
+
+.pipeline li .estado-etapa,
+.pipeline li > button {
+  display: block;
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* ===== Fase 4 · Kanban com altura controlada (cada coluna rola sozinha) ===== */
+.quadro-area:has(#quadro:not(.modo-lista)) {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 56px);
+  min-height: 0;
+}
+
+.quadro-area:has(#quadro:not(.modo-lista)) > .visao-geral,
+.quadro-area:has(#quadro:not(.modo-lista)) > .barra,
+.quadro-area:has(#quadro:not(.modo-lista)) > .ferramentas,
+.quadro-area:has(#quadro:not(.modo-lista)) > .resultado {
+  flex-shrink: 0;
+}
+
+.quadro:not(.modo-lista) {
+  flex: 1;
+  min-height: 420px;
+  align-items: stretch;
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.quadro:not(.modo-lista) .coluna {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  padding: var(--sp-2) var(--sp-2) 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.quadro:not(.modo-lista) .coluna .cartoes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-1) var(--sp-1) var(--sp-2) 0;
+  overscroll-behavior: contain;
+}
+
+/* Cabeçalho limpo: sem caixa, dot + título + contador pílula. */
+.coluna h3 {
+  flex-shrink: 0;
+  margin: 0 0 var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border-radius: 0;
+  position: static;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  justify-content: flex-start;
+}
+
+.coluna h3 .contagem {
+  margin-left: auto;
+  padding: 0 var(--sp-2);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--texto) 6%, transparent);
+  color: var(--suave);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+/* ===== Fase 4 · Superfícies em dark mode: luz em vez de caixas ===== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fundo: #0b0c10;
+    --superficie: #15161c;
+    --superficie-2: #1b1c24;
+  }
+  .coluna {
+    background: color-mix(in srgb, var(--superficie) 40%, transparent);
+    border-color: color-mix(in srgb, var(--texto) 5%, transparent);
+  }
+  .cartao {
+    background: var(--superficie-2);
+    border-color: color-mix(in srgb, var(--texto) 8%, transparent);
+  }
+  .cartao:hover {
+    border-color: color-mix(in srgb, var(--texto) 16%, transparent);
+  }
+  .gaveta {
+    background: var(--superficie);
+    border-color: color-mix(in srgb, var(--texto) 10%, transparent);
+  }
+}
+
+/* Backdrop com desfoque para separar o modal do conteúdo de fundo. */
+.gaveta::backdrop {
+  background: rgb(0 0 0 / 65%);
+  backdrop-filter: blur(2px);
+}
+
+/* ===== Fase 4 · Densidade do card: chave, título (2 linhas), rodapé com 1 status + ações ===== */
+.cartao .cabeca {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--suave);
+  letter-spacing: 0;
+}
+
+.cartao .titulo {
+  font-weight: 500;
+  -webkit-line-clamp: 2;
+  color: var(--texto);
+}
+
+/* Ruído repetitivo removido do card do quadro: a dica longa e o contador de tentativas ficam só no detalhe. */
+.quadro:not(.modo-lista) .cartao .dica,
+.quadro:not(.modo-lista) .cartao .tentativas {
+  display: none;
+}
+
+.quadro:not(.modo-lista) .cartao .meta {
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Ações aparecem no hover/foco; em toque (sem hover) ficam sempre visíveis. */
+.quadro:not(.modo-lista) .cartao .mover {
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+
+.quadro:not(.modo-lista) .cartao:hover .mover,
+.quadro:not(.modo-lista) .cartao:focus-within .mover {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .quadro:not(.modo-lista) .cartao .mover {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quadro:not(.modo-lista) .cartao .mover {
+    transition: none;
+  }
+}
+
+/* Métricas: conteúdo alinhado à esquerda (herdava centralização do botão). */
+.metrica {
+  justify-items: start;
+  align-content: start;
+}
+
+.metrica > span,
+.metrica > strong,
+.metrica > small {
+  justify-self: start;
+  text-align: left;
+}
+
+/* A regra global de botão (inline-flex, centralizada) não vale para as métricas, que são grids alinhadas à esquerda. */
+.metrica {
+  display: grid;
+  justify-content: stretch;
+  align-items: start;
+  justify-items: start;
+}
+
+/* ===== Fase 14 · Harmonia: KPIs, toolbar, triggers, ícones, cards e alertas ===== */
+
+/* Utilitário: conteúdo só para leitores de tela (o rótulo do campo de busca continua acessível). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Números tabulares em contadores, KPIs, IDs e badges numéricas. */
+.metrica strong,
+.contagem,
+.coluna h3 .contagem,
+.cartao .cabeca,
+.cartao .chave,
+.tentativas,
+.resultado,
+.selo {
+  font-variant-numeric: tabular-nums;
+}
+
+/* KPIs compactos; seleção por anel índigo, sem a borda branca grossa. */
+.metrica {
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--texto) 8%, transparent);
+  box-shadow: none;
+}
+
+.metrica strong {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.metrica[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--destaque) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--destaque) 40%, transparent);
+  background: color-mix(in srgb, var(--destaque) 6%, var(--superficie));
+}
+
+.metrica[aria-pressed="true"] span,
+.metrica[aria-pressed="true"] strong {
+  color: var(--texto);
+}
+
+/* Toolbar em linha única: busca, contagem e modo. */
+.ferramentas {
+  align-items: center;
+  margin-top: var(--sp-4);
+}
+
+.ferramentas .busca {
+  flex: 1;
+  max-width: 420px;
+  gap: 0;
+}
+
+.ferramentas .busca input {
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.ferramentas .resultado {
+  margin: 0 auto 0 0;
+  white-space: nowrap;
+}
+
+.ferramentas .modos {
+  flex-shrink: 0;
+}
+
+.ferramentas .modos button {
+  min-height: 30px;
+  padding: var(--sp-1) var(--sp-3);
+}
+
+/* Triggers de seção: sem triângulo nativo, chevron SVG que gira ao abrir. */
+summary.disclosure {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 32px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-controle);
+  color: var(--suave);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: color 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+summary.disclosure::-webkit-details-marker {
+  display: none;
+}
+
+summary.disclosure:hover {
+  color: var(--texto);
+  background: color-mix(in srgb, var(--texto) 5%, transparent);
+}
+
+summary.disclosure .chevron {
+  flex-shrink: 0;
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+
+details[open] > summary.disclosure .chevron {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  summary.disclosure .chevron {
+    transition: none;
+  }
+}
+
+/* Ações da tarefa: o trigger do menu usa o mesmo padrão. */
+.detalhe-navegacao summary.disclosure {
+  color: var(--suave);
+}
+
+/* Reordenação: ícones SVG ghost, visíveis no hover do card. */
+.mover-botao {
+  min-width: 28px;
+  min-height: 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--suave);
+  border-radius: var(--r-controle);
+}
+
+.mover-botao:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--texto) 6%, transparent);
+  color: var(--texto);
+  border-color: transparent;
+}
+
+.mover-botao svg {
+  display: block;
+}
+
+@media (max-width: 600px) {
+  .mover-botao {
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Cards: sem repetir o aviso amarelo; a dica só aparece como texto secundário na lista. */
+.quadro:not(.modo-lista) .cartao .dica {
+  display: none;
+}
+
+.cartao.sua-vez .dica {
+  color: var(--suave);
+}
+
+/* Alerta de pausa/bloqueio: o botão de ação segue a cor do alerta, sem roxo. */
+.proximo button {
+  background: var(--alerta);
+  border-color: var(--alerta);
+  color: var(--superficie);
+}
+
+.proximo.bloqueado button {
+  background: var(--perigo);
+  border-color: var(--perigo);
+}
+
+@media (prefers-color-scheme: dark) {
+  .proximo button {
+    color: var(--fundo);
+  }
+}
+
+/* Stepper: rótulos legíveis, sem quebrar em três linhas nem colidir com a borda. */
+.pipeline li {
+  min-height: 64px;
+  padding-right: var(--sp-2);
+}
+
+.pipeline li > button,
+.pipeline li > span {
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.pipeline li .estado-etapa {
+  white-space: normal;
+  word-break: normal;
+}
+
+/* Toolbar: itens centralizados no mesmo eixo e separados do quadro. */
+.ferramentas {
+  margin-bottom: var(--sp-4);
+}
+
+.ferramentas > * {
+  align-self: center;
+}
+
+/* Rótulo do passo em uma linha no desktop; quebra só se a coluna for estreita. */
+.pipeline li > button,
+.pipeline li > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+@media (max-width: 600px) {
+  .ferramentas .modos button {
+    min-height: 44px;
+  }
+  summary.disclosure {
+    min-height: 44px;
   }
 }
