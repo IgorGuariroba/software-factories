@@ -526,6 +526,10 @@ export const API_SCHEMA = {
             description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
             enum: ["triagem", "assumir", "veto", "spec", "implementacao", "review", "entrega", null],
           },
+          resumeAllowed: {
+            type: "boolean",
+            description: "Retomada disponível conforme o mesmo guardrail do comando; herdado pelo detalhe",
+          },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
           specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
@@ -626,6 +630,8 @@ export const API_SCHEMA = {
               },
               tickets: {
                 type: "array",
+                description:
+                  "Tickets originais aprovados, seguidos dos tickets de correção de review, na ordem durável",
                 items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },
               },
               implementation: {

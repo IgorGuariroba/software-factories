@@ -84,6 +84,17 @@ it.each([
     expect(detail.implementation.commits.some((c) => c.ticket === 2)).toBe(false);
     expect(detail.implementation.verifiedTickets).toEqual([expect.objectContaining({ ticket: 2 })]);
     expect(detail.tickets).toHaveLength(3);
+    const schema = await api<{
+      components: {
+        schemas: {
+          Task: { properties: { resumeAllowed: { type: string } } };
+          TaskDetail: { allOf: { $ref?: string; properties?: { tickets: { description: string } } }[] };
+        };
+      };
+    }>(factory, "GET", "/openapi.json");
+    expect(schema.components.schemas.Task.properties.resumeAllowed.type).toBe("boolean");
+    expect(schema.components.schemas.TaskDetail.allOf[0].$ref).toBe("#/components/schemas/Task");
+    expect(schema.components.schemas.TaskDetail.allOf[1].properties?.tickets.description).toContain("correção");
     expect(detail.events.some((e) => e.message?.includes("critério já atendido"))).toBe(true);
     expect(await repo.branchLog("feature/PROJ-1-somar")).toHaveLength(4);
     factory = await factory.restart();
