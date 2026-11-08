@@ -267,7 +267,7 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
     expect(await web.branches()).toEqual(["main"]);
   });
 
-  it("sem repositório mapeado para o card, a Tarefa fica bloqueada e avisa, sem adivinhar", async () => {
+  it("sem usuário autorizado, bloqueia a pergunta, não a resolução do repositório", async () => {
     const repo = await createRemoteRepo(root, "app");
     factory = await startTestFactory({
       cards: [card({ key: "OUTRO-9", title: "Card de outro sistema" })],
@@ -277,7 +277,7 @@ describe("implementação com TDD numa branch da fábrica", { timeout: SLOW }, (
     await poll(factory);
     await waitForStatus(factory, "OUTRO-9", "bloqueada", DONE_WITHIN);
 
-    expect(await events(factory)).toContainEqual(
+    expect(await events(factory)).not.toContainEqual(
       expect.objectContaining({ type: "blocked", target: "OUTRO-9", action: "resolver-repositorio" }),
     );
     expect(await repo.branches()).toEqual(["main"]);

@@ -53,6 +53,7 @@ interface Detalhe {
   status: string;
   questions: Pergunta[];
   implementation: { branch: string } | null;
+  writes: { type: string }[];
 }
 
 async function iniciar(opcoes: { unico?: boolean; semUsuario?: boolean; inicio?: string } = {}) {
@@ -176,6 +177,29 @@ async function conferirEncaminhamento(f: TestFactory, pergunta: Pergunta) {
 }
 
 describe("card sem repositório identificável usa o fluxo de pergunta técnica", { timeout: 30_000 }, () => {
+  it("falta de repositório gera pergunta, não evento ou escrita barrada", async () => {
+    const { f, telegram, pergunta } = await pendente();
+    expect(pergunta.text).toMatch(/n[aã]o.*identificar.*reposit[oó]rio|nenhum.*reposit[oó]rio/iu);
+
+    const historico = await events(f);
+    expect(historico.filter((evento) => evento.type === "blocked" && evento.target === "PROJ-1")).toEqual([]);
+    const detalhe = await api<Detalhe>(f, "GET", BASE);
+    expect(detalhe.status).toBe("aguardando-humano");
+    expect(detalhe.questions).toEqual([expect.objectContaining({ n: 1, origin: "tecnica", text: pergunta.text })]);
+    expect(detalhe.writes.filter((escrita) => escrita.type === "blocked")).toEqual([]);
+
+    const mensagens = telegram.texts();
+    expect(mensagens.filter((texto) => /guardrail|bloquead/iu.test(texto))).toEqual([]);
+    const mensagem = mensagens.find((texto) => texto.includes(pergunta.text));
+    expect(mensagem).toContain("Pergunta 1 sobre PROJ-1 (exemplo)");
+    expect(mensagem).toContain("/responder exemplo/PROJ-1 1");
+
+    await poll(f);
+    await settle();
+    expect((await events(f)).filter((evento) => evento.type === "blocked" && evento.target === "PROJ-1")).toEqual([]);
+    expect((await api<Detalhe>(f, "GET", BASE)).writes.filter((escrita) => escrita.type === "blocked")).toEqual([]);
+  });
+
   it.each([false, true])(
     "disponibiliza na web e Telegram sem adivinhar, mesmo com candidato único: %s",
     async (unico) => {
