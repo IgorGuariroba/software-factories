@@ -1,0 +1,94 @@
+import { afterEach, expect, it } from "vitest";
+import { DEFAULT_TEST_FILES } from "../src/config.js";
+import { deliverReview, FakeModel, scriptImplementer, write } from "./fakes/fake-model.js";
+import { createRemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
+import { api, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
+
+let factory: TestFactory | undefined;
+let root: string;
+afterEach(async () => {
+  await factory?.close();
+  if (root) await removeTempRoot(root);
+});
+
+it.each([
+  { verdict: "aprovado", status: "concluida" },
+  { verdict: "corrigir", status: "bloqueada" },
+] as const)(
+  "reavalia correção já atendida sem RED artificial: review $verdict leva a $status",
+  async ({ verdict, status }) => {
+    root = await tempRoot();
+    const repo = await createRemoteRepo(root, "app");
+    const model = new FakeModel();
+    scriptImplementer(
+      model,
+      {
+        spec: "Somar números e rejeitar texto.",
+        tickets: [{ titulo: "Somar", aceite: "2 + 3 = 5 e texto é rejeitado" }],
+      },
+      [
+        write({
+          "test/soma.test.mjs":
+            'import {test} from "node:test"; import assert from "node:assert/strict"; import {soma} from "../src/soma.mjs"; test("soma",()=>assert.equal(soma(2,3),5));',
+        }),
+        write({ "src/soma.mjs": "export const soma = (a,b) => a+b;" }),
+        write({
+          "test/texto.test.mjs":
+            'import {test} from "node:test"; import assert from "node:assert/strict"; import {soma} from "../src/soma.mjs"; test("texto",()=>assert.throws(()=>soma("2",3),TypeError));',
+        }),
+        write({
+          "src/soma.mjs":
+            'export const soma = (a,b) => { if(typeof a!=="number" || typeof b!=="number") throw new TypeError(); return a+b; };',
+        }),
+      ],
+    );
+    model.respondReview = () =>
+      model.reviewCalls.length === 1
+        ? deliverReview("corrigir", "Rejeitar texto e manter a suíte verde", [
+            { titulo: "Rejeitar texto", aceite: "soma com texto lança TypeError" },
+            { titulo: "Manter suíte verde", aceite: "A suíte continua passando após a correção" },
+          ])
+        : deliverReview(
+            verdict,
+            verdict === "aprovado"
+              ? "Todos os critérios, incluindo as correções, já estão atendidos neste HEAD."
+              : "Evidência insuficiente; critério pendente.",
+            verdict === "corrigir" ? [{ titulo: "Manter suíte verde", aceite: "Critério pendente" }] : [],
+          );
+    factory = await startTestFactory({
+      cards: [{ key: "PROJ-1", title: "Somar", status: "A Fazer", assignee: USER }],
+      model,
+      config: {
+        repositories: [
+          {
+            path: repo.user,
+            prefix: "PROJ",
+            test: { command: [process.execPath, "--test"], timeoutSeconds: 10, files: DEFAULT_TEST_FILES },
+          },
+        ],
+      },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", status, 5000);
+    const detail = await api<{
+      implementation: { commits: { ticket: number }[]; verifiedTickets: { ticket: number; sha: string }[] };
+      tickets: { titulo: string }[];
+      events: { message?: string }[];
+    }>(factory, "GET", "/tasks/exemplo/PROJ-1");
+    expect(detail.implementation.commits).toHaveLength(4);
+    if (verdict === "corrigir") {
+      expect(detail.implementation.verifiedTickets).toEqual([]);
+      expect(model.reviewCalls).toHaveLength(2);
+      return;
+    }
+    expect(detail.implementation.commits.some((c) => c.ticket === 2)).toBe(false);
+    expect(detail.implementation.verifiedTickets).toEqual([expect.objectContaining({ ticket: 2 })]);
+    expect(detail.tickets).toHaveLength(3);
+    expect(detail.events.some((e) => e.message?.includes("critério já atendido"))).toBe(true);
+    expect(await repo.branchLog("feature/PROJ-1-somar")).toHaveLength(4);
+    factory = await factory.restart();
+    const restored = await api<typeof detail>(factory, "GET", "/tasks/exemplo/PROJ-1");
+    expect(restored.implementation.verifiedTickets).toEqual(detail.implementation.verifiedTickets);
+  },
+  15000,
+);

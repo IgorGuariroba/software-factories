@@ -211,6 +211,9 @@ export async function runImplementation(opts: {
   model: ModelRef;
   deps: ImplementationDeps;
   tools: ImplementationExtension;
+  /** Correções podem ficar satisfeitas por outro reparo; os tickets originais nunca usam esta saída. */
+  originalTicketCount?: number;
+  reassessCorrections?: (head: string, diagnostic: string) => Promise<boolean>;
 }): Promise<void> {
   const { harness, runtime, config, writer, card, delivery, deps } = opts;
   const { context } = runtime;
@@ -243,7 +246,11 @@ export async function runImplementation(opts: {
   await reconcile();
   // Retomada: o que ficou fora do padrão (ex.: testes de antes do formatador) entra antes do próximo passo.
   await applyFormatter();
-  const done = () => new Set(progress.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket));
+  const done = () =>
+    new Set([
+      ...progress.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket),
+      ...(progress.verifiedTickets ?? []).map((c) => c.ticket),
+    ]);
   await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
 
   await checkBaseline();
@@ -252,7 +259,12 @@ export async function runImplementation(opts: {
   if (!conversation) throw new Error("conversa da etapa de implementação não encontrada");
 
   for (const step of stepsOf(delivery)) {
-    if (progress.commits.some((c) => c.ticket === step.ticket && c.phase === step.phase)) continue;
+    if (
+      progress.commits.some((c) => c.ticket === step.ticket && c.phase === step.phase) ||
+      progress.verifiedTickets?.some((c) => c.ticket === step.ticket)
+    )
+      continue;
+    if (step.phase === "teste" && (await acceptSatisfiedCorrections())) continue;
     for (;;) {
       // Uma retomada pode ter aplicado formatação que resolveu o RED já registrado.
       // Só reconhece commits mecânicos, sem alterações pendentes ou mudança efetiva nos testes.
@@ -396,7 +408,9 @@ export async function runImplementation(opts: {
       return;
     }
     const next = stepsOf(delivery).find(
-      (s) => !progress.commits.some((c) => c.ticket === s.ticket && c.phase === s.phase),
+      (s) =>
+        !progress.commits.some((c) => c.ticket === s.ticket && c.phase === s.phase) &&
+        !progress.verifiedTickets?.some((c) => c.ticket === s.ticket),
     );
     if (parent !== progress.head || !next)
       throw new StageBlocked(`o histórico do clone ${worktree} divergiu do registrado (HEAD ${head})`);
@@ -407,6 +421,41 @@ export async function runImplementation(opts: {
     progress.rejections = 0;
     progress.feedback = null;
     await save(progress);
+  }
+
+  /** Não inventa RED/GREEN: registra critérios já atendidos, provados por suíte e review de outra família. */
+  async function acceptSatisfiedCorrections(): Promise<boolean> {
+    const originalCount = opts.originalTicketCount;
+    if (!opts.reassessCorrections || originalCount === undefined) return false;
+    const missing = delivery.tickets.map((_, ticket) => ticket).filter((ticket) => !done().has(ticket));
+    if (!missing.length || missing.some((ticket) => ticket < originalCount)) return false;
+    // Um RED pendente continua exigindo implementação; trabalho não aceito não entra na evidência.
+    if (
+      progress.commits.some((c) => c.phase === "teste" && missing.includes(c.ticket)) ||
+      (await changedPaths(worktree)).length > 0
+    )
+      return false;
+    const before = (await git(worktree, ["rev-parse", "HEAD"])).trim();
+    if (before !== progress.head) throw new StageBlocked("HEAD divergiu antes da reavaliação de correções");
+    const run = await runSuite();
+    if (run.timedOut || run.spawnError || run.exitCode !== 0) return false;
+    const diagnostic = redactSecrets(testDiagnostic(describeRun(run)));
+    if (!(await opts.reassessCorrections(before, diagnostic))) return false;
+    if ((await git(worktree, ["rev-parse", "HEAD"])).trim() !== before || (await changedPaths(worktree)).length)
+      throw new StageBlocked("clone mudou durante a reavaliação de correções; preserve as alterações");
+    progress.verifiedTickets ??= [];
+    for (const ticket of missing) progress.verifiedTickets.push({ ticket, sha: before, diagnostic });
+    progress.rejections = 0;
+    progress.feedback = null;
+    await save(progress);
+    await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
+    await deps.events.append({
+      type: "progress",
+      project: config.name,
+      target: card.key,
+      message: `Correções ${missing.map((ticket) => ticket + 1).join(", ")}: critério já atendido no HEAD ${before.slice(0, 8)}; suíte GREEN e review independente. Sem RED artificial ou commit vazio.`,
+    });
+    return true;
   }
 
   async function acceptFormattedPhase(ticket: number): Promise<boolean> {

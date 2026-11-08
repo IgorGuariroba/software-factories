@@ -28,6 +28,7 @@ import {
   saveRetroSettings,
   vetoTask,
 } from "./api.js";
+import { renderImplementation } from "./implementation.js";
 import {
   actionsFor,
   actionTab,
@@ -36,7 +37,6 @@ import {
   canAnswerQuestion,
   cardHint,
   detailStatusLabel,
-  formatCommit,
   isTerminal,
   moveTask,
   nextAction,
@@ -50,7 +50,6 @@ import {
   taskByRef,
   writeSituation,
 } from "./view.js";
-
 import { priorityTasks, visibleTasks, workspaceCounts } from "./workspace.js";
 
 const $ = (id) => document.getElementById(id);
@@ -471,6 +470,7 @@ function renderDaemon() {
 
 let openedTask = null;
 function renderDetail(task) {
+  const opening = openedTask !== task.id || $("detalhe").hidden;
   const focused = document.activeElement;
   const editing =
     focused?.matches("textarea") && $("detalhe").contains(focused)
@@ -632,150 +632,7 @@ function renderDetail(task) {
     ...task.tickets.map((t) => el("li", {}, el("strong", { text: t.titulo }), `: ${t.aceite}`)),
   );
 
-  const impl = task.implementation;
-  const implParts = [];
-  const implementationActive = task.stage === "implementacao" && task.status === "ativa";
-  implParts.push(
-    el(
-      "div",
-      { className: "bloco-detalhe" },
-      el("h3", { text: implementationActive ? "Implementação em andamento" : "Visão da implementação" }),
-      el("p", {
-        className: "vazio",
-        text: implementationActive
-          ? "A fábrica está trabalhando. Os registros abaixo são atualizados ao vivo conforme o progresso é salvo."
-          : `${detailStatusLabel(task)} · ${stageLabel(task.stage)}`,
-      }),
-    ),
-  );
-  if (!impl)
-    implParts.push(
-      el("p", {
-        className: "vazio",
-        text: implementationActive
-          ? "Aguardando os primeiros registros de branch e commits. Isso não significa que a execução está parada."
-          : "Nenhum registro de implementação disponível para esta tarefa.",
-      }),
-    );
-  else {
-    const completedTickets = task.tickets.filter((_, index) =>
-      impl.commits.some((commit) => commit.ticket === index && commit.phase === "implementacao"),
-    ).length;
-    if (task.tickets.length)
-      implParts.push(
-        el(
-          "div",
-          { className: "bloco-detalhe" },
-          el("strong", { text: `${completedTickets} de ${task.tickets.length} tickets com implementação registrada` }),
-          el("progress", {
-            attrs: {
-              value: String(completedTickets),
-              max: String(task.tickets.length),
-              "aria-label": "Tickets com commit de implementação",
-            },
-          }),
-          el("p", {
-            className: "vazio",
-            text: "Baseado nos commits registrados. Não representa aprovação de review, CI ou merge.",
-          }),
-        ),
-      );
-    implParts.push(
-      el(
-        "p",
-        {},
-        "Branch ",
-        el("code", { text: impl.branch }),
-        ` · ${impl.commits.length} commit(s) · ${impl.pushed ? "enviada ao remoto" : "ainda não enviada"}`,
-      ),
-    );
-    task.tickets.forEach((ticket, i) => {
-      const commits = impl.commits.filter((c) => c.ticket === i);
-      const phase = (name) => commits.find((c) => c.phase === name);
-      const done = phase("implementacao")
-        ? "GREEN · implementação registrada"
-        : phase("teste")
-          ? "RED · teste registrado"
-          : "Sem commits registrados";
-      implParts.push(
-        el(
-          "div",
-          { className: "ticket" },
-          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo} — ${done}` }),
-          el("p", { className: "vazio", text: ticket.aceite }),
-          ...commits.map((c) =>
-            el(
-              "p",
-              {},
-              el("code", { text: formatCommit(c) }),
-              ...(impl.repairs?.some((repair) => repair.sha === c.sha)
-                ? [el("span", { className: "selo", text: "Reparo humano validado" })]
-                : []),
-            ),
-          ),
-        ),
-      );
-    });
-  }
-  if (!impl && task.tickets.length)
-    implParts.push(
-      el("h3", { text: "Tickets planejados" }),
-      ...task.tickets.map((ticket, i) =>
-        el(
-          "div",
-          { className: "ticket" },
-          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo}` }),
-          el("p", { className: "vazio", text: "Sem commits registrados" }),
-          el("p", { text: ticket.aceite }),
-        ),
-      ),
-    );
-  const implementationEvents = task.events
-    .filter((event) => event.type === "progress" || event.type === "error")
-    .slice(-8)
-    .reverse();
-  implParts.push(
-    el("h3", { text: "Registros recentes de execução" }),
-    ...(implementationEvents.length
-      ? implementationEvents.map((event) =>
-          el(
-            "div",
-            { className: "ticket" },
-            el("span", { className: "quando", text: formatTime(event.at) }),
-            el("p", { text: event.message }),
-          ),
-        )
-      : [
-          el("p", {
-            className: "vazio",
-            text: "Ainda não há eventos de progresso. Esta visão mostra registros persistidos, não o terminal ou o raciocínio interno do modelo.",
-          }),
-        ]),
-  );
-  if (task.review)
-    implParts.push(
-      el("h3", { text: "Review" }),
-      el("p", {}, el("strong", { text: task.review.status }), ` · HEAD ${task.review.head.slice(0, 8)}`),
-      el("p", { text: task.review.summary }),
-    );
-  if (task.publication)
-    implParts.push(
-      el("h3", { text: "PR/MR" }),
-      el(
-        "p",
-        {},
-        `${task.publication.status} `,
-        ...(task.publication.url
-          ? [
-              el("a", {
-                text: task.publication.url,
-                attrs: { href: task.publication.url, target: "_blank", rel: "noopener" },
-              }),
-            ]
-          : []),
-      ),
-    );
-  $("detalhe-implementacao").replaceChildren(...implParts);
+  renderImplementation($("detalhe-implementacao"), task, el);
 
   $("detalhe-retros").replaceChildren(
     el("h3", { text: "Sugestões opcionais da retrô" }),
@@ -863,6 +720,7 @@ function renderDetail(task) {
     tab.textContent = n ? `${base} (${n})` : base;
   }
   $("detalhe").hidden = false;
+  if (opening && window.matchMedia("(max-width: 960px)").matches) window.scrollTo({ top: 0, behavior: "instant" });
   $("detalhe-vazio").hidden = true;
   if (editing) {
     const field = [...document.querySelectorAll("#detalhe textarea")].find(

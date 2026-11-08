@@ -638,6 +638,19 @@ export const API_SCHEMA = {
                     description: "criada pela fábrica (aceita force-push) ou adotada do remoto (só push normal)",
                   },
                   commits: { type: "array", items: { type: "object" } },
+                  verifiedTickets: {
+                    type: "array",
+                    description:
+                      "Correções já atendidas, comprovadas por suíte GREEN no HEAD limpo e review independente; não são commits TDD",
+                    items: {
+                      type: "object",
+                      properties: {
+                        ticket: { type: "integer" },
+                        sha: { type: "string" },
+                        diagnostic: { type: "string" },
+                      },
+                    },
+                  },
                   pushed: { type: "boolean" },
                 },
               },

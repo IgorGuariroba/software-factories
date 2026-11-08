@@ -75,6 +75,12 @@ Na etapa SPEC, o grill pode levar uma pergunta de negócio ao PO pela ferramenta
 - Dry-run: pergunta e lembrete viram só eventos `write` (`action: "mention"`); a leitura das respostas continua real.
 - Nos testes, a fábrica roda num relógio falso (`test/fakes/fake-clock.ts`, opção `clock` de `startTestFactory`), que move o relógio do motor durável e do agendador.
 
+### Correções de review já atendidas
+
+Uma correção pode ficar atendida por outro reparo da mesma tarefa (por exemplo, “manter a suíte verde” após corrigir o lint). Nesses casos, não crie teste que chama a suíte inteira, script auxiliar sem função no produto, RED artificial ou commit vazio só para satisfazer o protocolo.
+
+A fábrica pode reavaliar somente os tickets de correção, nunca os tickets originais, quando o HEAD mudou desde o parecer que pediu correções. Exige clone limpo, nenhum RED pendente, suíte configurada passando e novo review de outra família sobre a SPEC e todas as correções. Aprovação registra `implementation.verifiedTickets` com HEAD e diagnóstico, separado dos commits TDD; reprovação mantém o ciclo TDD normal, sem duplicar rodadas ou tickets. Alterações pendentes impedem a reavaliação e são preservadas. A entrega ainda exige review do HEAD final, checks e merge autorizado.
+
 ### Web local de gestão
 
 O daemon serve uma página de gestão em `GET /` (abra `http://127.0.0.1:7420/` ou `http://localhost:7420/`), com os assets sob `/web/`. Ela é HTML, CSS e JS puro em módulos (`web/`), sem build nem framework, e só fala com o daemon pela API documentada em `/openapi.json` (`web/api.js` é o único ponto com `fetch`/`EventSource`).

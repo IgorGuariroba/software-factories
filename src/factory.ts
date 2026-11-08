@@ -485,6 +485,23 @@ export async function startFactory(opts: {
           model: project.config.roles.implementer ?? project.config.roles.spec,
           deps: implementationDeps,
           tools: implementationTools,
+          originalTicketCount: current.delivery.tickets.length,
+          reassessCorrections: async (head, diagnostic) => {
+            const latest = (await readState()).tasks.find((t) => t.id === input.id);
+            // Não pede ao reviewer para contradizer o mesmo parecer sobre o mesmo código.
+            if (!latest?.review || (latest.review.head === head && latest.review.status !== "aprovado")) return false;
+            return (
+              (await runReview({
+                harness,
+                runtime,
+                taskId: input.id,
+                config: project.config,
+                worktreesRoot: implementationDeps.worktreesRoot,
+                tools: reviewTools,
+                verification: { head, diagnostic },
+              })) === "aprovado"
+            );
+          },
         });
       }
 
