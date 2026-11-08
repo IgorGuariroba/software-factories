@@ -163,7 +163,7 @@ describe("pipeline e atividade na página da Tarefa", () => {
   it("diz em uma frase o que a Tarefa precisa de você agora", async () => {
     const { nextAction } = await import("../web/view.js");
     expect(nextAction({ ...base, status: "pausada", retros: [{ stage: "implementacao", status: "concluida" }] })).toBe(
-      "Revise a Retrô da implementação e retome a Tarefa.",
+      "Tarefa pausada após a retrô. Retome para continuar; as sugestões da retrô são opcionais e não impedem a retomada.",
     );
     expect(nextAction({ ...base, status: "aguardando-humano", specReview: "draft" })).toBe(
       "Aprove a SPEC e os Tickets para continuar.",

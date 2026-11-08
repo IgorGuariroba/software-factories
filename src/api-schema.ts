@@ -1,3 +1,5 @@
+import { RETRO_REPO_PATTERN } from "./retro-settings.js";
+
 /** Schema OpenAPI da API local da fábrica, servido em `GET /openapi.json`. */
 const taskPath = (summary: string) => ({
   post: {
@@ -410,6 +412,33 @@ export const API_SCHEMA = {
     "/tasks/{project}/{key}/resume": taskPath(
       "Retoma tarefa pausada ou revalida baseline bloqueado antes do primeiro commit",
     ),
+    "/tasks/{project}/{key}/repair": {
+      get: {
+        summary: "Prévia exata dos reparos locais de tarefa bloqueada por TDD",
+        parameters: taskPath("").post.parameters,
+        responses: ok,
+      },
+      post: {
+        summary: "Aprova reparos humanos por revisão, valida a suíte e integra o checkpoint sem retomar ou publicar",
+        parameters: taskPath("").post.parameters,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["revision", "approveTestChanges"],
+                properties: {
+                  revision: { type: "string", pattern: "^[0-9a-f]{64}$" },
+                  approveTestChanges: { type: "boolean", enum: [true] },
+                },
+              },
+            },
+          },
+        },
+        responses: ok,
+      },
+    },
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
     "/tasks/{project}/{key}/veto": {
       post: {
@@ -422,6 +451,30 @@ export const API_SCHEMA = {
           "409": {
             description: "A tarefa não está aguardando veto (o prazo já passou ou ela não passa por veto); sem efeito",
           },
+        },
+      },
+    },
+    "/settings/retro": {
+      get: { summary: "Repositório público das retrôs e disponibilidade do adaptador", responses: ok },
+      post: {
+        summary: "Salva e aplica o repositório público global, sem publicar ou reiniciar",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repo"],
+                properties: { repo: { type: "string", maxLength: 200, pattern: RETRO_REPO_PATTERN } },
+              },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "400": { description: "Repositório inválido; use dono/nome" },
+          "409": { description: "Adaptador indisponível ou publicação/configuração em andamento" },
+          "415": { description: "Content-Type deve ser application/json" },
         },
       },
     },

@@ -27,6 +27,8 @@ export const getTasks = () => api("GET", "/tasks");
 export const getTask = (project, key) => api("GET", `/tasks/${seg(project)}/${seg(key)}`);
 export const getQueue = () => api("GET", "/queue");
 export const getDaemon = () => api("GET", "/daemon");
+export const getRetroSettings = () => api("GET", "/settings/retro");
+export const saveRetroSettings = (repo) => api("POST", "/settings/retro", { repo });
 export const pollSource = () => api("POST", "/poll");
 export const pauseDaemon = () => api("POST", "/daemon/pause");
 export const resumeDaemon = () => api("POST", "/daemon/resume");

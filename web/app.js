@@ -14,6 +14,7 @@ import {
   getQueue,
   getReminderPreview,
   getRetroPreview,
+  getRetroSettings,
   getSpecPreview,
   getTask,
   getTasks,
@@ -24,12 +25,15 @@ import {
   reorderTasks,
   resumeDaemon,
   resumeTask,
+  saveRetroSettings,
   vetoTask,
 } from "./api.js";
 import {
   actionsFor,
+  actionTab,
   activity,
   boardColumns,
+  canAnswerQuestion,
   cardHint,
   detailStatusLabel,
   formatCommit,
@@ -46,6 +50,8 @@ import {
   taskByRef,
   writeSituation,
 } from "./view.js";
+
+import { priorityTasks, visibleTasks, workspaceCounts } from "./workspace.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,6 +74,8 @@ function el(tag, opts = {}, ...children) {
 const formatTime = (iso) => (iso ? new Date(iso).toLocaleString("pt-BR") : "");
 
 let tasks = [];
+let taskFilter = "todas";
+let taskView = "lista";
 let daemonPaused = false;
 /** Tarefa aberta no detalhe, pelo hash `#/tarefa/<projeto>/<card>`. */
 let selected = null;
@@ -116,8 +124,12 @@ function answerForm(task, question) {
     if (!answer) return;
     send.disabled = true;
     run(async () => {
-      await answerQuestion(task.project, task.key, question.n, answer);
-      answerDrafts.delete(id);
+      try {
+        await answerQuestion(task.project, task.key, question.n, answer);
+        answerDrafts.delete(id);
+      } finally {
+        send.disabled = false;
+      }
     });
   });
   return form;
@@ -293,7 +305,27 @@ function reviewRetroButton(task, retro, proposal) {
         clearError();
       } catch (err) {
         button.disabled = false;
-        showError(err);
+        const message = err instanceof Error ? err.message : String(err);
+        let notice = container.querySelector('[role="status"]');
+        if (!notice) {
+          notice = el("p", { attrs: { role: "status" } });
+          container.append(notice);
+        }
+        notice.textContent =
+          message === "repositório da fábrica não configurado"
+            ? "Publicação opcional indisponível: escolha o repositório em Configurar publicações. Isso não impede retomar a tarefa."
+            : `Não foi possível revisar esta publicação opcional: ${message}`;
+        if (
+          message === "repositório da fábrica não configurado" &&
+          !container.querySelector("[data-configurar-retros]")
+        )
+          container.append(
+            el("button", {
+              text: "Configurar repositório",
+              attrs: { type: "button", "data-configurar-retros": "" },
+              onClick: openRetroSettings,
+            }),
+          );
       }
     },
   });
@@ -379,7 +411,17 @@ function taskCard(task) {
 }
 
 function renderTasks() {
-  const columns = boardColumns(tasks);
+  const visible = visibleTasks(tasks, taskFilter, $("busca-tarefas").value);
+  const counts = workspaceCounts(tasks);
+  for (const [key, count] of Object.entries(counts)) $(`total-${key}`).textContent = String(count);
+  for (const button of document.querySelectorAll("[data-filtro]"))
+    button.setAttribute("aria-pressed", String(button.dataset.filtro === taskFilter));
+  for (const button of document.querySelectorAll("[data-modo]"))
+    button.setAttribute("aria-pressed", String(button.dataset.modo === taskView));
+  $("resultado-contagem").textContent =
+    `${visible.length} de ${tasks.length} tarefas · ${taskView === "lista" ? "Pendências primeiro" : "Organizadas por etapa"}`;
+  $("quadro").classList.toggle("modo-lista", taskView === "lista");
+  const columns = boardColumns(visible);
   $("quadro").replaceChildren(
     ...columns.map((c) =>
       el(
@@ -392,13 +434,22 @@ function renderTasks() {
           c.label,
           el("span", { className: "contagem", text: String(c.tasks.length) }),
         ),
+        ...(c.tasks.length === 0 ? [el("p", { className: "coluna-vazia", text: "Nenhuma tarefa nesta etapa." })] : []),
         el("ol", { className: "cartoes" }, ...c.tasks.map(taskCard)),
       ),
     ),
   );
+  if (taskView === "lista")
+    $("quadro").replaceChildren(
+      el(
+        "ol",
+        { className: "cartoes lista-tarefas", attrs: { "aria-label": "Lista de tarefas" } },
+        ...priorityTasks(visible).map(taskCard),
+      ),
+    );
   const open = tasks.filter((t) => !isTerminal(t)).length;
   $("fila-contagem").textContent = `(${open} em andamento)`;
-  $("fila-vazia").hidden = tasks.length > 0;
+  $("fila-vazia").hidden = visible.length > 0;
 }
 
 function renderDaemon() {
@@ -410,7 +461,19 @@ function renderDaemon() {
   toggle.disabled = false;
 }
 
+let openedTask = null;
 function renderDetail(task) {
+  const focused = document.activeElement;
+  const editing =
+    focused?.matches("textarea") && $("detalhe").contains(focused)
+      ? { label: focused.getAttribute("aria-label"), start: focused.selectionStart, end: focused.selectionEnd }
+      : null;
+  if (openedTask !== task.id) {
+    openedTask = task.id;
+    $("fluxo-tarefa").open = false;
+    $("menu-acoes-tarefa").open = false;
+    showTab(actionTab(task));
+  }
   $("titulo-detalhe").textContent = task.title;
   $("detalhe-ref").textContent = `${task.project} · ${task.key}`;
   const facts = [stageLabel(task.stage), `${task.attempts} tentativa(s)`];
@@ -423,7 +486,25 @@ function renderDetail(task) {
   const next = nextAction(task);
   const proximo = $("detalhe-proximo");
   proximo.hidden = next === null;
-  proximo.textContent = next ?? "";
+  proximo.replaceChildren(
+    next ?? "",
+    ...(next
+      ? [
+          el("button", {
+            text: task.status === "pausada" ? "Retomar tarefa" : "Ver próxima ação",
+            attrs: { type: "button" },
+            onClick: () => {
+              if (task.status === "pausada") {
+                run(() => resumeTask(task.project, task.key));
+                return;
+              }
+              showTab(actionTab(task));
+              document.querySelector(`[data-painel="${actionTab(task)}"]`)?.scrollIntoView({ block: "nearest" });
+            },
+          }),
+        ]
+      : []),
+  );
   proximo.className = `proximo${task.status === "bloqueada" ? " bloqueado" : ""}`;
   const STATE = {
     feito: "concluída",
@@ -432,17 +513,40 @@ function renderDetail(task) {
     bloqueado: "bloqueada",
     pendente: "",
   };
+  const steps = pipelineSteps(task);
+  const currentStep = steps.find((s) => ["atual", "espera", "bloqueado"].includes(s.state));
+  $("etapa-atual").textContent = currentStep
+    ? `${steps.indexOf(currentStep) + 1} de ${steps.length} · ${currentStep.label}`
+    : task.status === "concluida"
+      ? "Fluxo concluído"
+      : stageLabel(task.stage);
   $("detalhe-pipeline").replaceChildren(
-    ...pipelineSteps(task).map((s) =>
+    ...steps.map((s) =>
       el(
         "li",
         { className: s.state, attrs: s.state === "atual" || s.state === "espera" ? { "aria-current": "step" } : {} },
-        s.label,
+        el("button", {
+          text: s.label,
+          attrs: { type: "button" },
+          onClick: () =>
+            showTab(
+              {
+                triagem: "spec",
+                spec: "spec",
+                implementacao: "implementacao",
+                review: "implementacao",
+                entrega: "implementacao",
+                merge: "implementacao",
+              }[s.key],
+            ),
+        }),
         el("span", { className: "estado-etapa", text: STATE[s.state] }),
       ),
     ),
   );
-  $("detalhe-acoes").replaceChildren(...actionButtons(task));
+  const taskActions = actionButtons(task);
+  $("detalhe-acoes").replaceChildren(...taskActions);
+  $("menu-acoes-tarefa").hidden = taskActions.length === 0;
 
   $("detalhe-perguntas").replaceChildren(
     ...(task.questions.length === 0
@@ -464,8 +568,14 @@ function renderDetail(task) {
                       : `Resposta: ${q.answer}`,
             }),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
-            ...(q.answer === null && q.publication !== "draft" && q.publication !== "sending"
-              ? [answerForm(task, q)]
+            ...(canAnswerQuestion(task, q)
+              ? [
+                  el("p", {
+                    className: "vazio",
+                    text: "Responda por aqui para continuar. A resposta fica na fábrica, sem enviar mensagem aos canais externos.",
+                  }),
+                  answerForm(task, q),
+                ]
               : []),
             ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),
             ...(q.reminder === "sending"
@@ -478,11 +588,26 @@ function renderDetail(task) {
         )),
   );
 
-  $("detalhe-spec").textContent = task.spec ?? "Ainda não entregue.";
+  $("detalhe-spec").textContent =
+    task.spec ?? "A SPEC ainda não foi preparada. Quando estiver disponível, você poderá consultá-la nesta seção.";
+  $("detalhe-spec").classList.toggle("conteudo-vazio", !task.spec);
   $("detalhe-triagem").replaceChildren(
     ...(task.triage
       ? [
-          el("p", { text: `${task.triage.verdict}: ${task.triage.reason}` }),
+          el("p", { className: "triagem-resultado", text: `Resultado: ${task.triage.verdict}` }),
+          el("p", {
+            className: "vazio",
+            text:
+              task.triage.review === "draft"
+                ? "A fábrica aguarda sua decisão antes de continuar."
+                : "Consulte abaixo a justificativa registrada pela fábrica.",
+          }),
+          el(
+            "details",
+            { className: "triagem-tecnica" },
+            el("summary", { text: "Justificativa e dados técnicos" }),
+            el("p", { text: task.triage.reason }),
+          ),
           ...(task.triage.review === "draft" ? [reviewTriageButton(task)] : []),
         ]
       : [el("p", { text: "Sem triagem (só repositório monitorado)." })]),
@@ -492,14 +617,59 @@ function renderDetail(task) {
       ? [el("p", { text: "SPEC e Tickets aguardam revisão." }), reviewSpecButton(task)]
       : []),
   );
+  $("tickets-vazios").hidden = task.tickets.length > 0;
   $("detalhe-tickets").replaceChildren(
     ...task.tickets.map((t) => el("li", {}, el("strong", { text: t.titulo }), `: ${t.aceite}`)),
   );
 
   const impl = task.implementation;
   const implParts = [];
-  if (!impl) implParts.push(el("p", { className: "vazio", text: "Ainda não começou." }));
+  const implementationActive = task.stage === "implementacao" && task.status === "ativa";
+  implParts.push(
+    el(
+      "div",
+      { className: "bloco-detalhe" },
+      el("h3", { text: implementationActive ? "Implementação em andamento" : "Visão da implementação" }),
+      el("p", {
+        className: "vazio",
+        text: implementationActive
+          ? "A fábrica está trabalhando. Os registros abaixo são atualizados ao vivo conforme o progresso é salvo."
+          : `${detailStatusLabel(task)} · ${stageLabel(task.stage)}`,
+      }),
+    ),
+  );
+  if (!impl)
+    implParts.push(
+      el("p", {
+        className: "vazio",
+        text: implementationActive
+          ? "Aguardando os primeiros registros de branch e commits. Isso não significa que a execução está parada."
+          : "Nenhum registro de implementação disponível para esta tarefa.",
+      }),
+    );
   else {
+    const completedTickets = task.tickets.filter((_, index) =>
+      impl.commits.some((commit) => commit.ticket === index && commit.phase === "implementacao"),
+    ).length;
+    if (task.tickets.length)
+      implParts.push(
+        el(
+          "div",
+          { className: "bloco-detalhe" },
+          el("strong", { text: `${completedTickets} de ${task.tickets.length} tickets com implementação registrada` }),
+          el("progress", {
+            attrs: {
+              value: String(completedTickets),
+              max: String(task.tickets.length),
+              "aria-label": "Tickets com commit de implementação",
+            },
+          }),
+          el("p", {
+            className: "vazio",
+            text: "Baseado nos commits registrados. Não representa aprovação de review, CI ou merge.",
+          }),
+        ),
+      );
     implParts.push(
       el(
         "p",
@@ -512,18 +682,66 @@ function renderDetail(task) {
     task.tickets.forEach((ticket, i) => {
       const commits = impl.commits.filter((c) => c.ticket === i);
       const phase = (name) => commits.find((c) => c.phase === name);
-      const done = phase("implementacao") ? "GREEN ✓" : phase("teste") ? "RED (teste escrito)" : "pendente";
+      const done = phase("implementacao")
+        ? "GREEN · implementação registrada"
+        : phase("teste")
+          ? "RED · teste registrado"
+          : "Sem commits registrados";
       implParts.push(
         el(
           "div",
           { className: "ticket" },
           el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo} — ${done}` }),
           el("p", { className: "vazio", text: ticket.aceite }),
-          ...commits.map((c) => el("code", { text: formatCommit(c) })),
+          ...commits.map((c) =>
+            el(
+              "p",
+              {},
+              el("code", { text: formatCommit(c) }),
+              ...(impl.repairs?.some((repair) => repair.sha === c.sha)
+                ? [el("span", { className: "selo", text: "Reparo humano validado" })]
+                : []),
+            ),
+          ),
         ),
       );
     });
   }
+  if (!impl && task.tickets.length)
+    implParts.push(
+      el("h3", { text: "Tickets planejados" }),
+      ...task.tickets.map((ticket, i) =>
+        el(
+          "div",
+          { className: "ticket" },
+          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo}` }),
+          el("p", { className: "vazio", text: "Sem commits registrados" }),
+          el("p", { text: ticket.aceite }),
+        ),
+      ),
+    );
+  const implementationEvents = task.events
+    .filter((event) => event.type === "progress" || event.type === "error")
+    .slice(-8)
+    .reverse();
+  implParts.push(
+    el("h3", { text: "Registros recentes de execução" }),
+    ...(implementationEvents.length
+      ? implementationEvents.map((event) =>
+          el(
+            "div",
+            { className: "ticket" },
+            el("span", { className: "quando", text: formatTime(event.at) }),
+            el("p", { text: event.message }),
+          ),
+        )
+      : [
+          el("p", {
+            className: "vazio",
+            text: "Ainda não há eventos de progresso. Esta visão mostra registros persistidos, não o terminal ou o raciocínio interno do modelo.",
+          }),
+        ]),
+  );
   if (task.review)
     implParts.push(
       el("h3", { text: "Review" }),
@@ -550,6 +768,10 @@ function renderDetail(task) {
   $("detalhe-implementacao").replaceChildren(...implParts);
 
   $("detalhe-retros").replaceChildren(
+    el("h3", { text: "Sugestões opcionais da retrô" }),
+    el("p", {
+      text: "Estas sugestões de melhoria não são aprovações obrigatórias da tarefa. Se a tarefa estiver pausada, use Retomar tarefa para continuar o fluxo.",
+    }),
     ...(task.retros.length === 0
       ? [el("p", { className: "vazio", text: "Nenhuma retrô ainda." })]
       : task.retros.map((r) =>
@@ -568,6 +790,14 @@ function renderDetail(task) {
                   el("strong", { text: p.title }),
                   ` (${proposalLabel(p)}${p.issue ? `, issue #${p.issue.number}` : ""}${p.reason ? `: ${p.reason}` : ""}): `,
                   p.description,
+                  ...(p.kind === "conhecimento" && p.status === "pendente"
+                    ? [
+                        el("p", {
+                          className: "vazio",
+                          text: "Aprovação de conhecimento ainda não disponível nesta interface (M1-18). A sugestão fica registrada, sem impedir a retomada da tarefa.",
+                        }),
+                      ]
+                    : []),
                   ...(p.kind === "fabrica" && p.status === "pendente" && r.status === "concluida"
                     ? [reviewRetroButton(task, r, p)]
                     : []),
@@ -599,6 +829,7 @@ function renderDetail(task) {
     );
 
   $("detalhe-eventos").replaceChildren(
+    ...(task.events.length === 0 ? [el("li", { className: "vazio", text: "Nenhuma atividade registrada." })] : []),
     ...activity(task.events).map((a) =>
       el(
         "li",
@@ -623,17 +854,51 @@ function renderDetail(task) {
   }
   $("detalhe").hidden = false;
   $("detalhe-vazio").hidden = true;
+  if (editing) {
+    const field = [...document.querySelectorAll("#detalhe textarea")].find(
+      (node) => node.getAttribute("aria-label") === editing.label,
+    );
+    if (field) {
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(editing.start, editing.end);
+    }
+  }
 }
 
 let currentTab = "atividade";
 function showTab(name) {
   currentTab = name;
-  for (const tab of document.querySelectorAll("[data-aba]"))
+  for (const tab of document.querySelectorAll("[data-aba]")) {
     tab.setAttribute("aria-selected", String(tab.dataset.aba === name));
+    tab.tabIndex = tab.dataset.aba === name ? 0 : -1;
+    if (tab.dataset.aba === name && !$("detalhe").hidden) {
+      tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    tab.id = `aba-${tab.dataset.aba}`;
+    tab.setAttribute("aria-controls", `painel-${tab.dataset.aba}`);
+  }
+  for (const panel of document.querySelectorAll("[data-painel]")) {
+    panel.id = `painel-${panel.dataset.painel}`;
+    panel.setAttribute("aria-labelledby", `aba-${panel.dataset.painel}`);
+  }
   for (const panel of document.querySelectorAll("[data-painel]")) panel.hidden = panel.dataset.painel !== name;
 }
 for (const tab of document.querySelectorAll("[data-aba]"))
   tab.addEventListener("click", () => showTab(tab.dataset.aba));
+document.querySelector(".abas").addEventListener("keydown", (event) => {
+  const tabs = [...document.querySelectorAll("[data-aba]")];
+  const index = tabs.indexOf(event.target);
+  if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const target =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  showTab(tabs[target].dataset.aba);
+  tabs[target].focus();
+});
 showTab(currentTab);
 
 function readSelection() {
@@ -717,6 +982,55 @@ function connect() {
     status.className = "selo alerta";
   });
 }
+
+async function openRetroSettings() {
+  const dialog = $("configuracao-retros");
+  const status = $("retros-config-status");
+  const save = $("salvar-retros");
+  status.textContent = "Carregando configuração…";
+  save.disabled = true;
+  $("repositorio-retros").disabled = true;
+  dialog.showModal();
+  try {
+    const settings = await getRetroSettings();
+    $("repositorio-retros").value = settings.repo ?? "";
+    $("repositorio-retros").disabled = !settings.available;
+    status.textContent = settings.available ? "" : "Adaptador de publicação indisponível neste daemon.";
+    save.disabled = !settings.available;
+    $("repositorio-retros").focus();
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+$("configurar-retros").addEventListener("click", openRetroSettings);
+$("fechar-configuracao-retros").addEventListener("click", () => $("configuracao-retros").close());
+$("form-retros").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const save = $("salvar-retros");
+  save.disabled = true;
+  try {
+    const settings = await saveRetroSettings($("repositorio-retros").value.trim());
+    $("repositorio-retros").value = settings.repo;
+    $("retros-config-status").textContent =
+      "Configuração salva e aplicada. Feche esta janela e revise novamente a publicação. Nenhuma issue foi publicada.";
+  } catch (err) {
+    $("retros-config-status").textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    save.disabled = false;
+  }
+});
+
+$("busca-tarefas").addEventListener("input", renderTasks);
+for (const button of document.querySelectorAll("[data-filtro]"))
+  button.addEventListener("click", () => {
+    taskFilter = button.dataset.filtro;
+    renderTasks();
+  });
+for (const button of document.querySelectorAll("[data-modo]"))
+  button.addEventListener("click", () => {
+    taskView = button.dataset.modo;
+    renderTasks();
+  });
 
 $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDaemon : pauseDaemon));
 $("buscar").addEventListener("click", () => run(pollSource));

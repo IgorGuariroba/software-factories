@@ -54,7 +54,9 @@ import {
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
+import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { resolveRepository } from "./repo-resolver.js";
+import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import { createReviewExtension, runReview } from "./review-stage.js";
@@ -288,12 +290,8 @@ export async function startFactory(opts: {
     const timer = setTimeout(callback, delayMs);
     return () => clearTimeout(timer);
   };
+  const retroSettings = { ...opts.retro };
   let events!: DurableEventLog;
-  if (!opts.retro?.sink || !opts.retro.repo)
-    console.warn(
-      "[fábrica] retrô sem repositório da fábrica: defina FACTORY_RETRO_REPO=dono/nome para abrir issues; " +
-        "as propostas da fábrica ficam só registradas nas Tarefas.",
-    );
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
     opts.projects.map((p) => {
@@ -335,7 +333,7 @@ export async function startFactory(opts: {
             task.review.head === progress.head
           );
         },
-        retro: opts.retro,
+        retro: retroSettings,
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
       return [p.config.name, { ...p, codeHost, writer, channel }] as const;
@@ -969,6 +967,11 @@ export async function startFactory(opts: {
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
+  retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
+  if (!retroSettings.repo)
+    console.warn(
+      "[fábrica] Configure o repositório das retrôs em Configurar publicações na web; nenhuma issue será publicada sem aprovação.",
+    );
   await reinspectPendingVetoes();
 
   /**
@@ -1410,6 +1413,7 @@ export async function startFactory(opts: {
   };
   const streams = new Set<ServerResponse>();
   const approvingRetros = new Set<string>();
+  let configuringRetro = false;
   const approvingQuestions = new Set<string>();
 
   /**
@@ -1438,6 +1442,28 @@ export async function startFactory(opts: {
       const route = `${req.method} ${url.pathname}`;
       const taskCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/(pause|resume|cancel)$/);
 
+      if (route === "GET /settings/retro")
+        return json(res, 200, { repo: retroSettings.repo ?? null, available: Boolean(retroSettings.sink) });
+      if (route === "POST /settings/retro") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { repo?: unknown } | undefined;
+        if (typeof body?.repo !== "string" || !isRetroRepository(body.repo.trim()))
+          return json(res, 400, { error: "Informe o repositório no formato dono/nome, sem URL." });
+        if (!retroSettings.sink) return json(res, 409, { error: "Adaptador de publicação indisponível neste daemon." });
+        if (configuringRetro || approvingRetros.size > 0)
+          return json(res, 409, { error: "Publicação ou configuração em andamento; tente novamente." });
+        configuringRetro = true;
+        try {
+          const repo = body.repo.trim();
+          await harness.commit(async (tx) => {
+            (await tx.doc(StateDoc)).retroRepo = repo;
+          }, context);
+          retroSettings.repo = repo;
+          return json(res, 200, { repo, available: true });
+        } finally {
+          configuringRetro = false;
+        }
+      }
       if (route === "GET /queue") return json(res, 200, await queue());
       if (route === "GET /tasks") return json(res, 200, (await readState()).tasks.map(taskSummary));
       const taskRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)$/);
@@ -1447,6 +1473,44 @@ export async function startFactory(opts: {
         return task
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
+      }
+      const repairRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/repair$/);
+      if (repairRoute && (req.method === "GET" || req.method === "POST")) {
+        const project = decodeURIComponent(repairRoute[1] as string);
+        const key = decodeURIComponent(repairRoute[2] as string);
+        const id = `${project}/${key}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task) return json(res, 404, { error: "tarefa inexistente" });
+        if (req.method === "GET") return json(res, 200, await repairPreview(task, implementationDeps.worktreesRoot));
+        if (!isJson(req)) return json(res, 400, { error: "envie JSON" });
+        const body = (await readBody(req)) as { revision?: unknown; approveTestChanges?: unknown } | undefined;
+        if (
+          typeof body?.revision !== "string" ||
+          !/^[0-9a-f]{64}$/.test(body.revision) ||
+          body.approveTestChanges !== true
+        )
+          return json(res, 400, {
+            error: "exige revisão exata e aprovação explícita dos reparos, inclusive nos testes",
+          });
+        const revision = body.revision;
+        const result = await harness.commit(async (tx) => {
+          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          if (!current) throw new RepairConflict("tarefa inexistente");
+          return integrateRepair(
+            current as QueuedTask,
+            implementationDeps.worktreesRoot,
+            revision,
+            implementationDeps.testRunner,
+            context.abortSignal,
+          );
+        }, context);
+        await events.append({
+          type: "progress",
+          project,
+          target: key,
+          message: `Reparo humano aprovado e validado para o ticket ${result.ticket + 1}: commit ${result.sha.slice(0, 8)}. Tarefa continua bloqueada até retomada explícita.`,
+        });
+        return json(res, 200, result);
       }
       const triageRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/triage(\/decide)?$/);
       if (triageRoute && (req.method === "GET" || req.method === "POST")) {
@@ -1730,7 +1794,7 @@ export async function startFactory(opts: {
         const cardKey = decodeURIComponent(encodedKey as string);
         const taskId = `${projectName}/${cardKey}`;
         const lock = `${taskId}/${stage}/${number}`;
-        if (approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
+        if (configuringRetro || approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
           return json(res, 409, { error: "uma proposta já está sendo publicada; tente novamente" });
         if (req.method === "POST") approvingRetros.add(lock);
         try {
@@ -1741,15 +1805,15 @@ export async function startFactory(opts: {
             return json(res, 404, { error: "proposta não encontrada" });
           if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
             return json(res, 409, { error: "proposta não está disponível para revisão" });
-          if (!opts.retro?.sink || !opts.retro.repo)
+          if (!retroSettings.sink || !retroSettings.repo)
             return json(res, 409, { error: "repositório da fábrica não configurado" });
           const project = projectOf(projectName);
           const publication = {
             writer: project.writer,
             cardKey,
             config: project.config,
-            sink: opts.retro.sink,
-            repo: opts.retro.repo,
+            sink: retroSettings.sink,
+            repo: retroSettings.repo,
             stage: retro.stage,
             ref: task.ref,
             proposal,
@@ -1760,7 +1824,7 @@ export async function startFactory(opts: {
               title: preview.title,
               body: preview.body,
               revision: preview.revision,
-              repo: opts.retro.repo,
+              repo: publication.repo,
               dryRun: project.config.dryRun,
               blocked: preview.blocked,
             });
@@ -1845,7 +1909,7 @@ export async function startFactory(opts: {
       }
       json(res, 404, { error: "rota inexistente" });
     } catch (err) {
-      json(res, 500, { error: String(err) });
+      json(res, err instanceof RepairConflict ? 409 : 500, { error: redactSecrets(String(err)) });
     }
   });
 

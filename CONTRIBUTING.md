@@ -89,6 +89,8 @@ O daemon serve uma página de gestão em `GET /` (abra `http://127.0.0.1:7420/` 
 
 ### Retrô e issues da fábrica
 
+O destino das publicações pode ser configurado pela web em **Configurar publicações**, sem reinício e sem publicar automaticamente. A escolha fica no SQLite e prevalece sobre o valor inicial de `FACTORY_RETRO_REPO`. Para o formulário, contrato da API e limitações, leia [Configurar publicações pela web](docs/retro-settings.md).
+
 Cada etapa de modelo termina com a sua retrô (hoje: SPEC e implementação; a implementação que não rodou, por falta de repositório mapeado, não tem retrô) e a Tarefa termina com a consolidada, que recebe as retrôs das etapas. Uma etapa nova entra com um passo `retro-<etapa>` em `RETRO_STEP`/`NEXT` (`src/durable.ts`) e o relato dela em `retroInput` (`src/factory.ts`).
 
 - **Modelo**: conversa durável da Tarefa, com entrega estruturada pela ferramenta `entregar_retro` (resumo e propostas classificadas em `fabrica`, `conhecimento` e `repo-time`). Papel `roles.retro`, opcional; sem ele, usa o modelo de `roles.spec`.
