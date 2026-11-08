@@ -54,6 +54,7 @@ import {
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
+import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { resolveRepository } from "./repo-resolver.js";
 import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
@@ -1473,6 +1474,44 @@ export async function startFactory(opts: {
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
+      const repairRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/repair$/);
+      if (repairRoute && (req.method === "GET" || req.method === "POST")) {
+        const project = decodeURIComponent(repairRoute[1] as string);
+        const key = decodeURIComponent(repairRoute[2] as string);
+        const id = `${project}/${key}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task) return json(res, 404, { error: "tarefa inexistente" });
+        if (req.method === "GET") return json(res, 200, await repairPreview(task, implementationDeps.worktreesRoot));
+        if (!isJson(req)) return json(res, 400, { error: "envie JSON" });
+        const body = (await readBody(req)) as { revision?: unknown; approveTestChanges?: unknown } | undefined;
+        if (
+          typeof body?.revision !== "string" ||
+          !/^[0-9a-f]{64}$/.test(body.revision) ||
+          body.approveTestChanges !== true
+        )
+          return json(res, 400, {
+            error: "exige revisão exata e aprovação explícita dos reparos, inclusive nos testes",
+          });
+        const revision = body.revision;
+        const result = await harness.commit(async (tx) => {
+          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          if (!current) throw new RepairConflict("tarefa inexistente");
+          return integrateRepair(
+            current as QueuedTask,
+            implementationDeps.worktreesRoot,
+            revision,
+            implementationDeps.testRunner,
+            context.abortSignal,
+          );
+        }, context);
+        await events.append({
+          type: "progress",
+          project,
+          target: key,
+          message: `Reparo humano aprovado e validado para o ticket ${result.ticket + 1}: commit ${result.sha.slice(0, 8)}. Tarefa continua bloqueada até retomada explícita.`,
+        });
+        return json(res, 200, result);
+      }
       const triageRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/triage(\/decide)?$/);
       if (triageRoute && (req.method === "GET" || req.method === "POST")) {
         const [, encodedProject, encodedKey, deciding] = triageRoute;
@@ -1870,7 +1909,7 @@ export async function startFactory(opts: {
       }
       json(res, 404, { error: "rota inexistente" });
     } catch (err) {
-      json(res, 500, { error: String(err) });
+      json(res, err instanceof RepairConflict ? 409 : 500, { error: redactSecrets(String(err)) });
     }
   });
 

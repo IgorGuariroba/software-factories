@@ -24,9 +24,11 @@ import {
 import type { EffectWriter } from "./effect-writer.js";
 import type { EventRecorder } from "./events.js";
 import { git } from "./git.js";
+import { recoverRepair } from "./repair.js";
 import { resolveRepository } from "./repo-resolver.js";
 import { redactSecrets } from "./secrets.js";
 import type { SpecDelivery } from "./spec-stage.js";
+import { testDiagnostic } from "./test-diagnostic.js";
 import type { TestRun, TestRunner } from "./test-runner.js";
 import {
   assertFactoryWorktree,
@@ -252,6 +254,9 @@ export async function runImplementation(opts: {
   for (const step of stepsOf(delivery)) {
     if (progress.commits.some((c) => c.ticket === step.ticket && c.phase === step.phase)) continue;
     for (;;) {
+      // Uma retomada pode ter aplicado formatação que resolveu o RED já registrado.
+      // Só reconhece commits mecânicos, sem alterações pendentes ou mudança efetiva nos testes.
+      if (step.phase === "implementacao" && (await acceptFormattedPhase(step.ticket))) break;
       const requestId = `implementacao-${progress.requests}`;
       const submission = await conversation.submit(
         { type: "input", content: phasePrompt(delivery, step.ticket, step.phase, progress.feedback), requestId },
@@ -277,7 +282,7 @@ export async function runImplementation(opts: {
           type: "progress",
           project: config.name,
           target: card.key,
-          message: `TDD recusado no ticket ${step.ticket + 1} (${step.phase}): ${redactSecrets(verdict).slice(0, 300)}`,
+          message: `TDD recusado no ticket ${step.ticket + 1} (${step.phase}): ${testDiagnostic(redactSecrets(verdict), 2000)}`,
         });
         if (progress.rejections >= MAX_TDD_REJECTIONS)
           // Só a primeira linha do veredito: o motivo vai para o Telegram, e a saída da suíte já está no progresso.
@@ -378,6 +383,10 @@ export async function runImplementation(opts: {
   async function reconcile(): Promise<void> {
     const head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
     if (head === progress.head) return;
+    if (await recoverRepair(progress, head, deps.testRunner, runtime.signal)) {
+      await save(progress);
+      return;
+    }
     const parent = (await git(worktree, ["rev-parse", "HEAD^"]).catch(() => "")).trim();
     // Commit de estilo que caiu antes do registro: não é passo do TDD, só avança o HEAD.
     if (parent === progress.head && (await git(worktree, ["log", "-1", "--format=%s"])).trim() === styleMessage()) {
@@ -398,6 +407,37 @@ export async function runImplementation(opts: {
     progress.rejections = 0;
     progress.feedback = null;
     await save(progress);
+  }
+
+  async function acceptFormattedPhase(ticket: number): Promise<boolean> {
+    const red = progress.commits.find((commit) => commit.ticket === ticket && commit.phase === "teste");
+    if (!red || red.sha === progress.head || (await changedPaths(worktree)).length > 0) return false;
+    const subjects = (await git(worktree, ["log", "--format=%s", `${red.sha}..${progress.head}`])).trim().split("\n");
+    if (!subjects.length || subjects.some((subject) => subject !== styleMessage())) return false;
+    const paths = (await git(worktree, ["diff", "--name-only", "-z", red.sha, progress.head]))
+      .split("\0")
+      .filter(Boolean);
+    if (!paths.length) return false;
+    // O formatador pode mudar espaços dos testes, mas nunca seu conteúdo não branco.
+    if (
+      (await git(worktree, ["diff", "--ignore-all-space", "--format=", red.sha, progress.head, "--", ...paths])).trim()
+    )
+      return false;
+    const run = await runSuite();
+    if (run.timedOut || run.exitCode !== 0) return false;
+    progress.commits.push({ ticket, phase: "implementacao", sha: progress.head });
+    progress.rejections = 0;
+    progress.feedback = null;
+    progress.pushed = false;
+    await save(progress);
+    await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
+    await deps.events.append({
+      type: "progress",
+      project: config.name,
+      target: card.key,
+      message: `Ticket ${ticket + 1}: RED resolvido pelo formatador, suíte GREEN verificada; commit ${progress.head.slice(0, 8)}. Nenhum commit vazio criado.`,
+    });
+    return true;
   }
 
   function styleMessage(): string {
@@ -543,7 +583,8 @@ export async function runImplementation(opts: {
     if (run.exitCode === null) return `os testes foram interrompidos por um sinal\n${run.output}`;
     if (phase === "teste" && run.exitCode === 0)
       return `os testes passaram; o teste novo precisa falhar antes da implementação\n${run.output}`;
-    if (phase === "implementacao" && run.exitCode !== 0) return `os testes falharam\n${describeRun(run)}`;
+    if (phase === "implementacao" && run.exitCode !== 0)
+      return `os testes falharam\n${testDiagnostic(describeRun(run))}`;
     return paths;
   }
 

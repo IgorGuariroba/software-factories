@@ -412,6 +412,33 @@ export const API_SCHEMA = {
     "/tasks/{project}/{key}/resume": taskPath(
       "Retoma tarefa pausada ou revalida baseline bloqueado antes do primeiro commit",
     ),
+    "/tasks/{project}/{key}/repair": {
+      get: {
+        summary: "Prévia exata dos reparos locais de tarefa bloqueada por TDD",
+        parameters: taskPath("").post.parameters,
+        responses: ok,
+      },
+      post: {
+        summary: "Aprova reparos humanos por revisão, valida a suíte e integra o checkpoint sem retomar ou publicar",
+        parameters: taskPath("").post.parameters,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["revision", "approveTestChanges"],
+                properties: {
+                  revision: { type: "string", pattern: "^[0-9a-f]{64}$" },
+                  approveTestChanges: { type: "boolean", enum: [true] },
+                },
+              },
+            },
+          },
+        },
+        responses: ok,
+      },
+    },
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
     "/tasks/{project}/{key}/veto": {
       post: {

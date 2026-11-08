@@ -79,6 +79,7 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
       ? {
           branch: implementation.branch,
           branchOrigin: implementation.branchOrigin ?? null,
+          repairs: implementation.repairs ?? [],
           commits: implementation.commits,
           pushed: implementation.pushed,
           baseline: implementation.baseline ?? null,

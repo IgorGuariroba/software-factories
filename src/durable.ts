@@ -231,6 +231,8 @@ export type ImplementationProgress = {
   defaultBranch?: string;
   /** Commits feitos, na ordem: um por fase de cada ticket. */
   commits: { ticket: number; phase: TddPhase; sha: string }[];
+  /** Reparos humanos aprovados por revisão exata e suíte verde; distintos das fases executadas pelo modelo. */
+  repairs?: { sha: string; ticket: number; revision: string }[];
   /** Pedidos feitos ao modelo; numera o próximo para que uma nova tentativa não reaproveite um pedido recusado. */
   requests: number;
   /**
