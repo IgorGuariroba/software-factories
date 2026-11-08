@@ -202,7 +202,8 @@ describe("card sem repositório identificável usa o fluxo de pergunta técnica"
         expect.objectContaining({ n: pergunta.n, text: pergunta.text, answer: mobile.user }),
       ]);
       expect(detalhe.implementation).not.toBeNull();
-      const branch = detalhe.implementation!.branch;
+      if (!detalhe.implementation) throw new Error("A implementação deve existir após concluir a tarefa");
+      const branch = detalhe.implementation.branch;
       expect(await mobile.show(branch, "src/csv.mjs")).toBe('export const csv = () => "a;b";');
       expect(await mobile.branchLog(branch)).toHaveLength(2);
       expect(await web.branches()).toEqual(["main"]);

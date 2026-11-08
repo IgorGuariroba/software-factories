@@ -5,13 +5,13 @@ import type { FactoryState } from "./durable.js";
 import type { EventRecorder } from "./events.js";
 import { calcularPrazoUtil } from "./prazo-util.js";
 
-export interface EncaminhamentoTecnico {
+export type EncaminhamentoTecnico = {
   status: "sending" | "sent" | "blocked" | "uncertain";
   to: string | null;
   reason: "nao-sei" | "prazo";
   at: number;
   ref?: QuestionRef;
-}
+};
 
 export function prazoPerguntaTecnica(disponibilizadaEm: number): number {
   return calcularPrazoUtil({

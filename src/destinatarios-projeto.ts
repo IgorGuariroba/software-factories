@@ -31,9 +31,10 @@ export function criarNotificadorDoProjeto({
         const bloqueio = erro as Error;
         try {
           await avisar(bloqueio.message);
-        } finally {
-          throw bloqueio;
+        } catch {
+          // A indisponibilidade do aviso não pode autorizar o envio nem ocultar o bloqueio.
         }
+        throw bloqueio;
       }
       await notificador.send({ userId, text });
     },
