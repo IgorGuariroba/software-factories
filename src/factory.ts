@@ -486,21 +486,26 @@ export async function startFactory(opts: {
           deps: implementationDeps,
           tools: implementationTools,
           originalTicketCount: current.delivery.tickets.length,
-          reassessCorrections: async (head, diagnostic) => {
+          canReassessCorrections: async (head) => {
             const latest = (await readState()).tasks.find((t) => t.id === input.id);
-            // Não pede ao reviewer para contradizer o mesmo parecer sobre o mesmo código.
-            if (!latest?.review || (latest.review.head === head && latest.review.status !== "aprovado")) return false;
-            return (
-              (await runReview({
-                harness,
-                runtime,
-                taskId: input.id,
-                config: project.config,
-                worktreesRoot: implementationDeps.worktreesRoot,
-                tools: reviewTools,
-                verification: { head, diagnostic },
-              })) === "aprovado"
-            );
+            // A guarda vem antes da suíte; um review em andamento deve ser retomado, não descartado.
+            return Boolean(latest?.review && (latest.review.head !== head || latest.review.status !== "corrigir"));
+          },
+          reassessCorrections: async (head, diagnostic) => {
+            const verdict = await runReview({
+              harness,
+              runtime,
+              taskId: input.id,
+              config: project.config,
+              worktreesRoot: implementationDeps.worktreesRoot,
+              tools: reviewTools,
+              verification: { head, diagnostic },
+            });
+            const latest = (await readState()).tasks.find((t) => t.id === input.id);
+            return {
+              approved: verdict === "aprovado",
+              feedback: `Review de reavaliação: ${latest?.review?.summary ?? "evidência insuficiente"}`,
+            };
           },
         });
       }
@@ -516,6 +521,16 @@ export async function startFactory(opts: {
       }
 
       async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
+        // Um reinício dentro da implementação de correções deve retomá-la antes de pedir outro review normal.
+        const interrupted = (await readState()).tasks.find((t) => t.id === input.id);
+        if (interrupted?.implementation && interrupted.delivery) {
+          const done = new Set([
+            ...interrupted.implementation.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket),
+            ...(interrupted.implementation.verifiedTickets ?? []).map((c) => c.ticket),
+          ]);
+          const originalCount = interrupted.delivery.tickets.length;
+          if (interrupted.correctionTickets?.some((_, index) => !done.has(originalCount + index))) await implement();
+        }
         for (;;) {
           const verdict = await runReview({
             harness,

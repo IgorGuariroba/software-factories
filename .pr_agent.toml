@@ -4,6 +4,10 @@ fallback_models = ["openrouter/openai/gpt-5.4"]
 custom_model_max_tokens = 1000000
 response_language = "pt-BR"
 
+[openrouter]
+# Limita a reserva de saída sem reduzir o contexto nem desativar review/portão.
+max_tokens = 16384
+
 [pr_reviewer]
 extra_instructions = """
 Responda em português do Brasil.

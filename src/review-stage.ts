@@ -87,7 +87,7 @@ export async function runReview(opts: {
   if (opts.verification && opts.verification.head !== head)
     throw new StageBlocked("HEAD da evidência divergiu do review");
   const feedbackRevision = createHash("sha256")
-    .update(JSON.stringify(opts.verification ? { feedback, verification: opts.verification } : feedback))
+    .update(JSON.stringify(opts.verification ? { feedback, verification: { head: opts.verification.head } } : feedback))
     .digest("hex");
   if (
     task.review?.head === head &&
@@ -154,7 +154,11 @@ export async function runReview(opts: {
       const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
       if (queued?.review?.head === head) {
         queued.review.status = result.status;
-        queued.review.summary = redactSecrets(result.resumo);
+        queued.review.summary = redactSecrets(
+          opts.verification && result.status === "corrigir"
+            ? `${result.resumo}\n\nAchados para o implementador:\n${JSON.stringify(result.correcoes)}`
+            : result.resumo,
+        );
         if (result.status === "corrigir" && !opts.verification) {
           queued.correctionTickets = [...(queued.correctionTickets ?? []), ...result.correcoes];
           queued.correctionRounds = (queued.correctionRounds ?? 0) + 1;

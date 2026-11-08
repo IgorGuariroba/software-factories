@@ -218,7 +218,8 @@ export async function runImplementation(opts: {
   tools: ImplementationExtension;
   /** Correções podem ficar satisfeitas por outro reparo; os tickets originais nunca usam esta saída. */
   originalTicketCount?: number;
-  reassessCorrections?: (head: string, diagnostic: string) => Promise<boolean>;
+  canReassessCorrections?: (head: string) => Promise<boolean>;
+  reassessCorrections?: (head: string, diagnostic: string) => Promise<{ approved: boolean; feedback?: string }>;
 }): Promise<void> {
   const { harness, runtime, config, writer, card, delivery, deps } = opts;
   const { context } = runtime;
@@ -442,10 +443,18 @@ export async function runImplementation(opts: {
       return false;
     const before = (await git(worktree, ["rev-parse", "HEAD"])).trim();
     if (before !== progress.head) throw new StageBlocked("HEAD divergiu antes da reavaliação de correções");
+    if (opts.canReassessCorrections && !(await opts.canReassessCorrections(before))) return false;
     const run = await runSuite();
     if (run.timedOut || run.spawnError || run.exitCode !== 0) return false;
     const diagnostic = redactSecrets(testDiagnostic(describeRun(run)));
-    if (!(await opts.reassessCorrections(before, diagnostic))) return false;
+    const assessment = await opts.reassessCorrections(before, diagnostic);
+    if (!assessment.approved) {
+      if (assessment.feedback) {
+        progress.feedback = redactSecrets(assessment.feedback);
+        await save(progress);
+      }
+      return false;
+    }
     if ((await git(worktree, ["rev-parse", "HEAD"])).trim() !== before || (await changedPaths(worktree)).length)
       throw new StageBlocked("clone mudou durante a reavaliação de correções; preserve as alterações");
     progress.verifiedTickets ??= [];

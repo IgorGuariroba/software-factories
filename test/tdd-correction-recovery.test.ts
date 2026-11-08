@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES } from "../src/config.js";
 import { deliverReview, FakeModel, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
-import { api, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
+import { api, hold, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
 
 let factory: TestFactory | undefined;
 let root: string;
@@ -12,11 +12,12 @@ afterEach(async () => {
 });
 
 it.each([
-  { verdict: "aprovado", status: "concluida" },
-  { verdict: "corrigir", status: "bloqueada" },
+  { verdict: "aprovado", status: "concluida", restart: false },
+  { verdict: "corrigir", status: "bloqueada", restart: false },
+  { verdict: "aprovado", status: "concluida", restart: true },
 ] as const)(
-  "reavalia correção já atendida sem RED artificial: review $verdict leva a $status",
-  async ({ verdict, status }) => {
+  "reavalia correção já atendida sem RED artificial: review $verdict leva a $status (reinício: $restart)",
+  async ({ verdict, status, restart }) => {
     root = await tempRoot();
     const repo = await createRemoteRepo(root, "app");
     const model = new FakeModel();
@@ -42,8 +43,16 @@ it.each([
         }),
       ],
     );
-    model.respondReview = () =>
-      model.reviewCalls.length === 1
+    const started = hold();
+    const release = hold();
+    let suspended = false;
+    model.respondReview = async (call) => {
+      if (restart && !suspended && call.input.includes("Reavaliação de critérios já atendidos")) {
+        suspended = true;
+        started.release();
+        await release.promise;
+      }
+      return model.reviewCalls.length === 1
         ? deliverReview("corrigir", "Rejeitar texto e manter a suíte verde", [
             { titulo: "Rejeitar texto", aceite: "soma com texto lança TypeError" },
             { titulo: "Manter suíte verde", aceite: "A suíte continua passando após a correção" },
@@ -55,6 +64,7 @@ it.each([
               : "Evidência insuficiente; critério pendente.",
             verdict === "corrigir" ? [{ titulo: "Manter suíte verde", aceite: "Critério pendente" }] : [],
           );
+    };
     factory = await startTestFactory({
       cards: [{ key: "PROJ-1", title: "Somar", status: "A Fazer", assignee: USER }],
       model,
@@ -69,6 +79,14 @@ it.each([
       },
     });
     await poll(factory);
+    if (restart) {
+      await started.promise;
+      const restarting = factory.restart();
+      // Deixa o fechamento do servidor e o cancelamento do harness acontecerem antes de liberar o fake.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      release.release();
+      factory = await restarting;
+    }
     await waitForStatus(factory, "PROJ-1", status, 5000);
     const detail = await api<{
       implementation: { commits: { ticket: number }[]; verifiedTickets: { ticket: number; sha: string }[] };
@@ -79,6 +97,7 @@ it.each([
     if (verdict === "corrigir") {
       expect(detail.implementation.verifiedTickets).toEqual([]);
       expect(model.reviewCalls).toHaveLength(2);
+      expect(model.calls.some((call) => call.input.includes("Evidência insuficiente"))).toBe(true);
       return;
     }
     expect(detail.implementation.commits.some((c) => c.ticket === 2)).toBe(false);
