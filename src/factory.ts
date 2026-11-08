@@ -44,13 +44,7 @@ import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomati
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
-import {
-  baselineBlockedReason,
-  baselineWorkspaceBlockedReason,
-  createImplementationExtension,
-  runImplementation,
-  StageBlocked,
-} from "./implement-stage.js";
+import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
@@ -71,6 +65,7 @@ import {
   SpecExtension,
   specInput,
 } from "./spec-stage.js";
+import { blockedResumeKind } from "./task-resume.js";
 import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
@@ -1318,16 +1313,7 @@ export async function startFactory(opts: {
         task.pauseRequested = false;
         if (task.status === "pausada") task.status = "enfileirada";
         // O usuário corrigiu o ambiente: nova tentativa mede o baseline, sem aceitar o vermelho como TDD.
-        if (
-          task.status === "bloqueada" &&
-          task.stage === "implementacao" &&
-          task.implementation &&
-          task.implementation.commits.length === 0 &&
-          ((task.implementation.baseline === "vermelha" &&
-            task.reason === baselineBlockedReason(task.implementation.branch)) ||
-            (task.implementation.baseline === null &&
-              task.reason === baselineWorkspaceBlockedReason(task.implementation.branch)))
-        ) {
+        if (blockedResumeKind(task as QueuedTask) === "baseline" && task.implementation) {
           task.implementation.baseline = null;
           task.durableId = null;
           task.gateId = null;
@@ -1336,12 +1322,7 @@ export async function startFactory(opts: {
         }
         // TDD recusado no limite: quem retoma mudou o que impedia (config, formatador, ambiente). Novas tentativas na
         // mesma fase; os commits aceitos ficam.
-        if (
-          task.status === "bloqueada" &&
-          (task.stage === "implementacao" || task.stage === "review") &&
-          task.implementation &&
-          task.reason?.startsWith("TDD recusado ")
-        ) {
+        if (blockedResumeKind(task as QueuedTask) === "tdd" && task.implementation) {
           task.implementation.rejections = 0;
           task.implementation.feedback = null;
           task.durableId = null;

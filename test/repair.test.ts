@@ -39,6 +39,8 @@ it("integra reparo humano aprovado no checkpoint sem retomar, e sobrevive a rein
   await waitForStatus(factory, "PROJ-1", "bloqueada", 5000);
   const cwd = join(factory.stateDir, "worktrees", "exemplo", "PROJ-1");
   const path = "/tasks/exemplo/PROJ-1/repair";
+  const summary = await api<{ key: string; resumeAllowed: boolean }[]>(factory, "GET", "/tasks");
+  expect(summary.find((task) => task.key === "PROJ-1")?.resumeAllowed).toBe(true);
   const old = await api<{ revision: string }>(factory, "GET", path);
   // Código que ainda falha nunca vira checkpoint.
   let response = await fetch(factory.url + path, {
@@ -71,12 +73,13 @@ it("integra reparo humano aprovado no checkpoint sem retomar, e sobrevive a rein
     approveTestChanges: true,
   });
   expect(integrated.sha).toMatch(/^[0-9a-f]{40}$/);
-  const detail = await api<{ status: string; implementation: { repairs: { sha: string }[] } }>(
+  const detail = await api<{ status: string; resumeAllowed: boolean; implementation: { repairs: { sha: string }[] } }>(
     factory,
     "GET",
     "/tasks/exemplo/PROJ-1",
   );
   expect(detail.status).toBe("bloqueada");
+  expect(detail.resumeAllowed).toBe(true);
   expect(detail.implementation.repairs).toEqual([expect.objectContaining({ sha: integrated.sha })]);
   expect(await repo.branches()).toEqual(["main"]);
   factory = await factory.restart();

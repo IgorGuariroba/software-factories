@@ -1,4 +1,4 @@
-// Smoke de leitura contra o daemon local. Bloqueia POSTs para não executar ações reais.
+// Smoke de leitura contra o daemon local. Permite somente GET/HEAD para não executar ações reais.
 // Requer playwright-cli instalado e o daemon em http://127.0.0.1:7420/.
 import { execFileSync } from "node:child_process";
 
@@ -11,7 +11,7 @@ const run = (...args) => {
 run("open", "http://127.0.0.1:7420/");
 try {
   run("run-code", `async (page) => {
-    await page.route("**/*", route => route.request().method() === "POST" ? route.abort() : route.continue());
+    await page.route("**/*", route => ["GET", "HEAD"].includes(route.request().method()) ? route.continue() : route.abort());
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.reload();
     await page.locator("#alternar-daemon:not([disabled])").waitFor();
@@ -55,6 +55,24 @@ try {
       if (await page.locator("[aria-selected=true]").getAttribute("data-aba") !== "spec") throw Error("Teclado falhou");
       await page.locator("#fechar-detalhe").click();
       await page.locator("#detalhe").waitFor({ state: "hidden" });
+    }
+    const tasks = await page.evaluate(async () => (await fetch('/tasks')).json());
+    const resumable = tasks.find(task => task.status === 'bloqueada' && task.resumeAllowed);
+    if (resumable) {
+      await page.goto('http://127.0.0.1:7420/#/tarefa/' + encodeURIComponent(resumable.project) + '/' + encodeURIComponent(resumable.key));
+      const button = page.getByRole('button', { name: 'Retomar tarefa', exact: true });
+      await button.waitFor();
+      if ((await button.boundingBox()).height < 44) throw Error('Alvo de retomada pequeno');
+      await page.evaluate(() => {
+        window.__resumeConfirmation = null;
+        window.confirm = message => { window.__resumeConfirmation = message; return false; };
+      });
+      await button.click();
+      if (!(await page.evaluate(() => window.__resumeConfirmation))?.includes('checkpoint')) throw Error('Confirmação de retomada ausente');
+      await page.locator('#menu-acoes-tarefa summary').click();
+      if (!await page.getByRole('button', { name: 'Retomar ' + resumable.key, exact: true }).isVisible()) throw Error('Retomar ausente no menu');
+      await page.locator('#fechar-detalhe').click();
+      await page.locator('#detalhe').waitFor({ state: 'hidden' });
     }
     await page.locator(".topo .menu-config summary").click();
     await page.locator("#configurar-retros").click();

@@ -336,7 +336,14 @@ function reviewRetroButton(task, retro, proposal) {
 const ACTIONS = {
   vetar: { label: "Vetar", danger: true, run: (t) => vetoTask(t.project, t.key) },
   pausar: { label: "Pausar", run: (t) => pauseTask(t.project, t.key) },
-  retomar: { label: "Retomar", run: (t) => resumeTask(t.project, t.key) },
+  retomar: {
+    label: "Retomar",
+    confirm: (t) =>
+      t.status === "bloqueada"
+        ? `Retomar ${t.key}? Confirme que a causa do bloqueio foi corrigida. A fábrica continuará do checkpoint e poderá executar ações reais; os guardrails serão verificados novamente.`
+        : null,
+    run: (t) => resumeTask(t.project, t.key),
+  },
   cancelar: {
     label: "Cancelar",
     danger: true,
@@ -353,7 +360,8 @@ function actionButtons(task) {
       className: action.danger ? "perigo" : "",
       attrs: { type: "button", "aria-label": `${action.label} ${task.key}` },
       onClick: () => {
-        if (action.confirm && !window.confirm(action.confirm(task))) return;
+        const confirmation = action.confirm?.(task);
+        if (confirmation && !window.confirm(confirmation)) return;
         run(() => action.run(task));
       },
     });
@@ -491,10 +499,12 @@ function renderDetail(task) {
     ...(next
       ? [
           el("button", {
-            text: task.status === "pausada" ? "Retomar tarefa" : "Ver próxima ação",
+            text: actionsFor(task).includes("retomar") ? "Retomar tarefa" : "Ver próxima ação",
             attrs: { type: "button" },
             onClick: () => {
-              if (task.status === "pausada") {
+              if (actionsFor(task).includes("retomar")) {
+                const confirmation = ACTIONS.retomar.confirm(task);
+                if (confirmation && !window.confirm(confirmation)) return;
                 run(() => resumeTask(task.project, task.key));
                 return;
               }
