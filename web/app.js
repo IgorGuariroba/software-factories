@@ -1,6 +1,7 @@
 // Página de gestão: lê e comanda a fábrica só pela API local, e se atualiza pelo stream de eventos (SSE).
 // O DOM é montado com createElement e textContent: conteúdo do card e do modelo nunca vira HTML.
 import {
+  answerQuestion,
   approveQuestion,
   approveReminder,
   approveRetro,
@@ -88,6 +89,46 @@ async function run(command) {
     showError(err);
   }
   await refresh();
+}
+
+/** Resposta local: o servidor decide se resolve a pergunta ou precisa encaminhar. */
+function answerQuestionControls(task, question) {
+  const id = `resposta-${encodeURIComponent(task.project)}-${encodeURIComponent(task.key)}-${question.n}`;
+  const field = el("textarea", {
+    attrs: {
+      id,
+      name: "answer",
+      rows: "3",
+      maxlength: "20000",
+      "aria-label": `Resposta à pergunta ${question.n} de ${task.key}`,
+    },
+  });
+  const button = el("button", {
+    text: "Enviar resposta",
+    attrs: { type: "button" },
+    onClick: async () => {
+      if (button.disabled) return;
+      const answer = field.value.trim();
+      if (!answer || answer.length > 20000) {
+        showError(new Error("A resposta deve ter entre 1 e 20000 caracteres."));
+        return;
+      }
+      button.disabled = true;
+      field.disabled = true;
+      try {
+        await answerQuestion(task.project, task.key, question.n, answer);
+        clearError();
+        await refresh();
+      } catch (err) {
+        // Preserva o texto para corrigir ou tentar novamente quando o servidor rejeita.
+        showError(err);
+      } finally {
+        button.disabled = false;
+        field.disabled = false;
+      }
+    },
+  });
+  return el("div", {}, el("label", { text: "Sua resposta", attrs: { for: id } }), field, button);
 }
 
 function reviewReminderButton(task, question) {
@@ -397,6 +438,7 @@ function renderDetail(task) {
                       ? "(pendente)"
                       : `Resposta: ${q.answer}`,
             }),
+            ...(q.answer === null ? [answerQuestionControls(task, q)] : []),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
             ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),
             ...(q.reminder === "sending" ? [el("p", { text: "Lembrete não confirmado; verifique o Jira." })] : []),

@@ -234,6 +234,39 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/questions/{n}/answer": {
+      post: {
+        summary:
+          "Registra resposta local: não sei sinaliza encaminhamento ao tech lead; " +
+          "resposta resolutiva acorda a Tarefa. Não publica a resposta na Fonte.",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer", minimum: 1 } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["answer"],
+                properties: {
+                  answer: { type: "string", minLength: 1, maxLength: 20000 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Resposta registrada e classificada pela mesma operação usada pelo Telegram" },
+          "400": { description: "Resposta vazia, inválida ou acima de 20000 caracteres" },
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Pergunta indisponível ou resposta não resolve a decisão de repositório" },
+          "415": { description: "Content-Type diferente de application/json" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/questions/{n}": {
       get: {
         summary: "Prévia exata da pergunta e do aviso ao PO",
@@ -497,6 +530,19 @@ export const API_SCHEMA = {
                     text: { type: "string" },
                     askedAt: { type: "string" },
                     answer: { type: ["string", "null"], description: "null enquanto pendente" },
+                    origin: {
+                      type: "string",
+                      enum: ["grill", "card-raso", "tecnica"],
+                      description: "Origem da pergunta: negócio, card raso ou dúvida técnica",
+                    },
+                    userResponse: {
+                      type: ["string", "null"],
+                      description: "Resposta não resolutiva preservada para encaminhamento, como não sei",
+                    },
+                    needsForwarding: {
+                      type: "boolean",
+                      description: "Indica que a pergunta ainda precisa ser encaminhada ao tech lead",
+                    },
                     reminder: {
                       enum: ["draft", "sending", "sent", null],
                       description: "Lembrete em revisão; sending indica resultado incerto",

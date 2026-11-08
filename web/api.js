@@ -48,6 +48,9 @@ export const approveReminder = (project, key, n, revision) =>
 export const getQuestionPreview = (project, key, n) => api("GET", `/tasks/${seg(project)}/${seg(key)}/questions/${n}`);
 export const approveQuestion = (project, key, n, revision) =>
   api("POST", `/tasks/${seg(project)}/${seg(key)}/questions/${n}/approve`, { revision });
+/** A classificação e a retomada pertencem à API, não ao navegador. */
+export const answerQuestion = (project, key, n, answer) =>
+  api("POST", `/tasks/${seg(project)}/${seg(key)}/questions/${n}/answer`, { answer });
 export const getRetroPreview = (project, key, stage, n) =>
   api("GET", `/tasks/${seg(project)}/${seg(key)}/retros/${seg(stage)}/${n}`);
 export const approveRetro = (project, key, stage, n, revision) =>
