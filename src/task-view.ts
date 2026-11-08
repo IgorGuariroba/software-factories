@@ -1,5 +1,6 @@
 import type { QueuedTask } from "./durable.js";
 import type { FactoryEvent } from "./events.js";
+import { blockedResumeKind } from "./task-resume.js";
 
 /** Uma Tarefa como a API a lista em `GET /tasks`. */
 export const taskSummary = ({
@@ -15,6 +16,7 @@ export const taskSummary = ({
   specReview,
   triage,
   questions,
+  implementation,
 }: QueuedTask) => ({
   id,
   /** Identificador opaco da Tarefa: o único que sai no link das issues públicas da fábrica. */
@@ -23,6 +25,7 @@ export const taskSummary = ({
   key,
   title,
   status,
+  resumeAllowed: status === "pausada" || blockedResumeKind({ status, stage, implementation, reason }) !== null,
   stage: stage ?? null,
   attempts,
   reason,

@@ -113,10 +113,11 @@ export const isTerminal = (task) => TERMINAL.has(task.status);
 
 /**
  * Comandos que fazem sentido para a Tarefa agora, na ordem dos botões.
- * @param {{ status: string }} task
+ * @param {{ status: string, resumeAllowed?: boolean }} task
  * @returns {("vetar" | "pausar" | "retomar" | "cancelar")[]}
  */
 export function actionsFor(task) {
+  if (task.status === "bloqueada" && task.resumeAllowed === true) return ["retomar"];
   if (isTerminal(task)) return [];
   const actions = [];
   if (task.status === "aguardando-veto") actions.push("vetar");
