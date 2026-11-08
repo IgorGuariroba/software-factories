@@ -69,7 +69,12 @@ const MAX_READ_CHARS = 100_000;
 const INSTRUCTIONS = `Você é o papel implementador de uma fábrica de software autônoma e trabalha com TDD, ticket a ticket.
 Você só tem as ferramentas ler_arquivo, escrever_arquivo e rodar_testes, sempre dentro do repositório.
 Não há shell nem git: a fábrica verifica cada fase, roda os testes e faz os commits.
-- Fase de teste: escreva só o teste do ticket. A fábrica exige que só arquivos de teste mudem e que os testes falhem.
+- Fase de teste: escreva só os testes do ticket, incluindo adaptações necessárias dos testes existentes (por exemplo,
+  snapshots e listas exatas de rotas ao acrescentar uma API). Preserve as assertions e a cobertura anterior; acrescente
+  as expectativas novas antes do código de produção. Não adie essas adaptações para a implementação, que não pode
+  alterar testes. A fábrica exige que só arquivos de teste mudem e que os testes falhem.
+- Não crie teste que executa toda a suíte dentro da suíte, script auxiliar sem função no produto, falha artificial
+  ou mudança de comportamento só para obter RED em um critério já atendido. Validação da suíte é trabalho da fábrica.
 - Fase de implementação: escreva o código que faz os testes passarem, sem mexer nos testes. A fábrica exige que
   nenhum arquivo de teste mude e que os testes passem.
 Quando terminar a fase, responda em texto, sem chamar ferramentas.`;

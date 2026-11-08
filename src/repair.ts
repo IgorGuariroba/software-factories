@@ -16,11 +16,11 @@ export async function repairPreview(task: QueuedTask, root: string) {
   const progress = task.implementation;
   if (
     task.status !== "bloqueada" ||
-    task.stage !== "implementacao" ||
+    (task.stage !== "implementacao" && task.stage !== "review") ||
     !progress ||
     !task.reason?.startsWith("TDD recusado ")
   )
-    throw new RepairConflict("reparo exige tarefa bloqueada por TDD na implementação");
+    throw new RepairConflict("reparo exige tarefa bloqueada por TDD na implementação ou no ciclo de review");
   const cwd = await assertFactoryWorktree(root, progress.worktree);
   const head = (await git(cwd, ["rev-parse", "HEAD"])).trim();
   if (head !== progress.head) throw new RepairConflict("HEAD divergiu do checkpoint");

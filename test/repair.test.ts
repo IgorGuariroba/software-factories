@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES } from "../src/config.js";
-import { FakeModel, scriptImplementer, write } from "./fakes/fake-model.js";
+import { deliverReview, FakeModel, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
 import { api, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
 
@@ -88,4 +88,54 @@ it("integra reparo humano aprovado no checkpoint sem retomar, e sobrevive a rein
   expect(
     (await repo.branchLog("feature/PROJ-1-valor")).filter((c) => c.subject.includes("factory-repair")),
   ).toHaveLength(1);
+}, 20000);
+
+it("integra reparo de TDD bloqueado dentro do ciclo de review", async () => {
+  root = await tempRoot();
+  const repo = await createRemoteRepo(root, "app", {
+    files: { "src/value.mjs": "export const value = 0;", "src/other.mjs": "export const other = 0;" },
+  });
+  const model = new FakeModel();
+  scriptImplementer(model, { spec: "Valores um", tickets: [{ titulo: "Valor", aceite: "retorna um" }] }, [
+    write({
+      "test/value.test.mjs":
+        "import {test} from 'node:test';import assert from 'node:assert/strict';import {value} from '../src/value.mjs';test('valor',()=>assert.equal(value,1));",
+    }),
+    write({ "src/value.mjs": "export const value = 1;" }),
+    write({
+      "test/other.test.mjs":
+        "import {test} from 'node:test';import assert from 'node:assert/strict';import {other} from '../src/other.mjs';test('outro',()=>assert.equal(other,1));",
+    }),
+    write({ "src/other.mjs": "export const other = 2;" }),
+  ]);
+  model.respondReview = () =>
+    model.reviewCalls.length === 1
+      ? deliverReview("corrigir", "Outro valor", [{ titulo: "Outro", aceite: "other retorna um" }])
+      : deliverReview("aprovado", "Valores conferidos");
+  factory = await startTestFactory({
+    cards: [{ key: "PROJ-1", title: "Valor", status: "A Fazer", assignee: USER }],
+    model,
+    config: {
+      repositories: [
+        {
+          path: repo.user,
+          prefix: "PROJ",
+          test: { command: [process.execPath, "--test"], timeoutSeconds: 10, files: DEFAULT_TEST_FILES },
+        },
+      ],
+    },
+  });
+  await poll(factory);
+  await waitForStatus(factory, "PROJ-1", "bloqueada", 5000);
+  const detail = await api<{ stage: string }>(factory, "GET", "/tasks/exemplo/PROJ-1");
+  expect(detail.stage).toBe("review");
+  const path = "/tasks/exemplo/PROJ-1/repair";
+  const response = await fetch(factory.url + path);
+  expect(response.status).toBe(200);
+  await writeFile(join(factory.stateDir, "worktrees", "exemplo", "PROJ-1", "src/other.mjs"), "export const other = 1;");
+  const preview = await api<{ revision: string }>(factory, "GET", path);
+  await api(factory, "POST", path, { revision: preview.revision, approveTestChanges: true });
+  factory = await factory.restart();
+  await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+  await waitForStatus(factory, "PROJ-1", "concluida", 5000);
 }, 20000);
