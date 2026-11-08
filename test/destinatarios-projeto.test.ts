@@ -1,89 +1,97 @@
 import { describe, expect, it, vi } from "vitest";
-import { criarNotificadorDoProjeto } from "../src/destinatarios-projeto.js";
-import type { TeamsNotifier } from "../src/teams-mcp.js";
+import { createCardCommentChannel } from "../src/channel.js";
+import { createEffectWriter } from "../src/effect-writer.js";
+import { EventLog } from "../src/events.js";
+import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
+import { testProjectConfig, USER } from "./harness.js";
 
-// O mesmo decorador TeamsNotifier protege os envios ao usuário e ao tech lead.
-// A lista contém IDs de pessoas do projeto, não nomes, domínios ou prefixos.
+const LEAD = "lider-do-projeto";
+const papeis = [
+  { papel: "usuário", permitido: USER, externo: "usuario-fora-do-projeto" },
+  { papel: "tech lead", permitido: LEAD, externo: "lider-fora-do-projeto" },
+];
+const PERGUNTA = "PERGUNTA CONFIDENCIAL: qual a arquitetura do Cliente Sigiloso?";
+
 function preparar() {
-  const enviar = vi.fn<TeamsNotifier["send"]>().mockResolvedValue(undefined);
-  const avisar = vi.fn<(aviso: string) => void>();
-  const protegido = criarNotificadorDoProjeto({
-    destinatariosPermitidos: ["8:orgid:usuario-projeto", "8:orgid:tech-lead-projeto"],
-    notificador: { send: enviar },
-    avisar,
-  });
-  return { protegido, enviar, avisar };
+  const people = [
+    { id: USER, role: "po" as const },
+    { id: LEAD, role: "tech_lead" as const },
+  ];
+  const source = new MemoryDemandSource([
+    { key: "PROJ-1", title: "Conexão com banco", status: "Em Andamento", assignee: USER },
+  ]);
+  const enviar = vi.spyOn(source, "addComment");
+  const events = new EventLog();
+  const config = testProjectConfig({ people });
+  const writer = createEffectWriter({ config, source, events, transitionLimit: "in_progress" });
+  const channel = createCardCommentChannel({ source, writer });
+  return { channel, source, enviar, events, people };
 }
 
-const papeis = [
-  { papel: "usuário", permitido: "8:orgid:usuario-projeto" },
-  { papel: "tech lead", permitido: "8:orgid:tech-lead-projeto" },
-];
+function conferirAviso(events: EventLog, destinatario: string) {
+  const bloqueios = events.list().filter((evento) => evento.type === "blocked");
+  expect(bloqueios).toHaveLength(1);
+  const aviso = bloqueios[0];
+  if (aviso.type !== "blocked") throw new Error("Aviso de bloqueio ausente");
+  expect(aviso).toMatchObject({ project: "exemplo", target: "PROJ-1", action: "mention" });
+  expect(aviso.reason).toContain(destinatario);
+  expect(aviso.reason).toMatch(/pessoas do projeto/i);
+  expect(aviso.reason).not.toContain(PERGUNTA);
+  expect(aviso.reason).not.toContain("Cliente Sigiloso");
+}
 
-describe("guardrail de destinatários do projeto", () => {
-  it.each(papeis)("permite enviar ao $papel que pertence ao projeto", async ({ permitido }) => {
-    const { protegido, enviar, avisar } = preparar();
-    const mensagem = { userId: permitido, text: "Qual regra devemos aplicar ao card PROJ-1?" };
+describe("guardrail no Channel realmente usado nos envios", () => {
+  it.each(papeis)("envia a pergunta ao $papel quando a pessoa pertence ao projeto", async ({ permitido }) => {
+    const { channel, source, enviar, events } = preparar();
 
-    await protegido.send(mensagem);
+    const ref = await channel.ask({ card: "PROJ-1", to: permitido, text: PERGUNTA });
 
-    expect(enviar).toHaveBeenCalledExactlyOnceWith(mensagem);
-    expect(avisar).not.toHaveBeenCalled();
+    expect(ref).toMatchObject({ card: "PROJ-1", to: permitido });
+    expect(enviar).toHaveBeenCalledTimes(1);
+    expect(source.commentsOf("PROJ-1")[0].body).toContain(PERGUNTA);
+    expect(events.list().filter((evento) => evento.type === "blocked")).toEqual([]);
   });
 
-  it.each(papeis)("bloqueia a pergunta ao $papel externo antes de qualquer envio", async ({ papel }) => {
-    const { protegido, enviar, avisar } = preparar();
-    const userId = `8:orgid:${papel === "usuário" ? "usuario" : "tech-lead"}-externo`;
-    const pergunta = "PERGUNTA CONFIDENCIAL: aprovar desconto de 37% para Cliente Sigiloso?";
+  it.each(papeis)("bloqueia o $papel externo com aviso antes de qualquer envio", async ({ externo }) => {
+    const { channel, source, enviar, events } = preparar();
 
-    await expect(protegido.send({ userId, text: pergunta })).rejects.toThrow(/bloquead/i);
+    await expect(channel.ask({ card: "PROJ-1", to: externo, text: PERGUNTA })).rejects.toThrow(/bloquead/i);
 
-    // Nenhum efeito no transporte, nem mesmo um aviso ao destinatário proibido.
     expect(enviar).not.toHaveBeenCalled();
-    expect(avisar).toHaveBeenCalledTimes(1);
-    const aviso = avisar.mock.calls[0][0];
-    expect(aviso).toMatch(/bloquead/i);
-    expect(aviso).toMatch(/projeto/i);
-    expect(aviso).toContain(userId);
-    expect(aviso).not.toContain(pergunta);
-    expect(aviso).not.toContain("Cliente Sigiloso");
+    expect(source.commentsOf("PROJ-1")).toEqual([]);
+    conferirAviso(events, externo);
   });
 
-  it.each(["", "8:orgid:usuario-projeto-externo", "usuario-projeto", "8:orgid:tech-lead-projeto@outra-organizacao"])(
-    "não aceita correspondência parcial ou destinatário vazio: %j",
-    async (userId) => {
-      const { protegido, enviar, avisar } = preparar();
+  it.each(papeis)(
+    "conteúdo já enviado não autoriza a mesma pergunta a um $papel externo",
+    async ({ permitido, externo }) => {
+      const { channel, source, enviar, events } = preparar();
+      await channel.ask({ card: "PROJ-1", to: permitido, text: PERGUNTA });
+      const antes = source.commentsOf("PROJ-1").map((comentario) => ({ ...comentario }));
+      enviar.mockClear();
 
-      await expect(protegido.send({ userId, text: "Pergunta reservada" })).rejects.toThrow(/bloquead/i);
+      await expect(channel.ask({ card: "PROJ-1", to: externo, text: PERGUNTA })).rejects.toThrow(/bloquead/i);
 
       expect(enviar).not.toHaveBeenCalled();
-      expect(avisar).toHaveBeenCalledTimes(1);
+      expect(source.commentsOf("PROJ-1")).toEqual(antes);
+      conferirAviso(events, externo);
     },
   );
 
-  it("lista vazia bloqueia por padrão, em vez de desativar a validação", async () => {
-    const enviar = vi.fn<TeamsNotifier["send"]>().mockResolvedValue(undefined);
-    const avisar = vi.fn<(aviso: string) => void>();
-    const protegido = criarNotificadorDoProjeto({
-      destinatariosPermitidos: [],
-      notificador: { send: enviar },
-      avisar,
-    });
+  it.each(papeis)(
+    "revalida a autorização do $papel revogado antes de reconhecer um envio repetido",
+    async ({ permitido }) => {
+      const { channel, source, enviar, events, people } = preparar();
+      await channel.ask({ card: "PROJ-1", to: permitido, text: PERGUNTA });
+      const antes = source.commentsOf("PROJ-1").map((comentario) => ({ ...comentario }));
+      people.splice(people.findIndex((pessoa) => pessoa.id === permitido), 1);
+      enviar.mockClear();
 
-    await expect(protegido.send({ userId: "8:orgid:qualquer", text: "Pergunta" })).rejects.toThrow(/bloquead/i);
+      await expect(channel.ask({ card: "PROJ-1", to: permitido, text: PERGUNTA })).rejects.toThrow(/bloquead/i);
 
-    expect(enviar).not.toHaveBeenCalled();
-    expect(avisar).toHaveBeenCalledTimes(1);
-  });
-
-  it("revalida cada envio, sem reutilizar autorização do destinatário anterior", async () => {
-    const { protegido, enviar, avisar } = preparar();
-    const mensagemPermitida = { userId: "8:orgid:usuario-projeto", text: "Pergunta permitida" };
-    await protegido.send(mensagemPermitida);
-
-    await expect(protegido.send({ userId: "8:orgid:externo", text: "Pergunta secreta" })).rejects.toThrow(/bloquead/i);
-
-    expect(enviar).toHaveBeenCalledExactlyOnceWith(mensagemPermitida);
-    expect(avisar).toHaveBeenCalledTimes(1);
-  });
+      expect(enviar).not.toHaveBeenCalled();
+      expect(source.commentsOf("PROJ-1")).toEqual(antes);
+      conferirAviso(events, permitido);
+    },
+  );
 });
