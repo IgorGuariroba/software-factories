@@ -84,7 +84,10 @@ describe("guardrail no Channel realmente usado nos envios", () => {
       const { channel, source, enviar, events, people } = preparar();
       await channel.ask({ card: "PROJ-1", to: permitido, text: PERGUNTA });
       const antes = source.commentsOf("PROJ-1").map((comentario) => ({ ...comentario }));
-      people.splice(people.findIndex((pessoa) => pessoa.id === permitido), 1);
+      people.splice(
+        people.findIndex((pessoa) => pessoa.id === permitido),
+        1,
+      );
       enviar.mockClear();
 
       await expect(channel.ask({ card: "PROJ-1", to: permitido, text: PERGUNTA })).rejects.toThrow(/bloquead/i);
