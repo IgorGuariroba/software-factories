@@ -471,14 +471,19 @@ function taskRow(task, origem) {
         ...(isSelected ? { "aria-current": "page" } : {}),
       },
     },
-    el("span", {
-      className: `linha-ponto ${task.status === "bloqueada" ? "bloqueada" : hint?.yourTurn ? "atencao" : ""}`,
-    }),
-    el("span", { className: "linha-chave", text: task.key }),
-    el("span", { className: "linha-projeto", text: task.project }),
+    // Colunas com largura fixa (identificação, subtítulo, estado, contador): os títulos começam na mesma coordenada.
+    el(
+      "span",
+      { className: "linha-id" },
+      el("span", {
+        className: `linha-ponto ${task.status === "bloqueada" ? "bloqueada" : hint?.yourTurn ? "atencao" : ""}`,
+      }),
+      el("span", { className: "linha-chave", text: task.key }),
+      el("span", { className: "linha-projeto", text: task.project }),
+    ),
     el("span", { className: "linha-titulo", text: task.title }),
     el("span", { className: "linha-subtitulo", text: hint?.text ?? "" }),
-    statusPill(task),
+    el("span", { className: "linha-estado" }, statusPill(task)),
     el("span", { className: "linha-contador", text: `${task.attempts}×`, attrs: { title: "tentativas" } }),
   );
   link.addEventListener("click", () => {
@@ -938,8 +943,14 @@ async function refresh() {
 async function refreshQueue() {
   const list = $("elegiveis");
   const empty = $("elegiveis-vazio");
-  empty.hidden = true;
-  list.replaceChildren(el("li", { className: "vazio", text: "Consultando…" }));
+  const button = $("atualizar-elegiveis");
+  // Carregando: a própria caixa vira o estado de espera (mesma altura), e o botão clicado fica desabilitado.
+  list.replaceChildren();
+  empty.hidden = false;
+  empty.classList.add("carregando");
+  $("elegiveis-carregando").hidden = false;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   try {
     const cards = await getQueue();
     list.replaceChildren(
@@ -948,9 +959,13 @@ async function refreshQueue() {
     // Sem cards, o estado vazio explica o que fazer em vez de deixar a área em branco.
     empty.hidden = cards.length > 0;
   } catch (err) {
-    list.replaceChildren();
     empty.hidden = false;
     showError(err);
+  } finally {
+    empty.classList.remove("carregando");
+    $("elegiveis-carregando").hidden = true;
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
   }
 }
 
