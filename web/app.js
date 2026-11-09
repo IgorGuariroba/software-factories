@@ -28,6 +28,7 @@ import {
   saveRetroSettings,
   vetoTask,
 } from "./api.js";
+import { renderImplementation } from "./implementation.js";
 import {
   actionsFor,
   actionTab,
@@ -36,7 +37,6 @@ import {
   canAnswerQuestion,
   cardHint,
   detailStatusLabel,
-  formatCommit,
   isTerminal,
   moveTask,
   nextAction,
@@ -50,7 +50,6 @@ import {
   taskByRef,
   writeSituation,
 } from "./view.js";
-
 import { priorityTasks, visibleTasks, workspaceCounts } from "./workspace.js";
 
 const $ = (id) => document.getElementById(id);
@@ -64,6 +63,7 @@ const $ = (id) => document.getElementById(id);
 function el(tag, opts = {}, ...children) {
   const node = document.createElement(tag);
   if (opts.text !== undefined) node.textContent = opts.text;
+  if (opts.icon) node.append(svgIcon(opts.icon));
   if (opts.className) node.className = opts.className;
   for (const [name, value] of Object.entries(opts.attrs ?? {})) node.setAttribute(name, value);
   if (opts.onClick) node.addEventListener("click", opts.onClick);
@@ -336,7 +336,14 @@ function reviewRetroButton(task, retro, proposal) {
 const ACTIONS = {
   vetar: { label: "Vetar", danger: true, run: (t) => vetoTask(t.project, t.key) },
   pausar: { label: "Pausar", run: (t) => pauseTask(t.project, t.key) },
-  retomar: { label: "Retomar", run: (t) => resumeTask(t.project, t.key) },
+  retomar: {
+    label: "Retomar",
+    confirm: (t) =>
+      t.status === "bloqueada"
+        ? `Retomar ${t.key}? Confirme que a causa do bloqueio foi corrigida. A fábrica continuará do checkpoint e poderá executar ações reais; os guardrails serão verificados novamente.`
+        : null,
+    run: (t) => resumeTask(t.project, t.key),
+  },
   cancelar: {
     label: "Cancelar",
     danger: true,
@@ -353,18 +360,45 @@ function actionButtons(task) {
       className: action.danger ? "perigo" : "",
       attrs: { type: "button", "aria-label": `${action.label} ${task.key}` },
       onClick: () => {
-        if (action.confirm && !window.confirm(action.confirm(task))) return;
+        const confirmation = action.confirm?.(task);
+        if (confirmation && !window.confirm(confirmation)) return;
         run(() => action.run(task));
       },
     });
   });
 }
 
+/* Ícones SVG 16px, stroke 1.75, herdam a cor do texto. Montados por DOM, sem HTML a partir de string. */
+const ICON_PATHS = {
+  up: "M8 13V3M3.5 7.5 8 3l4.5 4.5",
+  down: "M8 3v10M3.5 8.5 8 13l4.5-4.5",
+};
+function svgIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [attr, value] of Object.entries({
+    viewBox: "0 0 16 16",
+    width: "16",
+    height: "16",
+    "aria-hidden": "true",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "1.75",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+  }))
+    svg.setAttribute(attr, value);
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", ICON_PATHS[name]);
+  svg.append(path);
+  return svg;
+}
+
 function moveButton(task, delta) {
   const order = moveTask(tasks, task.id, delta);
   const label = delta < 0 ? "Subir" : "Descer";
   const button = el("button", {
-    text: delta < 0 ? "↑" : "↓",
+    className: "mover-botao",
+    icon: delta < 0 ? "up" : "down",
     attrs: { type: "button", title: label, "aria-label": `${label} ${task.key} na fila` },
     onClick: () => order && run(() => reorderTasks(order)),
   });
@@ -419,7 +453,7 @@ function renderTasks() {
   for (const button of document.querySelectorAll("[data-modo]"))
     button.setAttribute("aria-pressed", String(button.dataset.modo === taskView));
   $("resultado-contagem").textContent =
-    `${visible.length} de ${tasks.length} tarefas · ${taskView === "lista" ? "Pendências primeiro" : "Organizadas por etapa"}`;
+    `${visible.length} de ${tasks.length} · ${taskView === "lista" ? "pendências primeiro" : "por etapa"}`;
   $("quadro").classList.toggle("modo-lista", taskView === "lista");
   const columns = boardColumns(visible);
   $("quadro").replaceChildren(
@@ -463,6 +497,7 @@ function renderDaemon() {
 
 let openedTask = null;
 function renderDetail(task) {
+  const opening = openedTask !== task.id || $("detalhe").hidden;
   const focused = document.activeElement;
   const editing =
     focused?.matches("textarea") && $("detalhe").contains(focused)
@@ -470,7 +505,6 @@ function renderDetail(task) {
       : null;
   if (openedTask !== task.id) {
     openedTask = task.id;
-    $("fluxo-tarefa").open = false;
     $("menu-acoes-tarefa").open = false;
     showTab(actionTab(task));
   }
@@ -491,10 +525,12 @@ function renderDetail(task) {
     ...(next
       ? [
           el("button", {
-            text: task.status === "pausada" ? "Retomar tarefa" : "Ver próxima ação",
+            text: actionsFor(task).includes("retomar") ? "Retomar tarefa" : "Ver próxima ação",
             attrs: { type: "button" },
             onClick: () => {
-              if (task.status === "pausada") {
+              if (actionsFor(task).includes("retomar")) {
+                const confirmation = ACTIONS.retomar.confirm(task);
+                if (confirmation && !window.confirm(confirmation)) return;
                 run(() => resumeTask(task.project, task.key));
                 return;
               }
@@ -622,150 +658,7 @@ function renderDetail(task) {
     ...task.tickets.map((t) => el("li", {}, el("strong", { text: t.titulo }), `: ${t.aceite}`)),
   );
 
-  const impl = task.implementation;
-  const implParts = [];
-  const implementationActive = task.stage === "implementacao" && task.status === "ativa";
-  implParts.push(
-    el(
-      "div",
-      { className: "bloco-detalhe" },
-      el("h3", { text: implementationActive ? "Implementação em andamento" : "Visão da implementação" }),
-      el("p", {
-        className: "vazio",
-        text: implementationActive
-          ? "A fábrica está trabalhando. Os registros abaixo são atualizados ao vivo conforme o progresso é salvo."
-          : `${detailStatusLabel(task)} · ${stageLabel(task.stage)}`,
-      }),
-    ),
-  );
-  if (!impl)
-    implParts.push(
-      el("p", {
-        className: "vazio",
-        text: implementationActive
-          ? "Aguardando os primeiros registros de branch e commits. Isso não significa que a execução está parada."
-          : "Nenhum registro de implementação disponível para esta tarefa.",
-      }),
-    );
-  else {
-    const completedTickets = task.tickets.filter((_, index) =>
-      impl.commits.some((commit) => commit.ticket === index && commit.phase === "implementacao"),
-    ).length;
-    if (task.tickets.length)
-      implParts.push(
-        el(
-          "div",
-          { className: "bloco-detalhe" },
-          el("strong", { text: `${completedTickets} de ${task.tickets.length} tickets com implementação registrada` }),
-          el("progress", {
-            attrs: {
-              value: String(completedTickets),
-              max: String(task.tickets.length),
-              "aria-label": "Tickets com commit de implementação",
-            },
-          }),
-          el("p", {
-            className: "vazio",
-            text: "Baseado nos commits registrados. Não representa aprovação de review, CI ou merge.",
-          }),
-        ),
-      );
-    implParts.push(
-      el(
-        "p",
-        {},
-        "Branch ",
-        el("code", { text: impl.branch }),
-        ` · ${impl.commits.length} commit(s) · ${impl.pushed ? "enviada ao remoto" : "ainda não enviada"}`,
-      ),
-    );
-    task.tickets.forEach((ticket, i) => {
-      const commits = impl.commits.filter((c) => c.ticket === i);
-      const phase = (name) => commits.find((c) => c.phase === name);
-      const done = phase("implementacao")
-        ? "GREEN · implementação registrada"
-        : phase("teste")
-          ? "RED · teste registrado"
-          : "Sem commits registrados";
-      implParts.push(
-        el(
-          "div",
-          { className: "ticket" },
-          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo} — ${done}` }),
-          el("p", { className: "vazio", text: ticket.aceite }),
-          ...commits.map((c) =>
-            el(
-              "p",
-              {},
-              el("code", { text: formatCommit(c) }),
-              ...(impl.repairs?.some((repair) => repair.sha === c.sha)
-                ? [el("span", { className: "selo", text: "Reparo humano validado" })]
-                : []),
-            ),
-          ),
-        ),
-      );
-    });
-  }
-  if (!impl && task.tickets.length)
-    implParts.push(
-      el("h3", { text: "Tickets planejados" }),
-      ...task.tickets.map((ticket, i) =>
-        el(
-          "div",
-          { className: "ticket" },
-          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo}` }),
-          el("p", { className: "vazio", text: "Sem commits registrados" }),
-          el("p", { text: ticket.aceite }),
-        ),
-      ),
-    );
-  const implementationEvents = task.events
-    .filter((event) => event.type === "progress" || event.type === "error")
-    .slice(-8)
-    .reverse();
-  implParts.push(
-    el("h3", { text: "Registros recentes de execução" }),
-    ...(implementationEvents.length
-      ? implementationEvents.map((event) =>
-          el(
-            "div",
-            { className: "ticket" },
-            el("span", { className: "quando", text: formatTime(event.at) }),
-            el("p", { text: event.message }),
-          ),
-        )
-      : [
-          el("p", {
-            className: "vazio",
-            text: "Ainda não há eventos de progresso. Esta visão mostra registros persistidos, não o terminal ou o raciocínio interno do modelo.",
-          }),
-        ]),
-  );
-  if (task.review)
-    implParts.push(
-      el("h3", { text: "Review" }),
-      el("p", {}, el("strong", { text: task.review.status }), ` · HEAD ${task.review.head.slice(0, 8)}`),
-      el("p", { text: task.review.summary }),
-    );
-  if (task.publication)
-    implParts.push(
-      el("h3", { text: "PR/MR" }),
-      el(
-        "p",
-        {},
-        `${task.publication.status} `,
-        ...(task.publication.url
-          ? [
-              el("a", {
-                text: task.publication.url,
-                attrs: { href: task.publication.url, target: "_blank", rel: "noopener" },
-              }),
-            ]
-          : []),
-      ),
-    );
-  $("detalhe-implementacao").replaceChildren(...implParts);
+  renderImplementation($("detalhe-implementacao"), task, el);
 
   $("detalhe-retros").replaceChildren(
     el("h3", { text: "Sugestões opcionais da retrô" }),
@@ -853,6 +746,7 @@ function renderDetail(task) {
     tab.textContent = n ? `${base} (${n})` : base;
   }
   $("detalhe").hidden = false;
+  if (opening && window.matchMedia("(max-width: 960px)").matches) window.scrollTo({ top: 0, behavior: "instant" });
   $("detalhe-vazio").hidden = true;
   if (editing) {
     const field = [...document.querySelectorAll("#detalhe textarea")].find(
@@ -906,7 +800,31 @@ function readSelection() {
   pendingRef = retro ? retro[1] : null;
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
+  syncSheet();
 }
+
+/* O detalhe abre como folha sobre o quadro, com origem no cartão clicado; fechar devolve o foco a ele. */
+let sheetOrigin = null;
+function syncSheet() {
+  const gaveta = $("gaveta");
+  if (selected && !gaveta.open) {
+    const card = document.activeElement?.closest?.(".cartao");
+    if (card) {
+      const box = card.getBoundingClientRect();
+      gaveta.style.setProperty("--origem-x", `${box.left + box.width / 2}px`);
+      gaveta.style.setProperty("--origem-y", `${box.top + box.height / 2}px`);
+      sheetOrigin = card;
+    }
+    gaveta.showModal();
+  } else if (!selected && gaveta.open) {
+    gaveta.close();
+  }
+}
+$("gaveta").addEventListener("close", () => {
+  if (selected) location.hash = "";
+  sheetOrigin?.focus?.({ preventScroll: true });
+  sheetOrigin = null;
+});
 
 async function refreshDetail() {
   if (!selected) {

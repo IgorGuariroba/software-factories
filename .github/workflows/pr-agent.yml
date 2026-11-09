@@ -36,9 +36,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
+          # Evita HTTP 402 por reservar 65536 tokens, sem dispensar review ou suggestions.
+          OPENROUTER__MAX_TOKENS: "16384"
+          OPENROUTER__REASONING_MAX_TOKENS: "2048"
           # Modelo no env: o .pr_agent.toml do repositório só vale a partir do branch padrão.
-          CONFIG.MODEL: "openrouter/anthropic/claude-sonnet-5.5"
-          CONFIG.FALLBACK_MODELS: '["openrouter/openai/gpt-5.4"]'
+          CONFIG.MODEL: "openrouter/deepseek/deepseek-v4.1-flash-1017"
+          CONFIG.FALLBACK_MODELS: '["openrouter/z-ai/glm-5.3-flash"]'
           CONFIG.CUSTOM_MODEL_MAX_TOKENS: "1000000"
           CONFIG.RESPONSE_LANGUAGE: "pt-BR"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"

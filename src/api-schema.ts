@@ -526,6 +526,10 @@ export const API_SCHEMA = {
             description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
             enum: ["triagem", "assumir", "veto", "spec", "implementacao", "review", "entrega", null],
           },
+          resumeAllowed: {
+            type: "boolean",
+            description: "Retomada disponível conforme o mesmo guardrail do comando; herdado pelo detalhe",
+          },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
           specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
@@ -626,6 +630,8 @@ export const API_SCHEMA = {
               },
               tickets: {
                 type: "array",
+                description:
+                  "Tickets originais aprovados, seguidos dos tickets de correção de review, na ordem durável",
                 items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },
               },
               implementation: {
@@ -638,6 +644,24 @@ export const API_SCHEMA = {
                     description: "criada pela fábrica (aceita force-push) ou adotada do remoto (só push normal)",
                   },
                   commits: { type: "array", items: { type: "object" } },
+                  synchronization: {
+                    type: ["object", "null"],
+                    description:
+                      "Integração da base na branch da fábrica, com recibo, HEAD e diagnóstico; exige novo review antes de publicar",
+                  },
+                  verifiedTickets: {
+                    type: "array",
+                    description:
+                      "Correções já atendidas, comprovadas por suíte GREEN no HEAD limpo e review independente; não são commits TDD",
+                    items: {
+                      type: "object",
+                      properties: {
+                        ticket: { type: "integer" },
+                        sha: { type: "string" },
+                        diagnostic: { type: "string" },
+                      },
+                    },
+                  },
                   pushed: { type: "boolean" },
                 },
               },
