@@ -16,6 +16,8 @@ export type CardState = z.infer<typeof CardState>;
 export const ModelRef = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
+  /** Família explícita para modelos cujo nome não identifica a linhagem (ex.: aliases privados). */
+  family: z.string().min(1).optional(),
 });
 export type ModelRef = z.infer<typeof ModelRef>;
 
@@ -41,6 +43,16 @@ export const TestCommand = z.object({
 });
 export type TestCommand = z.infer<typeof TestCommand>;
 
+/**
+ * Formatador do repositório (ex.: `[npx, biome, check, --write]`): a fábrica o roda depois de cada ticket e commita o
+ * resultado como estilo. Formatação é mecânica e toca testes; não cabe num ciclo TDD.
+ */
+export const FormatCommand = z.object({
+  command: z.array(z.string().min(1)).min(1),
+  timeoutSeconds: z.number().int().positive().default(120),
+});
+export type FormatCommand = z.infer<typeof FormatCommand>;
+
 /** Cards cujo título ou chave começa com `prefix` vão para `path`. */
 export const RepoMapping = z
   .object({
@@ -48,6 +60,7 @@ export const RepoMapping = z
     path: z.string().min(1),
     prefix: z.string().min(1),
     test: TestCommand,
+    format: FormatCommand.optional(),
   })
   .strict();
 export type RepoMapping = z.infer<typeof RepoMapping>;
@@ -91,6 +104,8 @@ export const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as con
 export const BusinessCalendar = z
   .object({
     /** Fuso IANA do expediente (ex.: America/Sao_Paulo). */
+    /** Inclui feriados legais BR/SP/Mogi; obrigatório implicitamente para activity: business-hours. */
+    legalHolidays: z.boolean().optional(),
     timezone: z.string().refine(isTimeZone, { message: "fuso horário IANA desconhecido" }).default("UTC"),
     workdays: z.array(z.enum(WEEKDAYS)).min(1).default(["mon", "tue", "wed", "thu", "fri"]),
     /** Início e fim do expediente, no fuso do calendário. */
@@ -153,6 +168,8 @@ const GitHubSourceConfig = z.object({
 
 export const ProjectConfig = z.object({
   name: z.string().min(1),
+  /** Execução e avisos automáticos: sempre (pessoal) ou somente no calendário do projeto (empresa). */
+  activity: z.enum(["always", "business-hours"]).default("always"),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
   dryRun: z.boolean().default(true),
   /** No ensaio, segura a pergunta para aprovação e não publica uma SPEC sem pergunta. */
@@ -172,6 +189,8 @@ export const ProjectConfig = z.object({
     triage: ModelRef.optional(),
     /** Implementação com TDD. Sem ele, usa o modelo de `spec`. */
     implementer: ModelRef.optional(),
+    /** Review obrigatório antes da publicação; família diferente da implementação, sem fallback. */
+    reviewer: ModelRef.optional(),
     /** Retrô de cada etapa e consolidada. Sem ele, usa o modelo de `spec`. */
     retro: ModelRef.optional(),
   }),

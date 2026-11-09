@@ -1,4 +1,4 @@
-import type { CodeHost } from "./code-host.js";
+import type { ChangeRequest, CodeHost, RequestDraft } from "./code-host.js";
 import { type CardState, type ProjectConfig, STATE_ORDER } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import type { EventRecorder } from "./events.js";
@@ -76,6 +76,8 @@ export interface EffectWriter {
    * uma branch adotada do remoto não conta).
    */
   pushBranch(repoPath: string, branch: string, opts?: { force?: boolean }): Promise<void>;
+  /** Cria/localiza PR/MR da branch revisada; dry-run só registra, nunca consulta um merge fictício. */
+  ensureRequest(cardKey: string, repoPath: string, draft: RequestDraft): Promise<ChangeRequest | undefined>;
   /**
    * Abre uma issue `retro` no repositório **público** da fábrica pelo RetroSink. Só no repositório configurado; o
    * título e o corpo passam pelo filtro de segredos e pelo saneamento dos valores do projeto (e do card `cardKey`), e
@@ -107,6 +109,8 @@ export function createEffectWriter(opts: {
   codeHost?: CodeHost;
   /** Se `branch` foi criada pela fábrica neste projeto, segundo o estado durável. Sem ele, nenhuma é. */
   isFactoryBranch?: (branch: string) => boolean | Promise<boolean>;
+  /** Confere identidade da Tarefa, clone, base e review aprovado do HEAD atual. */
+  isReviewedBranch?: (cardKey: string, repoPath: string, draft: RequestDraft) => Promise<boolean>;
   /** Issues da fábrica: a porta e o único repositório em que ela escreve. */
   retro?: { sink?: RetroSink; repo?: string };
 }): EffectWriter {
@@ -337,6 +341,23 @@ export function createEffectWriter(opts: {
           return undefined;
         },
         () => (opts.codeHost as CodeHost).pushBranch(repoPath, name, { force }),
+        () => undefined,
+      );
+    },
+
+    async ensureRequest(cardKey, repoPath, draft) {
+      const safe = { ...draft, title: redactSecrets(draft.title), body: outgoing(draft.body) };
+      return write<ChangeRequest | undefined>(
+        { target: cardKey, action: "pull-request", content: JSON.stringify(safe) },
+        async () => {
+          const notOwned = await cardNotOwned(cardKey);
+          if (notOwned) return notOwned;
+          if (PROTECTED_BRANCHES.has(draft.branch)) return "PR/MR não pode sair de branch protegida";
+          if (!opts.codeHost || !(await opts.isReviewedBranch?.(cardKey, repoPath, draft)))
+            return "a publicação exige branch da Tarefa com review aprovado do HEAD atual";
+          return undefined;
+        },
+        () => (opts.codeHost as CodeHost).ensureRequest(repoPath, safe),
         () => undefined,
       );
     },

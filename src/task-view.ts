@@ -2,7 +2,20 @@ import type { QueuedTask } from "./durable.js";
 import type { FactoryEvent } from "./events.js";
 
 /** Uma Tarefa como a API a lista em `GET /tasks`. */
-export const taskSummary = ({ id, project, key, title, status, stage, attempts, reason, ref }: QueuedTask) => ({
+export const taskSummary = ({
+  id,
+  project,
+  key,
+  title,
+  status,
+  stage,
+  attempts,
+  reason,
+  ref,
+  specReview,
+  triage,
+  questions,
+}: QueuedTask) => ({
   id,
   /** Identificador opaco da Tarefa: o único que sai no link das issues públicas da fábrica. */
   ref: ref ?? null,
@@ -13,6 +26,12 @@ export const taskSummary = ({ id, project, key, title, status, stage, attempts, 
   stage: stage ?? null,
   attempts,
   reason,
+  /** O que o quadro precisa para dizer a ação pendente sem abrir o detalhe. */
+  specReview: specReview ?? null,
+  triageReview: triage?.review ?? null,
+  /** Só a que já pode ser respondida: rascunho ou envio não confirmado não têm resposta ainda. */
+  pendingQuestion:
+    questions?.find((q) => q.answer === null && q.publication !== "draft" && q.publication !== "sending")?.n ?? null,
 });
 
 /**
@@ -38,33 +57,13 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
     ...taskSummary(task),
     pauseRequested: task.pauseRequested,
     vetoUntil: task.status === "aguardando-veto" && task.veto ? new Date(task.veto.until).toISOString() : null,
-    questions: (task.questions ?? []).map(
-      ({
-        n,
-        to,
-        text,
-        askedAt,
-        answer,
-        teamsNotice,
-        publication,
-        reminder,
-        origin,
-        userResponse,
-        needsForwarding,
-      }) => ({
-        n,
-        to,
-        text,
-        askedAt: new Date(askedAt).toISOString(),
-        answer,
-        origin,
-        userResponse: userResponse ?? null,
-        needsForwarding: needsForwarding ?? false,
-        teamsNotice: teamsNotice?.status ?? null,
-        publication: publication ?? "sent",
-        reminder: reminder ?? null,
-      }),
-    ),
+questions: (task.questions ?? []).map(({ n, to, text, askedAt, answer, teamsNotice, publication, reminder, origin, userResponse, needsForwarding }) => ({
+      n, to, text, askedAt: new Date(askedAt).toISOString(), answer, origin,
+      userResponse: userResponse ?? null, needsForwarding: needsForwarding ?? false,
+      teamsNotice: teamsNotice?.status ?? null, publication: publication ?? "sent", reminder: reminder ?? null,
+    })),
+    review: task.review ? { head: task.review.head, status: task.review.status, summary: task.review.summary } : null,
+    publication: task.publication ?? null,
     spec: task.delivery?.spec ?? null,
     specReview: task.specReview ?? null,
     triage: task.triage
@@ -75,8 +74,12 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
       ? {
           branch: implementation.branch,
           branchOrigin: implementation.branchOrigin ?? null,
+          repairs: implementation.repairs ?? [],
           commits: implementation.commits,
           pushed: implementation.pushed,
+          baseline: implementation.baseline ?? null,
+          baselineDiagnostic: implementation.baselineDiagnostic ?? null,
+          environmentRecovery: implementation.environmentRecovery ?? null,
         }
       : null,
     /** Retrôs das etapas e a consolidada, com as propostas classificadas e o que virou cada uma. */

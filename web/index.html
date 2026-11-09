@@ -10,99 +10,137 @@
   </head>
   <body>
     <header class="topo">
-      <h1>Fábrica de Software</h1>
+      <div class="marca"><span class="marca-icone" aria-hidden="true">F</span><div><h1>Fábrica de Software</h1><span class="marca-legenda">Seu trabalho, em movimento.</span></div></div>
       <div class="controles">
         <span id="conexao" class="selo" role="status">conectando…</span>
         <span id="daemon" class="selo">daemon: …</span>
         <button type="button" id="alternar-daemon" disabled>Pausar daemon</button>
         <button type="button" id="buscar">Buscar na Fonte</button>
+        <details class="menu-config"><summary>Configurações</summary><div class="menu-conteudo"><button type="button" id="configurar-retros">Configurar publicações</button></div></details>
       </div>
     </header>
 
+    <dialog id="configuracao-retros" aria-labelledby="configuracao-retros-titulo">
+      <form id="form-retros" class="resposta">
+        <h2 id="configuracao-retros-titulo">Publicações de retrô</h2>
+        <p>Escolha o repositório GitHub onde as sugestões aprovadas serão publicadas como issues. Esta configuração é global para todos os projetos.</p>
+        <label for="repositorio-retros">Repositório público (dono/nome)</label>
+        <input id="repositorio-retros" name="repo" required maxlength="200" placeholder="usuario/software-factories" aria-describedby="retros-impacto" />
+        <p id="retros-impacto">Salvar não publica nada. Cada proposta continua exigindo revisão e aprovação. A escolha fica salva neste daemon e vale sem reinício; substitui o valor inicial do ambiente.</p>
+        <p id="retros-config-status" role="status"></p>
+        <div class="acoes">
+          <button type="submit" id="salvar-retros">Salvar configuração</button>
+          <button type="button" id="fechar-configuracao-retros">Fechar</button>
+        </div>
+      </form>
+    </dialog>
     <p id="aviso" class="aviso" role="alert" hidden></p>
 
-    <main>
-      <section aria-labelledby="titulo-fila">
-        <h2 id="titulo-fila">Fila</h2>
-        <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa na fila.</p>
-        <table id="fila">
-          <thead>
-            <tr>
-              <th scope="col">#</th>
-              <th scope="col">Card</th>
-              <th scope="col">Título</th>
-              <th scope="col">Status</th>
-              <th scope="col">Etapa</th>
-              <th scope="col">Ações</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
+    <div class="layout">
+      <main class="quadro-area" aria-label="Quadro de tarefas">
+        <section class="visao-geral" aria-labelledby="titulo-visao">
+          <p class="sobretitulo">CENTRAL DE TRABALHO</p>
+          <h2 id="titulo-visao">Tudo no seu ritmo.</h2>
+          <p class="introducao">Acompanhe o progresso. Decida onde sua atenção faz diferença.</p>
+          <div class="resumo" aria-label="Filtrar tarefas por situação">
+            <button type="button" class="metrica" data-filtro="todas" aria-pressed="true"><span>Todas as tarefas</span><strong id="total-todas">0</strong><small>Visão completa do trabalho</small></button>
+            <button type="button" class="metrica" data-filtro="atencao" aria-pressed="false"><span>Aguardando você</span><strong id="total-atencao">0</strong><small>Decisões e respostas pendentes</small></button>
+            <button type="button" class="metrica" data-filtro="execucao" aria-pressed="false"><span>Em execução</span><strong id="total-execucao">0</strong><small>A fábrica está trabalhando</small></button>
+            <button type="button" class="metrica" data-filtro="bloqueadas" aria-pressed="false"><span>Bloqueadas</span><strong id="total-bloqueadas">0</strong><small>Precisam de uma intervenção</small></button>
+          </div>
+        </section>
+        <div class="barra">
+          <h2 id="titulo-fila">Tarefas <span id="fila-contagem" class="contagem"></span></h2>
+          <details class="elegiveis">
+            <summary>Cards elegíveis na Fonte</summary>
+            <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
+            <ul id="elegiveis" class="lista"></ul>
+          </details>
+        </div>
+        <div class="ferramentas">
+          <label class="busca" for="busca-tarefas"><span>Buscar tarefas</span><input id="busca-tarefas" type="search" placeholder="Título, chave ou projeto…" autocomplete="off" /></label>
+          <div class="modos" role="group" aria-label="Visualização das tarefas"><button type="button" data-modo="lista" aria-pressed="true">Lista</button><button type="button" data-modo="quadro" aria-pressed="false">Quadro</button></div>
+        </div>
+        <p id="resultado-contagem" class="resultado" role="status"></p>
+        <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa encontrada. Experimente outro filtro ou busca.</p>
+        <div id="quadro" class="quadro"></div>
+      </main>
 
-      <section aria-labelledby="titulo-encerradas">
-        <h2 id="titulo-encerradas">Encerradas</h2>
-        <p id="encerradas-vazia" class="vazio" hidden>Nenhuma tarefa encerrada.</p>
-        <table id="encerradas">
-          <thead>
-            <tr>
-              <th scope="col">Card</th>
-              <th scope="col">Título</th>
-              <th scope="col">Status</th>
-              <th scope="col">Etapa</th>
-              <th scope="col">Motivo</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
+      <aside class="gaveta" aria-label="Detalhe da tarefa">
+        <p id="detalhe-vazio" hidden></p>
 
-      <section aria-labelledby="titulo-elegiveis">
-        <h2 id="titulo-elegiveis">Cards elegíveis na Fonte</h2>
-        <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
-        <ul id="elegiveis" class="lista"></ul>
-      </section>
+        <article id="detalhe" aria-labelledby="titulo-detalhe" hidden>
+          <nav class="detalhe-navegacao" aria-label="Navegação da tarefa">
+            <button type="button" id="fechar-detalhe" aria-label="Fechar detalhe">← Voltar às tarefas</button>
+            <details class="menu-config" id="menu-acoes-tarefa"><summary>Ações da tarefa</summary><div id="detalhe-acoes" class="menu-conteudo acoes"></div></details>
+          </nav>
+          <header class="cabecalho">
+            <div>
+              <p id="detalhe-ref" class="ref"></p>
+              <h2 id="titulo-detalhe">Tarefa</h2>
+              <p id="detalhe-estado" class="linha-estado"></p>
+            </div>
+          </header>
 
-      <section id="detalhe" aria-labelledby="titulo-detalhe" hidden>
-        <h2 id="titulo-detalhe">Tarefa</h2>
-        <button type="button" id="fechar-detalhe">Fechar</button>
-        <dl id="detalhe-estado" class="estado"></dl>
-        <div id="detalhe-acoes" class="acoes"></div>
+          <p id="detalhe-proximo" class="proximo" role="status" hidden></p>
 
-        <h3>Triagem</h3>
-        <div id="detalhe-triagem"></div>
+          <details class="fluxo-compacto" id="fluxo-tarefa">
+            <summary><span><small>PROGRESSO DA TAREFA</small><strong id="etapa-atual">Carregando etapa…</strong></span><span class="fluxo-expandir">Ver etapas</span></summary>
+            <ol id="detalhe-pipeline" class="pipeline" aria-label="Etapas do fluxo"></ol>
+          </details>
 
-        <h3>Perguntas ao PO</h3>
-        <ul id="detalhe-perguntas" class="lista"></ul>
+          <div class="abas" role="tablist" aria-label="Seções da Tarefa">
+            <button type="button" role="tab" data-aba="atividade">Atividade</button>
+            <button type="button" role="tab" data-aba="spec">SPEC e Tickets</button>
+            <button type="button" role="tab" data-aba="implementacao">Implementação</button>
+            <button type="button" role="tab" data-aba="perguntas">Perguntas</button>
+            <button type="button" role="tab" data-aba="retros">Retrôs</button>
+            <button type="button" role="tab" data-aba="escritas">Escritas</button>
+          </div>
 
-        <h3>SPEC</h3>
-        <pre id="detalhe-spec" class="texto"></pre>
-        <div id="detalhe-spec-revisao"></div>
-        <ol id="detalhe-tickets" class="lista"></ol>
+          <section data-painel="atividade" role="tabpanel">
+            <ol id="detalhe-eventos" class="linha-do-tempo"></ol>
+          </section>
 
-        <h3>Implementação</h3>
-        <div id="detalhe-implementacao"></div>
+          <section data-painel="spec" role="tabpanel" hidden>
+            <div class="bloco-detalhe"><h3>Triagem</h3>
+            <div id="detalhe-triagem"></div></div>
+            <div class="bloco-detalhe"><h3>SPEC</h3>
+            <div id="detalhe-spec-revisao"></div>
+            <pre id="detalhe-spec" class="texto"></pre></div>
+            <div class="bloco-detalhe"><h3>Tickets</h3>
+            <p id="tickets-vazios" class="vazio" hidden>Os tickets aparecerão quando a SPEC for preparada.</p>
+            <ol id="detalhe-tickets" class="lista"></ol></div>
+          </section>
 
-        <h3>Retrôs</h3>
-        <div id="detalhe-retros"></div>
+          <section data-painel="implementacao" role="tabpanel" hidden>
+            <div id="detalhe-implementacao"></div>
+          </section>
 
-        <h3>Escritas registradas</h3>
-        <table id="detalhe-escritas">
-          <thead>
-            <tr>
-              <th scope="col">Quando</th>
-              <th scope="col">Situação</th>
-              <th scope="col">Ação</th>
-              <th scope="col">Alvo</th>
-              <th scope="col">Conteúdo</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+          <section data-painel="perguntas" role="tabpanel" hidden>
+            <ul id="detalhe-perguntas" class="lista"></ul>
+          </section>
 
-        <h3>Histórico de eventos</h3>
-        <ol id="detalhe-eventos" class="lista historico"></ol>
-      </section>
-    </main>
+          <section data-painel="retros" role="tabpanel" hidden>
+            <div id="detalhe-retros"></div>
+          </section>
+
+          <section data-painel="escritas" role="tabpanel" hidden>
+            <table id="detalhe-escritas">
+              <thead>
+                <tr>
+                  <th scope="col">Quando</th>
+                  <th scope="col">Situação</th>
+                  <th scope="col">Ação</th>
+                  <th scope="col">Alvo</th>
+                  <th scope="col">Conteúdo</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </section>
+        </article>
+      </aside>
+    </div>
   </body>
 </html>

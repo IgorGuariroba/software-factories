@@ -4,9 +4,20 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
 import { AUTOMATION_MARK } from "../src/effect-writer.js";
+import { createHostTestRunner } from "../src/test-runner.js";
 import { FakeModel, type SpecDelivery, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
-import { api, events, eventually, poll, startTestFactory, type TestFactory, USER, waitForStatus } from "./harness.js";
+import {
+  api,
+  events,
+  eventually,
+  poll,
+  startTestFactory,
+  type TestFactory,
+  tasks,
+  USER,
+  waitForStatus,
+} from "./harness.js";
 
 const SLOW = 60_000;
 const DONE_WITHIN = 45_000;
@@ -361,6 +372,233 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
     expect(factory.codeHost.pushed).toEqual([]);
   });
 
+  it("recupera dependências ausentes pelo lockfile antes do TDD sem intervenção humana", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      files: {
+        "package.json": '{"name":"app","private":true}\n',
+        "package-lock.json": '{"name":"app","lockfileVersion":3,"packages":{}}\n',
+        ".gitignore": "node_modules/\n",
+      },
+    });
+    const wrapper = join(root, "testar.mjs");
+    await writeFile(
+      wrapper,
+      `import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (!existsSync("node_modules/pronto")) {
+  console.error("Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'vitest' imported from vitest.config.ts");
+  process.exit(1);
+}
+process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).status ?? 1);
+`,
+    );
+    const setupCommands: string[][] = [];
+    const host = createHostTestRunner();
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    const before = await repo.userSnapshot();
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      testRunner: {
+        async run(request) {
+          if (request.command[0] !== "npm") return host.run(request);
+          setupCommands.push([...request.command]);
+          await mkdir(join(request.cwd, "node_modules"));
+          await writeFile(join(request.cwd, "node_modules", "pronto"), "");
+          return { exitCode: 0, timedOut: false, output: "installed" };
+        },
+      },
+      config: { repositories: [mapping(repo, { test: { ...NODE_TEST, command: [process.execPath, wrapper] } })] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", 3000);
+    expect(setupCommands).toEqual([["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]]);
+    expect(await repo.userSnapshot()).toBe(before);
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
+    const detail = await api<{ implementation: { environmentRecovery: { status: string; attempts: number } } }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1",
+    );
+    expect(detail.implementation.environmentRecovery).toMatchObject({ status: "recuperado", attempts: 1 });
+  });
+
+  it("limita recuperação malsucedida mesmo após reinício e não trata ambiente quebrado como RED", async () => {
+    const repo = await createRemoteRepo(root, "app", {
+      files: {
+        "package.json": '{"name":"app","private":true}\n',
+        "package-lock.json": '{"name":"app","lockfileVersion":3,"packages":{}}\n',
+        ".gitignore": "node_modules/\n",
+      },
+    });
+    let installs = 0;
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      testRunner: {
+        async run(request) {
+          if (request.command[0] === "npm") {
+            installs++;
+            return { exitCode: 1, timedOut: false, output: "registry indisponível" };
+          }
+          return { exitCode: 1, timedOut: false, output: "Cannot find package 'vitest'" };
+        },
+      },
+      config: { repositories: [mapping(repo)] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada");
+    const detail = await api<{ implementation: { environmentRecovery: { status: string; diagnostic: string } } }>(
+      factory,
+      "GET",
+      "/tasks/exemplo/PROJ-1",
+    );
+    expect(detail.implementation.environmentRecovery).toMatchObject({
+      status: "falhou",
+      diagnostic: expect.stringContaining("registry indisponível"),
+    });
+    factory = await factory.restart();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "bloqueada");
+    expect(installs).toBe(1);
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await repo.branches()).toEqual(["main"]);
+  });
+
+  it.each([false, true])("preserva reparo versionado pendente na retomada (staged: %s)", async (staged) => {
+    const original = '{"ok":false}\n';
+    const repair = '{"ok":true}\n';
+    const repo = await createRemoteRepo(root, "app", {
+      files: { "ambiente.json": original, ".gitignore": "node_modules/\n" },
+    });
+    const wrapper = join(root, "testar.mjs");
+    await writeFile(
+      wrapper,
+      `import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (!existsSync("node_modules/pronto") && !JSON.parse(readFileSync("ambiente.json", "utf8")).ok) process.exit(1);
+process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).status ?? 1);
+`,
+    );
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      config: { repositories: [mapping(repo, { test: { ...NODE_TEST, command: [process.execPath, wrapper] } })] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+    const clone = join(factory.stateDir, "worktrees", "exemplo", "PROJ-1");
+    await writeFile(join(clone, "ambiente.json"), repair);
+    if (staged) await git(clone, "add", "ambiente.json");
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await eventually(async () =>
+      expect(await tasks(factory as TestFactory)).toMatchObject([
+        { status: "bloqueada", reason: expect.stringContaining("alterações versionadas pendentes") },
+      ]),
+    );
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await readFile(join(clone, "ambiente.json"), "utf8")).toBe(repair);
+    expect(await repo.branches()).toEqual(["main"]);
+    // A pessoa remove o reparo pendente e instala dependências ignoradas: pode retomar sem perda de trabalho.
+    await git(clone, "restore", "--staged", "--worktree", "ambiente.json");
+    await mkdir(join(clone, "node_modules"));
+    await writeFile(join(clone, "node_modules", "pronto"), "");
+    factory = await factory.restart();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
+  });
+
+  it("retoma baseline bloqueado após corrigir o ambiente e revalida antes de chamar o implementador", async () => {
+    const repo = await createRemoteRepo(root, "app");
+    const flag = join(root, "ambiente-quebrado");
+    const wrapper = join(root, "testar.mjs");
+    await writeFile(flag, "");
+    await writeFile(
+      wrapper,
+      `import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (existsSync(${JSON.stringify(flag)})) process.exit(1);
+process.exit(spawnSync(process.execPath, ["--test"], { stdio: "inherit" }).status ?? 1);
+`,
+    );
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, CSV_CYCLE());
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      config: { repositories: [mapping(repo, { test: { ...NODE_TEST, command: [process.execPath, wrapper] } })] },
+    });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    // Retomar sem corrigir o ambiente mede de novo e continua bloqueando, sem chamar o modelo.
+    const blockedCount = async () =>
+      (await events(factory as TestFactory)).filter((e) => e.type === "task" && e.status === "bloqueada").length;
+    const previousBlocks = await blockedCount();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await eventually(async () => expect(await blockedCount()).toBeGreaterThan(previousBlocks));
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+    expect(model.calls.some((c) => c.tools.includes("escrever_arquivo"))).toBe(false);
+    expect(await repo.branches()).toEqual(["main"]);
+    await rm(flag);
+    factory = await factory.restart();
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+    expect((await repo.branchLog(BRANCH)).map((c) => c.subject)).toEqual([
+      "test: adiciona teste para Gerar CSV",
+      "feat: Gerar CSV",
+    ]);
+  });
+
+  it("formatação é passo mecânico da fábrica: o formatador do repositório vira commit de estilo, sem ciclo TDD", async () => {
+    // Arquivo fora do padrão que a Tarefa não tocou: o formatador não pode puxá-lo para a branch.
+    const legado = "export const legado = 1;   \n";
+    const repo = await createRemoteRepo(root, "app", { files: { "src/legado.mjs": legado } });
+    // Formatador de mentira: tira espaços no fim das linhas de todo .mjs, inclusive dos testes.
+    const formatter = join(root, "formatar.mjs");
+    await writeFile(
+      formatter,
+      `import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+for (const dir of ["src", "test"]) for (const f of readdirSync(dir, { withFileTypes: true }).filter((e) => e.name.endsWith(".mjs")))
+  writeFileSync(dir + "/" + f.name, readFileSync(dir + "/" + f.name, "utf8").replace(/[ ]+$/gm, ""));
+`,
+    );
+    const model = new FakeModel();
+    scriptImplementer(model, ONE_TICKET, [
+      write({ "test/csv.test.mjs": CSV_TEST.replace("\n", "   \n") }),
+      write({ "src/csv.mjs": CSV_IMPL }),
+    ]);
+    factory = await startTestFactory({
+      cards: [card()],
+      model,
+      config: {
+        repositories: [mapping(repo, { format: { command: [process.execPath, formatter], timeoutSeconds: 30 } })],
+      },
+    });
+
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect(await repo.branchLog(BRANCH)).toEqual([
+      { subject: "test: adiciona teste para Gerar CSV", files: ["test/csv.test.mjs"] },
+      { subject: "feat: Gerar CSV", files: ["src/csv.mjs"] },
+      { subject: "style: aplica o formatador do repositório", files: ["test/csv.test.mjs"] },
+    ]);
+    expect(await repo.show(BRANCH, "test/csv.test.mjs")).toBe(CSV_TEST.trim());
+  });
+
   it("código que não faz os testes passarem é recusado até o limite: a Tarefa bloqueia e nada é enviado", async () => {
     const repo = await createRemoteRepo(root, "app");
     const model = new FakeModel();
@@ -378,8 +616,38 @@ describe("TDD verificado pela fábrica", { timeout: SLOW }, () => {
 
     const blocked = (await events(factory)).find((e) => e.type === "task" && e.status === "bloqueada");
     expect(blocked?.reason).toContain("TDD recusado 3 vezes");
+    // O motivo vai para o Telegram: resumo curto, sem a saída da suíte (ela fica no progresso da Tarefa).
+    expect(blocked?.reason).not.toContain("código de saída");
+    expect(String(blocked?.reason).length).toBeLessThan(300);
     expect(await repo.branches()).toEqual(["main"]);
     expect(factory.codeHost.pushed).toEqual([]);
+  });
+});
+
+describe("retomada de TDD recusado no limite", { timeout: SLOW }, () => {
+  it("retomar a Tarefa bloqueada por TDD recusado dá novas tentativas na mesma fase, sem refazer o que foi commitado", async () => {
+    const repo = await createRemoteRepo(root, "app");
+    const model = new FakeModel();
+    const WRONG = `export const gerarCsv = () => "errado";\n`;
+    scriptImplementer(model, ONE_TICKET, [
+      write({ "test/csv.test.mjs": CSV_TEST }),
+      write({ "src/csv.mjs": WRONG }),
+      write({ "src/csv.mjs": WRONG }),
+      write({ "src/csv.mjs": WRONG }),
+      // Depois de alguém mudar o que impedia (config, ambiente), a retomada chama o implementador de novo.
+      write({ "src/csv.mjs": CSV_IMPL }),
+    ]);
+    factory = await startTestFactory({ cards: [card()], model, config: { repositories: [mapping(repo)] } });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "bloqueada", DONE_WITHIN);
+
+    await api(factory, "POST", "/tasks/exemplo/PROJ-1/resume");
+    await waitForStatus(factory, "PROJ-1", "concluida", DONE_WITHIN);
+
+    expect(await repo.branchLog(BRANCH)).toEqual([
+      { subject: "test: adiciona teste para Gerar CSV", files: ["test/csv.test.mjs"] },
+      { subject: "feat: Gerar CSV", files: ["src/csv.mjs"] },
+    ]);
   });
 });
 

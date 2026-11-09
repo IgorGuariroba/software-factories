@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -15,10 +15,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
-import { addBusinessHours, workdayHours } from "./business-hours.js";
+import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import type { CardState, ProjectConfig } from "./config.js";
+import { runDelivery } from "./delivery-stage.js";
 import type { DemandSource } from "./demand-source.js";
 import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
 import {
@@ -43,15 +44,25 @@ import {
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhamento-tecnico.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
+import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
-import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
+import {
+  baselineBlockedReason,
+  baselineWorkspaceBlockedReason,
+  createImplementationExtension,
+  runImplementation,
+  StageBlocked,
+} from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
 import { respostaNaoSei } from "./resposta-tecnica.js";
+import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
+import { isRetroRepository } from "./retro-settings.js"
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
+import { createReviewExtension, runReview } from "./review-stage.js";
 import { redactSecrets } from "./secrets.js";
 import {
   answerFollowUp,
@@ -228,6 +239,12 @@ function retroInput(stage: RetroStage, task: QueuedTask, all: FactoryEvent[]): s
       `Push da branch: ${impl?.pushed ? "feito" : "não feito"}.`,
     ].join("\n");
   }
+  if (stage === "triagem" || stage === "review" || stage === "mr")
+    return [
+      `# Retrô da etapa ${stage}`,
+      ...common,
+      JSON.stringify(stage === "triagem" ? task.triage : stage === "review" ? task.review : task.publication),
+    ].join("\n");
   const retros = (task.retros ?? []).filter((r) => r.stage !== "tarefa");
   return [
     "# Retrô consolidada da Tarefa",
@@ -276,15 +293,15 @@ export async function startFactory(opts: {
     const timer = setTimeout(callback, delayMs);
     return () => clearTimeout(timer);
   };
+  const retroSettings = { ...opts.retro };
   let events!: DurableEventLog;
-  if (!opts.retro?.sink || !opts.retro.repo)
-    console.warn(
-      "[fábrica] retrô sem repositório da fábrica: defina FACTORY_RETRO_REPO=dono/nome para abrir issues; " +
-        "as propostas da fábrica ficam só registradas nas Tarefas.",
-    );
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   const projects = new Map(
     opts.projects.map((p) => {
+      // Execução e SLAs usam o mesmo calendário efetivo, inclusive feriados legais.
+      if (p.config.activity === "business-hours") {
+        p = { ...p, config: { ...p.config, calendar: { ...p.config.calendar, legalHolidays: true } } };
+      }
       const codeHost = p.codeHost ?? gitCodeHost;
       const writer: EffectWriter = createEffectWriter({
         ...p,
@@ -300,7 +317,26 @@ export async function startFactory(opts: {
               t.implementation?.branch === branch &&
               t.implementation.branchOrigin === "criada",
           ),
-        retro: opts.retro,
+        isReviewedBranch: async (cardKey, cwd, draft) => {
+          const task = (await readState()).tasks.find((t) => t.project === p.config.name && t.key === cardKey);
+          const progress = task?.implementation;
+          if (
+            !progress ||
+            (await realpath(progress.worktree).catch(() => null)) !== cwd ||
+            progress.branch !== draft.branch ||
+            task.review?.status !== "aprovado"
+          )
+            return false;
+          if (p.config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== p.config.dryRun))
+            return false;
+          const base = progress.defaultBranch ?? (await defaultBranch(cwd));
+          return (
+            draft.base === base &&
+            (await git(cwd, ["rev-parse", "HEAD"])).trim() === task.review.head &&
+            task.review.head === progress.head
+          );
+        },
+        retro: retroSettings,
       });
       const channel: Channel = createCardCommentChannel({ source: p.source, writer });
       return [p.config.name, { ...p, codeHost, writer, channel }] as const;
@@ -313,6 +349,7 @@ export async function startFactory(opts: {
     events: eventRecorder,
   };
   const implementationTools = createImplementationExtension(implementationDeps);
+  const reviewTools = createReviewExtension(implementationDeps.worktreesRoot);
   const projectOf = (name: string) => {
     const project = projects.get(name);
     if (!project) throw new Error(`Projeto ${name} não está configurado`);
@@ -321,6 +358,10 @@ export async function startFactory(opts: {
 
   const Tarefa = createTarefaTask({
     retryDelayMs,
+    availableAt(input) {
+      const config = projectOf(input.project).config;
+      return nextProjectActivity(config, clock.now());
+    },
     async run(input, step, runtime) {
       const project = projectOf(input.project);
       const { writer, source } = project;
@@ -351,14 +392,54 @@ export async function startFactory(opts: {
         await writer.transition(input.key, "in_progress", { from: "todo" });
         return undefined;
       }
-      if (step === RETRO_STEP.spec || step === RETRO_STEP.implementacao) {
-        const stage = step === RETRO_STEP.spec ? "spec" : "implementacao";
-        if ((await retro(stage)) && project.config.retroApproval) await holdAfterRetro(stage);
+      const retroStage = (Object.entries(RETRO_STEP) as [RetroStage, string][]).find(
+        ([, value]) => value === step,
+      )?.[0];
+      if (retroStage) {
+        if ((await retro(retroStage)) && project.config.retroApproval && retroStage !== "tarefa")
+          await holdAfterRetro(retroStage);
         return undefined;
       }
-      if (step === RETRO_STEP.tarefa) {
-        await retro("tarefa");
+      if (step === "revisar") {
+        await reviewLoop();
         return undefined;
+      }
+      if (step === "entregar") {
+        for (let batch = 0; batch < 3; batch++) {
+          const publishProgress = async () => {
+            const publication = (await readState()).tasks.find((t) => t.id === input.id)?.publication;
+            if (publication)
+              await progressOnce(`PR/MR ${publication.status}${publication.url ? `: ${publication.url}` : ""}`);
+          };
+          let outcome: Awaited<ReturnType<typeof runDelivery>>;
+          try {
+            outcome = await runDelivery({
+              taskId: input.id,
+              runtime,
+              config: project.config,
+              codeHost: project.codeHost,
+              writer,
+              worktreesRoot: implementationDeps.worktreesRoot,
+            });
+          } catch (err) {
+            // Bloqueio na entrega (ex.: CI reprovada): o motivo aparece no progresso e o bloqueio segue.
+            if (err instanceof StageBlocked) await progressOnce(`Entrega bloqueada: ${redactSecrets(err.message)}`);
+            else await publishProgress();
+            throw err;
+          }
+          await publishProgress();
+          if (outcome !== "revisar") return outcome;
+          const feedback = (await readState()).tasks.find((t) => t.id === input.id)?.publication?.pendingFeedback ?? [];
+          await reviewLoop(feedback);
+          await runtime.commit(async (tx) => {
+            const publication = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.publication;
+            if (publication) {
+              publication.feedbackIds = [...new Set([...publication.feedbackIds, ...feedback.map((f) => f.id)])];
+              publication.pendingFeedback = [];
+            }
+          });
+        }
+        return "acompanhar";
       }
 
       // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
@@ -369,39 +450,7 @@ export async function startFactory(opts: {
       });
 
       if (step === "implementar") {
-        if (!delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
-        const card = await source.getCard(input.key);
-        if (!card) throw new Error(`card ${input.key} não existe mais`);
-        const current = (await readState()).tasks.find((task) => task.id === input.id);
-        const repository =
-          current?.repositoryPath !== undefined
-            ? project.config.repositories?.find((candidate) => candidate.path === current.repositoryPath)
-            : resolveRepository(project.config.repositories, card);
-        if (project.config.repositories?.length && !repository) {
-          if (current && pendingQuestion(current)) return "aguardar";
-          // Falta de mapeamento exige uma decisão humana, não é violação de guardrail.
-          await ask(
-            current?.questions ?? [],
-            repositoryQuestion(card, project.config.repositories),
-            "tecnica",
-            "repositorio",
-          );
-          return "aguardar";
-        }
-        await runImplementation({
-          repositoryPath: repository?.path,
-          harness,
-          runtime,
-          taskId: input.id,
-          config: project.config,
-          codeHost: project.codeHost,
-          writer,
-          card,
-          delivery,
-          model: project.config.roles.implementer ?? project.config.roles.spec,
-          deps: implementationDeps,
-          tools: implementationTools,
-        });
+        await implement();
         return undefined;
       }
 
@@ -415,7 +464,7 @@ export async function startFactory(opts: {
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
           if (!task) return;
-          approved = task.specReview === "approved";
+          approved = task.specReview === "approved" && task.specApprovedDryRun === project.config.dryRun;
           if (!approved) task.specReview = "draft";
         });
         if (!approved) return "aguardar";
@@ -423,6 +472,61 @@ export async function startFactory(opts: {
       await writer.upsertComment(input.key, "SPEC", delivery.spec);
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
       return undefined;
+
+      async function implement(): Promise<void> {
+        const current = (await readState()).tasks.find((t) => t.id === input.id);
+        if (!current?.delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        await runImplementation({
+          harness,
+          runtime,
+          taskId: input.id,
+          config: project.config,
+          codeHost: project.codeHost,
+          writer,
+          card,
+          delivery: {
+            ...current.delivery,
+            tickets: [...current.delivery.tickets, ...(current.correctionTickets ?? [])],
+          },
+          model: project.config.roles.implementer ?? project.config.roles.spec,
+          deps: implementationDeps,
+          tools: implementationTools,
+        });
+      }
+
+      /** Registra progresso sem repetir: `ever` compara com todo o histórico (review recuperado), senão só com o último. */
+      async function progressOnce(message: string, ever = false): Promise<void> {
+        const previous = events
+          .list()
+          .filter((e) => e.type === "progress" && e.project === input.project && e.target === input.key)
+          .map((e) => (e.type === "progress" ? e.message : ""));
+        if (ever ? !previous.includes(message) : previous.at(-1) !== message)
+          await events.append({ type: "progress", project: input.project, target: input.key, message });
+      }
+
+      async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
+        for (;;) {
+          const verdict = await runReview({
+            harness,
+            runtime,
+            taskId: input.id,
+            config: project.config,
+            worktreesRoot: implementationDeps.worktreesRoot,
+            tools: reviewTools,
+            feedback,
+          });
+          const reviewed = (await readState()).tasks.find((t) => t.id === input.id)?.review;
+          if (verdict && reviewed)
+            await progressOnce(
+              `Review ${verdict} do HEAD ${reviewed.head.slice(0, 8)}: ${reviewed.summary.slice(0, 400)}`,
+              true,
+            );
+          if (verdict !== "corrigir") return;
+          await implement();
+        }
+      }
 
       /**
        * Triagem da issue (ADR-0014), só nos repositórios monitorados: checagens determinísticas e, sem decisão, o
@@ -620,7 +724,14 @@ export async function startFactory(opts: {
       /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
       async function retro(stage: RetroStage): Promise<boolean> {
         const task = (await readState()).tasks.find((t) => t.id === input.id);
-        if (!task || (stage === "implementacao" && !task.implementation)) return false;
+        if (
+          !task ||
+          (stage === "implementacao" && !task.implementation) ||
+          (stage === "triagem" && !task.triage) ||
+          (stage === "review" && !task.review) ||
+          (stage === "mr" && !task.publication)
+        )
+          return false;
         await runRetro({
           harness,
           runtime,
@@ -642,7 +753,7 @@ export async function startFactory(opts: {
       }
 
       /** Portão `retroApproval`: pede pausa (o próximo passo espera) e avisa o usuário, uma vez por etapa. */
-      async function holdAfterRetro(stage: "spec" | "implementacao"): Promise<void> {
+      async function holdAfterRetro(stage: RetroStage): Promise<void> {
         let held = false;
         await runtime.commit(async (tx) => {
           const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
@@ -658,7 +769,7 @@ export async function startFactory(opts: {
           target: input.key,
           reason: "retro-pronta",
           message:
-            `A retrô da ${stage === "spec" ? "SPEC" : "implementação"} do card ${input.key} está pronta. ` +
+            `A retrô da etapa ${stage} do card ${input.key} está pronta. ` +
             "A Tarefa está pausada antes da próxima etapa: revise e retome para continuar.",
         });
       }
@@ -744,6 +855,10 @@ export async function startFactory(opts: {
     },
     async escalate(input, runtime) {
       const project = projectOf(input.project);
+      if (project.config.activity === "business-hours") {
+        const next = nextProjectActivity(project.config, runtime.now());
+        if (next > runtime.now()) return next;
+      }
       let question: Question | undefined;
       await runtime.commit(async (tx) => {
         const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
@@ -868,6 +983,7 @@ export async function startFactory(opts: {
   registry.install(TriageExtension);
   registry.install(RetroExtension);
   registry.install(implementationTools.extension);
+  registry.install(reviewTools.extension);
   await mkdir(dirname(opts.statePath), { recursive: true });
   const harness = await Harness.open(
     await openNodeSqliteStorage(opts.statePath),
@@ -887,6 +1003,11 @@ export async function startFactory(opts: {
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
+  retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
+  if (!retroSettings.repo)
+    console.warn(
+      "[fábrica] Configure o repositório das retrôs em Configurar publicações na web; nenhuma issue será publicada sem aprovação.",
+    );
   await reinspectPendingVetoes();
 
   /**
@@ -1012,6 +1133,8 @@ export async function startFactory(opts: {
       const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
       if (!pending || pending.publication === "draft" || pending.publication === "sending") continue;
       try {
+        const config = projectOf(task.project).config;
+        if (nextProjectActivity(config, clock.now()) > clock.now()) continue;
         await sendTeamsNotice(task.id, task.project, task.key, pending.n);
         await checkAnswer(task, pending);
       } catch (err) {
@@ -1086,16 +1209,39 @@ export async function startFactory(opts: {
   let disarmRetry: (() => void) | undefined;
   let known = new Map((await readState()).tasks.map((t) => [t.id, t.status]));
 
+  /** Tarefas enfileiradas cujo projeto sumiu da config: já avisadas neste processo (evita loop via react). */
+  const missingProjectReported = new Set<string>();
+
   /** Ativa a próxima Tarefa se nenhuma estiver ativa. Abre o portão de uma Tarefa que estava pausada. */
   async function schedule(): Promise<void> {
     const state = await readState();
     if (state.daemonPaused || state.tasks.some((t) => t.status === "ativa")) return;
     const now = clock.now();
-    const next = state.tasks.find((t) => t.status === "enfileirada" && !t.pauseRequested && (t.notBefore ?? 0) <= now);
+    let next: QueuedTask | undefined;
+    let wakeAt = Number.POSITIVE_INFINITY;
+    for (const task of state.tasks) {
+      if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
+      const project = projects.get(task.project);
+      if (!project) {
+        if (!missingProjectReported.has(task.id)) {
+          missingProjectReported.add(task.id);
+          await events.append({
+            type: "error",
+            project: task.project,
+            target: task.key,
+            message: `falha ao agendar: Projeto ${task.project} não está configurado`,
+          });
+        }
+        continue;
+      }
+      const at = Math.max(task.notBefore ?? 0, nextProjectActivity(project.config, now));
+      if (at <= now) {
+        if (!next) next = task;
+      } else if (at < wakeAt) {
+        wakeAt = at;
+      }
+    }
     if (!next) {
-      const wakeAt = Math.min(
-        ...state.tasks.filter((t) => t.status === "enfileirada" && t.notBefore).map((t) => t.notBefore as number),
-      );
       if (Number.isFinite(wakeAt) && !closing) {
         disarmRetry?.();
         disarmRetry = armTimer(react, Math.max(0, wakeAt - now));
@@ -1106,7 +1252,12 @@ export async function startFactory(opts: {
     await harness.commit(async (tx) => {
       const draft = await tx.doc(StateDoc);
       const task = draft.tasks.find((t) => t.id === next.id);
-      if (task?.status !== "enfileirada" || draft.tasks.some((t) => t.status === "ativa")) return;
+      if (
+        !task ||
+        !["enfileirada", "aguardando-entrega"].includes(task.status) ||
+        draft.tasks.some((t) => t.status === "ativa")
+      )
+        return;
       task.status = "ativa";
       task.notBefore = null;
       if (task.gateId !== null) {
@@ -1124,18 +1275,29 @@ export async function startFactory(opts: {
   }
 
   /** Emite um evento para cada Tarefa que mudou de status desde a última vez. */
+  const lastEmitted = new Map<string, string>();
   async function emitStatusChanges(): Promise<void> {
     const state = await readState();
     const changed = state.tasks.filter((t) => known.get(t.id) !== t.status);
     known = new Map(state.tasks.map((t) => [t.id, t.status]));
     for (const t of changed) {
+      // Acompanhamento do PR/MR: cada consulta passa por "ativa"; só registra quando o estado observado muda.
+      const signature = `${t.status}|${t.reason ?? ""}`;
+      const last = lastEmitted.get(t.id);
+      if (t.status === "ativa" && last?.startsWith("aguardando-entrega|")) continue;
+      if (last === signature) continue;
+      lastEmitted.set(t.id, signature);
       await events.append({
         type: "task",
         project: t.project,
         id: t.id,
         key: t.key,
         status: t.status,
-        ...(t.reason && (t.status === "bloqueada" || t.status === "enfileirada" || t.status === "vetada")
+        ...(t.reason &&
+        (t.status === "bloqueada" ||
+          t.status === "enfileirada" ||
+          t.status === "vetada" ||
+          t.status === "aguardando-entrega")
           ? { reason: t.reason }
           : {}),
       });
@@ -1225,12 +1387,44 @@ export async function startFactory(opts: {
       updateTask(id, (task) => {
         if (TERMINAL.has(task.status)) return;
         task.pauseRequested = true;
-        if (task.status === "enfileirada") task.status = "pausada";
+        if (["enfileirada", "aguardando-entrega"].includes(task.status)) task.status = "pausada";
       }),
     resume: (id: string) =>
       updateTask(id, (task) => {
         task.pauseRequested = false;
         if (task.status === "pausada") task.status = "enfileirada";
+        // O usuário corrigiu o ambiente: nova tentativa mede o baseline, sem aceitar o vermelho como TDD.
+        if (
+          task.status === "bloqueada" &&
+          task.stage === "implementacao" &&
+          task.implementation &&
+          task.implementation.commits.length === 0 &&
+          ((task.implementation.baseline === "vermelha" &&
+            task.reason === baselineBlockedReason(task.implementation.branch)) ||
+            (task.implementation.baseline === null &&
+              task.reason === baselineWorkspaceBlockedReason(task.implementation.branch)))
+        ) {
+          task.implementation.baseline = null;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
+        // TDD recusado no limite: quem retoma mudou o que impedia (config, formatador, ambiente). Novas tentativas na
+        // mesma fase; os commits aceitos ficam.
+        if (
+          task.status === "bloqueada" &&
+          (task.stage === "implementacao" || task.stage === "review") &&
+          task.implementation &&
+          task.reason?.startsWith("TDD recusado ")
+        ) {
+          task.implementation.rejections = 0;
+          task.implementation.feedback = null;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
       }),
     async cancel(id: string) {
       let durableId: number | null = null;
@@ -1295,6 +1489,7 @@ export async function startFactory(opts: {
   };
   const streams = new Set<ServerResponse>();
   const approvingRetros = new Set<string>();
+  let configuringRetro = false;
   const approvingQuestions = new Set<string>();
 
   /**
@@ -1323,6 +1518,28 @@ export async function startFactory(opts: {
       const route = `${req.method} ${url.pathname}`;
       const taskCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/(pause|resume|cancel)$/);
 
+      if (route === "GET /settings/retro")
+        return json(res, 200, { repo: retroSettings.repo ?? null, available: Boolean(retroSettings.sink) });
+      if (route === "POST /settings/retro") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { repo?: unknown } | undefined;
+        if (typeof body?.repo !== "string" || !isRetroRepository(body.repo.trim()))
+          return json(res, 400, { error: "Informe o repositório no formato dono/nome, sem URL." });
+        if (!retroSettings.sink) return json(res, 409, { error: "Adaptador de publicação indisponível neste daemon." });
+        if (configuringRetro || approvingRetros.size > 0)
+          return json(res, 409, { error: "Publicação ou configuração em andamento; tente novamente." });
+        configuringRetro = true;
+        try {
+          const repo = body.repo.trim();
+          await harness.commit(async (tx) => {
+            (await tx.doc(StateDoc)).retroRepo = repo;
+          }, context);
+          retroSettings.repo = repo;
+          return json(res, 200, { repo, available: true });
+        } finally {
+          configuringRetro = false;
+        }
+      }
       if (route === "GET /queue") return json(res, 200, await queue());
       if (route === "GET /tasks") return json(res, 200, (await readState()).tasks.map(taskSummary));
       const taskRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)$/);
@@ -1332,6 +1549,44 @@ export async function startFactory(opts: {
         return task
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
+      }
+      const repairRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/repair$/);
+      if (repairRoute && (req.method === "GET" || req.method === "POST")) {
+        const project = decodeURIComponent(repairRoute[1] as string);
+        const key = decodeURIComponent(repairRoute[2] as string);
+        const id = `${project}/${key}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task) return json(res, 404, { error: "tarefa inexistente" });
+        if (req.method === "GET") return json(res, 200, await repairPreview(task, implementationDeps.worktreesRoot));
+        if (!isJson(req)) return json(res, 400, { error: "envie JSON" });
+        const body = (await readBody(req)) as { revision?: unknown; approveTestChanges?: unknown } | undefined;
+        if (
+          typeof body?.revision !== "string" ||
+          !/^[0-9a-f]{64}$/.test(body.revision) ||
+          body.approveTestChanges !== true
+        )
+          return json(res, 400, {
+            error: "exige revisão exata e aprovação explícita dos reparos, inclusive nos testes",
+          });
+        const revision = body.revision;
+        const result = await harness.commit(async (tx) => {
+          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          if (!current) throw new RepairConflict("tarefa inexistente");
+          return integrateRepair(
+            current as QueuedTask,
+            implementationDeps.worktreesRoot,
+            revision,
+            implementationDeps.testRunner,
+            context.abortSignal,
+          );
+        }, context);
+        await events.append({
+          type: "progress",
+          project,
+          target: key,
+          message: `Reparo humano aprovado e validado para o ticket ${result.ticket + 1}: commit ${result.sha.slice(0, 8)}. Tarefa continua bloqueada até retomada explícita.`,
+        });
+        return json(res, 200, result);
       }
       const triageRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/triage(\/decide)?$/);
       if (triageRoute && (req.method === "GET" || req.method === "POST")) {
@@ -1401,11 +1656,12 @@ export async function startFactory(opts: {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { revision?: unknown } | undefined;
         if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-        if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
+        // Aprovação é local; o escritor continua responsável por suprimir efeitos no dry-run.
         const approved = await harness.commit(async (tx) => {
           const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
           if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
           current.specReview = "approved";
+          current.specApprovedDryRun = project.config.dryRun;
           current.status = current.pauseRequested ? "pausada" : "enfileirada";
           return true;
         }, context);
@@ -1586,7 +1842,7 @@ export async function startFactory(opts: {
         }
       }
       const retroRoute = url.pathname.match(
-        /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(spec|implementacao|tarefa)\/(\d+)(\/approve)?$/,
+        /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(triagem|spec|implementacao|review|mr|tarefa)\/(\d+)(\/approve)?$/,
       );
       if (retroRoute && (req.method === "GET" || req.method === "POST")) {
         const [, encodedProject, encodedKey, stage, number, approval] = retroRoute;
@@ -1595,7 +1851,7 @@ export async function startFactory(opts: {
         const cardKey = decodeURIComponent(encodedKey as string);
         const taskId = `${projectName}/${cardKey}`;
         const lock = `${taskId}/${stage}/${number}`;
-        if (approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
+        if (configuringRetro || approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
           return json(res, 409, { error: "uma proposta já está sendo publicada; tente novamente" });
         if (req.method === "POST") approvingRetros.add(lock);
         try {
@@ -1606,15 +1862,15 @@ export async function startFactory(opts: {
             return json(res, 404, { error: "proposta não encontrada" });
           if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
             return json(res, 409, { error: "proposta não está disponível para revisão" });
-          if (!opts.retro?.sink || !opts.retro.repo)
+          if (!retroSettings.sink || !retroSettings.repo)
             return json(res, 409, { error: "repositório da fábrica não configurado" });
           const project = projectOf(projectName);
           const publication = {
             writer: project.writer,
             cardKey,
             config: project.config,
-            sink: opts.retro.sink,
-            repo: opts.retro.repo,
+            sink: retroSettings.sink,
+            repo: retroSettings.repo,
             stage: retro.stage,
             ref: task.ref,
             proposal,
@@ -1625,7 +1881,7 @@ export async function startFactory(opts: {
               title: preview.title,
               body: preview.body,
               revision: preview.revision,
-              repo: opts.retro.repo,
+              repo: publication.repo,
               dryRun: project.config.dryRun,
               blocked: preview.blocked,
             });
@@ -1710,7 +1966,7 @@ export async function startFactory(opts: {
       }
       json(res, 404, { error: "rota inexistente" });
     } catch (err) {
-      json(res, 500, { error: String(err) });
+      json(res, err instanceof RepairConflict ? 409 : 500, { error: redactSecrets(String(err)) });
     }
   });
 
@@ -1753,6 +2009,11 @@ export async function startFactory(opts: {
       tasks: async () => (await readState()).tasks,
       commands,
       content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
+      contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
+      availableAt: (name) => {
+        const config = projects.get(name)?.config;
+        return config ? nextProjectActivity(config, clock.now()) : clock.now();
+      },
       now: clock.now,
       armTimer,
     }));

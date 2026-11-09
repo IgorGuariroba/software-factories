@@ -1,3 +1,5 @@
+import { RETRO_REPO_PATTERN } from "./retro-settings.js";
+
 /** Schema OpenAPI da API local da fábrica, servido em `GET /openapi.json`. */
 const taskPath = (summary: string) => ({
   post: {
@@ -158,7 +160,7 @@ export const API_SCHEMA = {
     },
     "/tasks/{project}/{key}/spec/approve": {
       post: {
-        summary: "Aprova a revisão exata; a Tarefa publica SPEC e Tickets quando voltar a rodar",
+        summary: "Aprova localmente a revisão exata no modo atual; dry-run só registra SPEC e Tickets ao continuar",
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
@@ -173,7 +175,7 @@ export const API_SCHEMA = {
         },
         responses: {
           ...ok,
-          "409": { description: "Prévia mudou, indisponível ou dry-run" },
+          "409": { description: "Prévia mudou ou SPEC indisponível para aprovação" },
           "415": { description: "Content-Type inválido" },
         },
       },
@@ -325,13 +327,47 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/questions/{n}/answer": {
+      post: {
+        summary: "Registra a sua resposta a uma pergunta pendente e retoma a Tarefa",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["answer"],
+                properties: { answer: { type: "string", minLength: 1, maxLength: 20000 } },
+              },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "400": { description: "Resposta vazia ou longa demais" },
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Pergunta já respondida ou indisponível" },
+          "415": { description: "Content-Type inválido" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/retros/{stage}/{n}": {
       get: {
         summary: "Prévia do conteúdo público de uma proposta pendente",
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          {
+            name: "stage",
+            in: "path",
+            required: true,
+            schema: { enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"] },
+          },
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         responses: {
@@ -365,7 +401,12 @@ export const API_SCHEMA = {
         parameters: [
           { name: "project", in: "path", required: true, schema: { type: "string" } },
           { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "stage", in: "path", required: true, schema: { enum: ["spec", "implementacao", "tarefa"] } },
+          {
+            name: "stage",
+            in: "path",
+            required: true,
+            schema: { enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"] },
+          },
           { name: "n", in: "path", required: true, schema: { type: "integer" } },
         ],
         requestBody: {
@@ -401,7 +442,36 @@ export const API_SCHEMA = {
       },
     },
     "/tasks/{project}/{key}/pause": taskPath("Pausa a tarefa (a ativa para no próximo passo)"),
-    "/tasks/{project}/{key}/resume": taskPath("Retoma a tarefa pausada"),
+    "/tasks/{project}/{key}/resume": taskPath(
+      "Retoma tarefa pausada ou revalida baseline bloqueado antes do primeiro commit",
+    ),
+    "/tasks/{project}/{key}/repair": {
+      get: {
+        summary: "Prévia exata dos reparos locais de tarefa bloqueada por TDD",
+        parameters: taskPath("").post.parameters,
+        responses: ok,
+      },
+      post: {
+        summary: "Aprova reparos humanos por revisão, valida a suíte e integra o checkpoint sem retomar ou publicar",
+        parameters: taskPath("").post.parameters,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["revision", "approveTestChanges"],
+                properties: {
+                  revision: { type: "string", pattern: "^[0-9a-f]{64}$" },
+                  approveTestChanges: { type: "boolean", enum: [true] },
+                },
+              },
+            },
+          },
+        },
+        responses: ok,
+      },
+    },
     "/tasks/{project}/{key}/cancel": taskPath("Cancela a tarefa"),
     "/tasks/{project}/{key}/veto": {
       post: {
@@ -414,6 +484,30 @@ export const API_SCHEMA = {
           "409": {
             description: "A tarefa não está aguardando veto (o prazo já passou ou ela não passa por veto); sem efeito",
           },
+        },
+      },
+    },
+    "/settings/retro": {
+      get: { summary: "Repositório público das retrôs e disponibilidade do adaptador", responses: ok },
+      post: {
+        summary: "Salva e aplica o repositório público global, sem publicar ou reiniciar",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repo"],
+                properties: { repo: { type: "string", maxLength: 200, pattern: RETRO_REPO_PATTERN } },
+              },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          "400": { description: "Repositório inválido; use dono/nome" },
+          "409": { description: "Adaptador indisponível ou publicação/configuração em andamento" },
+          "415": { description: "Content-Type deve ser application/json" },
         },
       },
     },
@@ -458,20 +552,27 @@ export const API_SCHEMA = {
               "bloqueada",
               "vetada",
               "recusada",
+              "aguardando-entrega",
             ],
           },
           stage: {
             description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
-            enum: ["triagem", "assumir", "veto", "spec", "implementacao", null],
+            enum: ["triagem", "assumir", "veto", "spec", "implementacao", "review", "entrega", null],
           },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
+          specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
+          triageReview: { enum: ["draft", "aceitar", "recusar", null], description: "Revisão humana da triagem" },
+          pendingQuestion: { type: ["integer", "null"], description: "Número da pergunta ainda sem resposta" },
         },
       },
       Retro: {
         type: "object",
         properties: {
-          stage: { enum: ["spec", "implementacao", "tarefa"], description: "tarefa: a retrô consolidada" },
+          stage: {
+            enum: ["triagem", "spec", "implementacao", "review", "mr", "tarefa"],
+            description: "tarefa: a retrô consolidada",
+          },
           status: {
             enum: ["em-andamento", "concluida", "falhou"],
             description: "falhou: desistiu depois das tentativas, sem bloquear a tarefa",
@@ -586,6 +687,8 @@ export const API_SCHEMA = {
                   pushed: { type: "boolean" },
                 },
               },
+              review: { type: ["object", "null"], description: "Review independente do HEAD antes da publicação" },
+              publication: { type: ["object", "null"], description: "PR/MR acompanhado até merge humano" },
               retros: {
                 type: "array",
                 description: "Retrôs das etapas de modelo (spec, implementacao) e a consolidada (tarefa), na ordem",

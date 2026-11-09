@@ -3,6 +3,11 @@
 
 name: exemplo
 
+# always (padrão): pessoal 24/7. business-hours: empresa, usa o calendar abaixo
+# e inclui feriados legais BR/SP/Mogi nos prazos e na agenda.
+# Limite: passos em execução ainda não são interrompidos no fechamento.
+activity: always
+
 # Dry-run: lê a Fonte de verdade, mas só registra as escritas (visíveis em GET /events).
 # Ligado por padrão; desligue só depois de conferir o comportamento.
 dryRun: true
@@ -82,6 +87,9 @@ repositories:
     prefix: "[mobile]"
     test:
       command: [npm, test]
+    # Opcional: formatador rodado pela fábrica depois de cada ticket; o resultado vira um commit `style`, fora do TDD.
+    format:
+      command: [npx, biome, check, --write]
   - path: /home/voce/projetos/meu-backend
     prefix: PROJ
     test:

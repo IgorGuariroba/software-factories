@@ -14,6 +14,7 @@ import {
   getQueue,
   getReminderPreview,
   getRetroPreview,
+  getRetroSettings,
   getSpecPreview,
   getTask,
   getTasks,
@@ -24,15 +25,22 @@ import {
   reorderTasks,
   resumeDaemon,
   resumeTask,
+  saveRetroSettings,
   vetoTask,
 } from "./api.js";
 import {
   actionsFor,
-  describeEvent,
+  actionTab,
+  activity,
+  boardColumns,
+  canAnswerQuestion,
+  cardHint,
   detailStatusLabel,
   formatCommit,
   isTerminal,
   moveTask,
+  nextAction,
+  pipelineSteps,
   proposalLabel,
   refreshSelectedDetail,
   retroStageLabel,
@@ -42,6 +50,8 @@ import {
   taskByRef,
   writeSituation,
 } from "./view.js";
+
+import { priorityTasks, visibleTasks, workspaceCounts } from "./workspace.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -64,6 +74,8 @@ function el(tag, opts = {}, ...children) {
 const formatTime = (iso) => (iso ? new Date(iso).toLocaleString("pt-BR") : "");
 
 let tasks = [];
+let taskFilter = "todas";
+let taskView = "lista";
 let daemonPaused = false;
 /** Tarefa aberta no detalhe, pelo hash `#/tarefa/<projeto>/<card>`. */
 let selected = null;
@@ -91,44 +103,27 @@ async function run(command) {
   await refresh();
 }
 
-/** Resposta local: o servidor decide se resolve a pergunta ou precisa encaminhar. */
+/** Rascunhos das respostas persistem no redesenho; servidor classifica a resposta. */
+const answerDrafts = new Map();
+
 function answerQuestionControls(task, question) {
-  const id = `resposta-${encodeURIComponent(task.project)}-${encodeURIComponent(task.key)}-${question.n}`;
-  const field = el("textarea", {
-    attrs: {
-      id,
-      name: "answer",
-      rows: "3",
-      maxlength: "20000",
-      "aria-label": `Resposta à pergunta ${question.n} de ${task.key}`,
-    },
+  const id = `${task.id}#${question.n}`;
+  const field = el("textarea", { attrs: { rows: "3", maxlength: "20000", "aria-label": `Resposta à pergunta ${question.n}`, placeholder: "Sua resposta" } });
+  field.value = answerDrafts.get(id) ?? "";
+  field.addEventListener("input", () => answerDrafts.set(id, field.value));
+  const button = el("button", { text: "Responder", attrs: { type: "button" } });
+  button.addEventListener("click", async () => {
+    const answer = field.value.trim();
+    if (!answer || answer.length > 20000) return showError(new Error("A resposta deve ter entre 1 e 20000 caracteres."));
+    button.disabled = true; field.disabled = true;
+    try {
+      await answerQuestion(task.project, task.key, question.n, answer);
+      answerDrafts.delete(id); clearError(); await refresh();
+    } catch (err) { showError(err); }
+    finally { button.disabled = false; field.disabled = false; }
   });
-  const button = el("button", {
-    text: "Enviar resposta",
-    attrs: { type: "button" },
-    onClick: async () => {
-      if (button.disabled) return;
-      const answer = field.value.trim();
-      if (!answer || answer.length > 20000) {
-        showError(new Error("A resposta deve ter entre 1 e 20000 caracteres."));
-        return;
-      }
-      button.disabled = true;
-      field.disabled = true;
-      try {
-        await answerQuestion(task.project, task.key, question.n, answer);
-        clearError();
-        await refresh();
-      } catch (err) {
-        // Preserva o texto para corrigir ou tentar novamente quando o servidor rejeita.
-        showError(err);
-      } finally {
-        button.disabled = false;
-        field.disabled = false;
-      }
-    },
-  });
-  return el("div", {}, el("label", { text: "Sua resposta", attrs: { for: id } }), field, button);
+  return el("div", {}, el("label", { text: "Sua resposta" }), field, button);
+}
 }
 
 function reviewReminderButton(task, question) {
@@ -213,16 +208,19 @@ function reviewSpecButton(task) {
         const preview = await getSpecPreview(task.project, task.key);
         if (!container.isConnected) return;
         container.replaceChildren(
-          el("p", { text: `Comentários no Jira (${preview.card}):` }),
+          el("p", { text: `SPEC e Tickets de ${preview.card}:` }),
+          el("p", {
+            text: preview.dryRun
+              ? "Dry-run: a aprovação é local e continua o ensaio, sem publicar na Fonte."
+              : "A aprovação libera a continuação e a publicação na Fonte conforme a configuração do projeto.",
+          }),
+          el("button", {
+            text: preview.dryRun ? "Aprovar e continuar dry-run" : "Aprovar SPEC e Tickets",
+            attrs: { type: "button" },
+            onClick: () => run(() => approveSpec(task.project, task.key, preview.revision)),
+          }),
           el("pre", { className: "texto", text: preview.spec }),
           el("pre", { className: "texto", text: preview.tickets }),
-          preview.dryRun
-            ? el("p", { text: "Dry-run: a publicação real está desativada." })
-            : el("button", {
-                text: "Aprovar SPEC e Tickets",
-                attrs: { type: "button" },
-                onClick: () => run(() => approveSpec(task.project, task.key, preview.revision)),
-              }),
         );
         clearError();
       } catch (err) {
@@ -298,7 +296,27 @@ function reviewRetroButton(task, retro, proposal) {
         clearError();
       } catch (err) {
         button.disabled = false;
-        showError(err);
+        const message = err instanceof Error ? err.message : String(err);
+        let notice = container.querySelector('[role="status"]');
+        if (!notice) {
+          notice = el("p", { attrs: { role: "status" } });
+          container.append(notice);
+        }
+        notice.textContent =
+          message === "repositório da fábrica não configurado"
+            ? "Publicação opcional indisponível: escolha o repositório em Configurar publicações. Isso não impede retomar a tarefa."
+            : `Não foi possível revisar esta publicação opcional: ${message}`;
+        if (
+          message === "repositório da fábrica não configurado" &&
+          !container.querySelector("[data-configurar-retros]")
+        )
+          container.append(
+            el("button", {
+              text: "Configurar repositório",
+              attrs: { type: "button", "data-configurar-retros": "" },
+              onClick: openRetroSettings,
+            }),
+          );
       }
     },
   });
@@ -341,58 +359,88 @@ function moveButton(task, delta) {
     attrs: { type: "button", title: label, "aria-label": `${label} ${task.key} na fila` },
     onClick: () => order && run(() => reorderTasks(order)),
   });
+  button.addEventListener("click", (e) => e.preventDefault());
   button.disabled = order === null;
   return button;
 }
 
-function taskLink(task) {
-  return el("a", {
-    text: task.key,
-    attrs: { href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}` },
-  });
+function statusPill(task) {
+  const tone = task.status === "bloqueada" ? "perigo" : isTerminal(task) || task.status === "ativa" ? "ok" : "alerta";
+  return el("span", { className: `selo ${tone}`, text: statusLabel(task.status) });
+}
+
+function taskCard(task) {
+  const isSelected = selected && task.project === selected.project && task.key === selected.key;
+  const open = !isTerminal(task);
+  const hint = cardHint(task);
+  const card = el(
+    "a",
+    {
+      className: `cartao${isSelected ? " selecionada" : ""}${hint?.yourTurn ? " sua-vez" : ""}`,
+      attrs: {
+        href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}`,
+        ...(isSelected ? { "aria-current": "page" } : {}),
+      },
+    },
+    el(
+      "span",
+      { className: "cabeca" },
+      el("span", { className: "chave", text: task.key }),
+      el("span", { className: "projeto", text: task.project }),
+    ),
+    el("span", { className: "titulo" }, el("span", { className: `situacao ${task.status}` }), task.title),
+    ...(hint ? [el("span", { className: "dica", text: hint.text })] : []),
+    el(
+      "span",
+      { className: "meta" },
+      statusPill(task),
+      el("span", { className: "tentativas", text: `${task.attempts}×` }),
+      ...(open ? [el("span", { className: "mover" }, moveButton(task, -1), moveButton(task, 1))] : []),
+    ),
+  );
+  return el("li", {}, card);
 }
 
 function renderTasks() {
-  const open = tasks.filter((t) => !isTerminal(t));
-  const closed = tasks.filter(isTerminal);
-  const isSelected = (t) => selected && t.project === selected.project && t.key === selected.key;
-
-  $("fila")
-    .querySelector("tbody")
-    .replaceChildren(
-      ...open.map((t, i) =>
+  const visible = visibleTasks(tasks, taskFilter, $("busca-tarefas").value);
+  const counts = workspaceCounts(tasks);
+  for (const [key, count] of Object.entries(counts)) $(`total-${key}`).textContent = String(count);
+  for (const button of document.querySelectorAll("[data-filtro]"))
+    button.setAttribute("aria-pressed", String(button.dataset.filtro === taskFilter));
+  for (const button of document.querySelectorAll("[data-modo]"))
+    button.setAttribute("aria-pressed", String(button.dataset.modo === taskView));
+  $("resultado-contagem").textContent =
+    `${visible.length} de ${tasks.length} tarefas · ${taskView === "lista" ? "Pendências primeiro" : "Organizadas por etapa"}`;
+  $("quadro").classList.toggle("modo-lista", taskView === "lista");
+  const columns = boardColumns(visible);
+  $("quadro").replaceChildren(
+    ...columns.map((c) =>
+      el(
+        "section",
+        { className: "coluna", attrs: { "data-coluna": c.key, "aria-label": c.label } },
         el(
-          "tr",
-          { className: isSelected(t) ? "selecionada" : "" },
-          el("td", { text: String(i + 1) }),
-          el("td", {}, taskLink(t)),
-          el("td", { text: t.title }),
-          el("td", { text: statusLabel(t.status) }),
-          el("td", { text: stageLabel(t.stage) }),
-          el("td", {}, el("div", { className: "acoes" }, moveButton(t, -1), moveButton(t, 1), ...actionButtons(t))),
+          "h3",
+          {},
+          el("span", { className: "ponto" }),
+          c.label,
+          el("span", { className: "contagem", text: String(c.tasks.length) }),
         ),
+        ...(c.tasks.length === 0 ? [el("p", { className: "coluna-vazia", text: "Nenhuma tarefa nesta etapa." })] : []),
+        el("ol", { className: "cartoes" }, ...c.tasks.map(taskCard)),
+      ),
+    ),
+  );
+  if (taskView === "lista")
+    $("quadro").replaceChildren(
+      el(
+        "ol",
+        { className: "cartoes lista-tarefas", attrs: { "aria-label": "Lista de tarefas" } },
+        ...priorityTasks(visible).map(taskCard),
       ),
     );
-  $("fila-vazia").hidden = open.length > 0;
-  $("fila").hidden = open.length === 0;
-
-  $("encerradas")
-    .querySelector("tbody")
-    .replaceChildren(
-      ...closed.map((t) =>
-        el(
-          "tr",
-          { className: isSelected(t) ? "selecionada" : "" },
-          el("td", {}, taskLink(t)),
-          el("td", { text: t.title }),
-          el("td", { text: statusLabel(t.status) }),
-          el("td", { text: stageLabel(t.stage) }),
-          el("td", { text: t.reason ?? "" }),
-        ),
-      ),
-    );
-  $("encerradas-vazia").hidden = closed.length > 0;
-  $("encerradas").hidden = closed.length === 0;
+  const open = tasks.filter((t) => !isTerminal(t)).length;
+  $("fila-contagem").textContent = `(${open} em andamento)`;
+  $("fila-vazia").hidden = visible.length > 0;
 }
 
 function renderDaemon() {
@@ -404,20 +452,92 @@ function renderDaemon() {
   toggle.disabled = false;
 }
 
+let openedTask = null;
 function renderDetail(task) {
-  $("titulo-detalhe").textContent = `${task.key}: ${task.title}`;
-
-  const fields = [
-    ["Projeto", task.project],
-    ["Status", detailStatusLabel(task)],
-    ["Etapa", stageLabel(task.stage)],
-    ["Tentativas", String(task.attempts)],
-  ];
-  if (task.pauseRequested && task.status !== "pausada") fields.push(["Pausa", "pedida; para no próximo passo"]);
-  if (task.vetoUntil) fields.push(["Prazo de veto", formatTime(task.vetoUntil)]);
-  if (task.reason) fields.push(["Motivo", task.reason]);
-  $("detalhe-estado").replaceChildren(...fields.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
-  $("detalhe-acoes").replaceChildren(...actionButtons(task));
+  const focused = document.activeElement;
+  const editing =
+    focused?.matches("textarea") && $("detalhe").contains(focused)
+      ? { label: focused.getAttribute("aria-label"), start: focused.selectionStart, end: focused.selectionEnd }
+      : null;
+  if (openedTask !== task.id) {
+    openedTask = task.id;
+    $("fluxo-tarefa").open = false;
+    $("menu-acoes-tarefa").open = false;
+    showTab(actionTab(task));
+  }
+  $("titulo-detalhe").textContent = task.title;
+  $("detalhe-ref").textContent = `${task.project} · ${task.key}`;
+  const facts = [stageLabel(task.stage), `${task.attempts} tentativa(s)`];
+  if (task.pauseRequested && task.status !== "pausada") facts.push("pausa pedida; para no próximo passo");
+  if (task.vetoUntil) facts.push(`veto até ${formatTime(task.vetoUntil)}`);
+  $("detalhe-estado").replaceChildren(
+    el("span", { className: statusPill(task).className, text: detailStatusLabel(task) }),
+    ...facts.map((f) => el("span", { text: `· ${f}` })),
+  );
+  const next = nextAction(task);
+  const proximo = $("detalhe-proximo");
+  proximo.hidden = next === null;
+  proximo.replaceChildren(
+    next ?? "",
+    ...(next
+      ? [
+          el("button", {
+            text: task.status === "pausada" ? "Retomar tarefa" : "Ver próxima ação",
+            attrs: { type: "button" },
+            onClick: () => {
+              if (task.status === "pausada") {
+                run(() => resumeTask(task.project, task.key));
+                return;
+              }
+              showTab(actionTab(task));
+              document.querySelector(`[data-painel="${actionTab(task)}"]`)?.scrollIntoView({ block: "nearest" });
+            },
+          }),
+        ]
+      : []),
+  );
+  proximo.className = `proximo${task.status === "bloqueada" ? " bloqueado" : ""}`;
+  const STATE = {
+    feito: "concluída",
+    atual: "em andamento",
+    espera: "aguardando",
+    bloqueado: "bloqueada",
+    pendente: "",
+  };
+  const steps = pipelineSteps(task);
+  const currentStep = steps.find((s) => ["atual", "espera", "bloqueado"].includes(s.state));
+  $("etapa-atual").textContent = currentStep
+    ? `${steps.indexOf(currentStep) + 1} de ${steps.length} · ${currentStep.label}`
+    : task.status === "concluida"
+      ? "Fluxo concluído"
+      : stageLabel(task.stage);
+  $("detalhe-pipeline").replaceChildren(
+    ...steps.map((s) =>
+      el(
+        "li",
+        { className: s.state, attrs: s.state === "atual" || s.state === "espera" ? { "aria-current": "step" } : {} },
+        el("button", {
+          text: s.label,
+          attrs: { type: "button" },
+          onClick: () =>
+            showTab(
+              {
+                triagem: "spec",
+                spec: "spec",
+                implementacao: "implementacao",
+                review: "implementacao",
+                entrega: "implementacao",
+                merge: "implementacao",
+              }[s.key],
+            ),
+        }),
+        el("span", { className: "estado-etapa", text: STATE[s.state] }),
+      ),
+    ),
+  );
+  const taskActions = actionButtons(task);
+  $("detalhe-acoes").replaceChildren(...taskActions);
+  $("menu-acoes-tarefa").hidden = taskActions.length === 0;
 
   $("detalhe-perguntas").replaceChildren(
     ...(task.questions.length === 0
@@ -433,15 +553,26 @@ function renderDetail(task) {
                 q.publication === "draft"
                   ? "(aguarda revisão)"
                   : q.publication === "sending"
-                    ? "(publicação não confirmada; verifique o Jira)"
+                    ? "(publicação não confirmada; verifique o card na Fonte)"
                     : q.answer === null
                       ? "(pendente)"
                       : `Resposta: ${q.answer}`,
             }),
             ...(q.answer === null ? [answerQuestionControls(task, q)] : []),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
+            ...(canAnswerQuestion(task, q)
+              ? [
+                  el("p", {
+                    className: "vazio",
+                    text: "Responda por aqui para continuar. A resposta fica na fábrica, sem enviar mensagem aos canais externos.",
+                  }),
+                  answerQuestionControls(task, q),
+                ]
+              : []),
             ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),
-            ...(q.reminder === "sending" ? [el("p", { text: "Lembrete não confirmado; verifique o Jira." })] : []),
+            ...(q.reminder === "sending"
+              ? [el("p", { text: "Lembrete não confirmado; verifique o card na Fonte." })]
+              : []),
             ...(q.teamsNotice === "uncertain" || q.teamsNotice === "attempted"
               ? [el("p", { text: "Aviso Teams não confirmado; verifique o chat antes de reenviar." })]
               : []),
@@ -449,11 +580,26 @@ function renderDetail(task) {
         )),
   );
 
-  $("detalhe-spec").textContent = task.spec ?? "Ainda não entregue.";
+  $("detalhe-spec").textContent =
+    task.spec ?? "A SPEC ainda não foi preparada. Quando estiver disponível, você poderá consultá-la nesta seção.";
+  $("detalhe-spec").classList.toggle("conteudo-vazio", !task.spec);
   $("detalhe-triagem").replaceChildren(
     ...(task.triage
       ? [
-          el("p", { text: `${task.triage.verdict}: ${task.triage.reason}` }),
+          el("p", { className: "triagem-resultado", text: `Resultado: ${task.triage.verdict}` }),
+          el("p", {
+            className: "vazio",
+            text:
+              task.triage.review === "draft"
+                ? "A fábrica aguarda sua decisão antes de continuar."
+                : "Consulte abaixo a justificativa registrada pela fábrica.",
+          }),
+          el(
+            "details",
+            { className: "triagem-tecnica" },
+            el("summary", { text: "Justificativa e dados técnicos" }),
+            el("p", { text: task.triage.reason }),
+          ),
           ...(task.triage.review === "draft" ? [reviewTriageButton(task)] : []),
         ]
       : [el("p", { text: "Sem triagem (só repositório monitorado)." })]),
@@ -463,23 +609,161 @@ function renderDetail(task) {
       ? [el("p", { text: "SPEC e Tickets aguardam revisão." }), reviewSpecButton(task)]
       : []),
   );
+  $("tickets-vazios").hidden = task.tickets.length > 0;
   $("detalhe-tickets").replaceChildren(
     ...task.tickets.map((t) => el("li", {}, el("strong", { text: t.titulo }), `: ${t.aceite}`)),
   );
 
   const impl = task.implementation;
-  $("detalhe-implementacao").replaceChildren(
-    impl
-      ? el(
-          "p",
-          {},
-          `Branch ${impl.branch}, ${impl.commits.length} commit(s), ${impl.pushed ? "com push" : "sem push"}. `,
-          ...impl.commits.map((c) => el("code", { text: formatCommit(c) })),
-        )
-      : el("p", { className: "vazio", text: "Ainda não começou." }),
+  const implParts = [];
+  const implementationActive = task.stage === "implementacao" && task.status === "ativa";
+  implParts.push(
+    el(
+      "div",
+      { className: "bloco-detalhe" },
+      el("h3", { text: implementationActive ? "Implementação em andamento" : "Visão da implementação" }),
+      el("p", {
+        className: "vazio",
+        text: implementationActive
+          ? "A fábrica está trabalhando. Os registros abaixo são atualizados ao vivo conforme o progresso é salvo."
+          : `${detailStatusLabel(task)} · ${stageLabel(task.stage)}`,
+      }),
+    ),
   );
+  if (!impl)
+    implParts.push(
+      el("p", {
+        className: "vazio",
+        text: implementationActive
+          ? "Aguardando os primeiros registros de branch e commits. Isso não significa que a execução está parada."
+          : "Nenhum registro de implementação disponível para esta tarefa.",
+      }),
+    );
+  else {
+    const completedTickets = task.tickets.filter((_, index) =>
+      impl.commits.some((commit) => commit.ticket === index && commit.phase === "implementacao"),
+    ).length;
+    if (task.tickets.length)
+      implParts.push(
+        el(
+          "div",
+          { className: "bloco-detalhe" },
+          el("strong", { text: `${completedTickets} de ${task.tickets.length} tickets com implementação registrada` }),
+          el("progress", {
+            attrs: {
+              value: String(completedTickets),
+              max: String(task.tickets.length),
+              "aria-label": "Tickets com commit de implementação",
+            },
+          }),
+          el("p", {
+            className: "vazio",
+            text: "Baseado nos commits registrados. Não representa aprovação de review, CI ou merge.",
+          }),
+        ),
+      );
+    implParts.push(
+      el(
+        "p",
+        {},
+        "Branch ",
+        el("code", { text: impl.branch }),
+        ` · ${impl.commits.length} commit(s) · ${impl.pushed ? "enviada ao remoto" : "ainda não enviada"}`,
+      ),
+    );
+    task.tickets.forEach((ticket, i) => {
+      const commits = impl.commits.filter((c) => c.ticket === i);
+      const phase = (name) => commits.find((c) => c.phase === name);
+      const done = phase("implementacao")
+        ? "GREEN · implementação registrada"
+        : phase("teste")
+          ? "RED · teste registrado"
+          : "Sem commits registrados";
+      implParts.push(
+        el(
+          "div",
+          { className: "ticket" },
+          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo} — ${done}` }),
+          el("p", { className: "vazio", text: ticket.aceite }),
+          ...commits.map((c) =>
+            el(
+              "p",
+              {},
+              el("code", { text: formatCommit(c) }),
+              ...(impl.repairs?.some((repair) => repair.sha === c.sha)
+                ? [el("span", { className: "selo", text: "Reparo humano validado" })]
+                : []),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+  if (!impl && task.tickets.length)
+    implParts.push(
+      el("h3", { text: "Tickets planejados" }),
+      ...task.tickets.map((ticket, i) =>
+        el(
+          "div",
+          { className: "ticket" },
+          el("h4", { text: `Ticket ${i + 1}: ${ticket.titulo}` }),
+          el("p", { className: "vazio", text: "Sem commits registrados" }),
+          el("p", { text: ticket.aceite }),
+        ),
+      ),
+    );
+  const implementationEvents = task.events
+    .filter((event) => event.type === "progress" || event.type === "error")
+    .slice(-8)
+    .reverse();
+  implParts.push(
+    el("h3", { text: "Registros recentes de execução" }),
+    ...(implementationEvents.length
+      ? implementationEvents.map((event) =>
+          el(
+            "div",
+            { className: "ticket" },
+            el("span", { className: "quando", text: formatTime(event.at) }),
+            el("p", { text: event.message }),
+          ),
+        )
+      : [
+          el("p", {
+            className: "vazio",
+            text: "Ainda não há eventos de progresso. Esta visão mostra registros persistidos, não o terminal ou o raciocínio interno do modelo.",
+          }),
+        ]),
+  );
+  if (task.review)
+    implParts.push(
+      el("h3", { text: "Review" }),
+      el("p", {}, el("strong", { text: task.review.status }), ` · HEAD ${task.review.head.slice(0, 8)}`),
+      el("p", { text: task.review.summary }),
+    );
+  if (task.publication)
+    implParts.push(
+      el("h3", { text: "PR/MR" }),
+      el(
+        "p",
+        {},
+        `${task.publication.status} `,
+        ...(task.publication.url
+          ? [
+              el("a", {
+                text: task.publication.url,
+                attrs: { href: task.publication.url, target: "_blank", rel: "noopener" },
+              }),
+            ]
+          : []),
+      ),
+    );
+  $("detalhe-implementacao").replaceChildren(...implParts);
 
   $("detalhe-retros").replaceChildren(
+    el("h3", { text: "Sugestões opcionais da retrô" }),
+    el("p", {
+      text: "Estas sugestões de melhoria não são aprovações obrigatórias da tarefa. Se a tarefa estiver pausada, use Retomar tarefa para continuar o fluxo.",
+    }),
     ...(task.retros.length === 0
       ? [el("p", { className: "vazio", text: "Nenhuma retrô ainda." })]
       : task.retros.map((r) =>
@@ -498,6 +782,14 @@ function renderDetail(task) {
                   el("strong", { text: p.title }),
                   ` (${proposalLabel(p)}${p.issue ? `, issue #${p.issue.number}` : ""}${p.reason ? `: ${p.reason}` : ""}): `,
                   p.description,
+                  ...(p.kind === "conhecimento" && p.status === "pendente"
+                    ? [
+                        el("p", {
+                          className: "vazio",
+                          text: "Aprovação de conhecimento ainda não disponível nesta interface (M1-18). A sugestão fica registrada, sem impedir a retomada da tarefa.",
+                        }),
+                      ]
+                    : []),
                   ...(p.kind === "fabrica" && p.status === "pendente" && r.status === "concluida"
                     ? [reviewRetroButton(task, r, p)]
                     : []),
@@ -529,12 +821,77 @@ function renderDetail(task) {
     );
 
   $("detalhe-eventos").replaceChildren(
-    ...task.events.map((e) =>
-      el("li", {}, el("span", { className: "quando", text: formatTime(e.at) }), describeEvent(e)),
+    ...(task.events.length === 0 ? [el("li", { className: "vazio", text: "Nenhuma atividade registrada." })] : []),
+    ...activity(task.events).map((a) =>
+      el(
+        "li",
+        {},
+        el("span", { className: "quando", text: formatTime(a.at) }),
+        el("span", { className: `tipo tipo-${a.kind}`, text: a.kind }),
+        el("span", { text: a.text }),
+      ),
     ),
   );
+  const counts = {
+    perguntas: task.questions.length,
+    retros: task.retros.length,
+    escritas: task.writes.length,
+    spec: task.tickets.length,
+  };
+  for (const tab of document.querySelectorAll("[data-aba]")) {
+    const base = tab.dataset.label ?? tab.textContent;
+    tab.dataset.label = base;
+    const n = counts[tab.dataset.aba];
+    tab.textContent = n ? `${base} (${n})` : base;
+  }
   $("detalhe").hidden = false;
+  $("detalhe-vazio").hidden = true;
+  if (editing) {
+    const field = [...document.querySelectorAll("#detalhe textarea")].find(
+      (node) => node.getAttribute("aria-label") === editing.label,
+    );
+    if (field) {
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(editing.start, editing.end);
+    }
+  }
 }
+
+let currentTab = "atividade";
+function showTab(name) {
+  currentTab = name;
+  for (const tab of document.querySelectorAll("[data-aba]")) {
+    tab.setAttribute("aria-selected", String(tab.dataset.aba === name));
+    tab.tabIndex = tab.dataset.aba === name ? 0 : -1;
+    if (tab.dataset.aba === name && !$("detalhe").hidden) {
+      tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    tab.id = `aba-${tab.dataset.aba}`;
+    tab.setAttribute("aria-controls", `painel-${tab.dataset.aba}`);
+  }
+  for (const panel of document.querySelectorAll("[data-painel]")) {
+    panel.id = `painel-${panel.dataset.painel}`;
+    panel.setAttribute("aria-labelledby", `aba-${panel.dataset.painel}`);
+  }
+  for (const panel of document.querySelectorAll("[data-painel]")) panel.hidden = panel.dataset.painel !== name;
+}
+for (const tab of document.querySelectorAll("[data-aba]"))
+  tab.addEventListener("click", () => showTab(tab.dataset.aba));
+document.querySelector(".abas").addEventListener("keydown", (event) => {
+  const tabs = [...document.querySelectorAll("[data-aba]")];
+  const index = tabs.indexOf(event.target);
+  if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const target =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  showTab(tabs[target].dataset.aba);
+  tabs[target].focus();
+});
+showTab(currentTab);
 
 function readSelection() {
   const retro = location.hash.match(/^#\/retro\/([0-9a-f]+)$/);
@@ -546,6 +903,7 @@ function readSelection() {
 async function refreshDetail() {
   if (!selected) {
     $("detalhe").hidden = true;
+    $("detalhe-vazio").hidden = false;
     return;
   }
   await refreshSelectedDetail(
@@ -616,6 +974,55 @@ function connect() {
     status.className = "selo alerta";
   });
 }
+
+async function openRetroSettings() {
+  const dialog = $("configuracao-retros");
+  const status = $("retros-config-status");
+  const save = $("salvar-retros");
+  status.textContent = "Carregando configuração…";
+  save.disabled = true;
+  $("repositorio-retros").disabled = true;
+  dialog.showModal();
+  try {
+    const settings = await getRetroSettings();
+    $("repositorio-retros").value = settings.repo ?? "";
+    $("repositorio-retros").disabled = !settings.available;
+    status.textContent = settings.available ? "" : "Adaptador de publicação indisponível neste daemon.";
+    save.disabled = !settings.available;
+    $("repositorio-retros").focus();
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+$("configurar-retros").addEventListener("click", openRetroSettings);
+$("fechar-configuracao-retros").addEventListener("click", () => $("configuracao-retros").close());
+$("form-retros").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const save = $("salvar-retros");
+  save.disabled = true;
+  try {
+    const settings = await saveRetroSettings($("repositorio-retros").value.trim());
+    $("repositorio-retros").value = settings.repo;
+    $("retros-config-status").textContent =
+      "Configuração salva e aplicada. Feche esta janela e revise novamente a publicação. Nenhuma issue foi publicada.";
+  } catch (err) {
+    $("retros-config-status").textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    save.disabled = false;
+  }
+});
+
+$("busca-tarefas").addEventListener("input", renderTasks);
+for (const button of document.querySelectorAll("[data-filtro]"))
+  button.addEventListener("click", () => {
+    taskFilter = button.dataset.filtro;
+    renderTasks();
+  });
+for (const button of document.querySelectorAll("[data-modo]"))
+  button.addEventListener("click", () => {
+    taskView = button.dataset.modo;
+    renderTasks();
+  });
 
 $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDaemon : pauseDaemon));
 $("buscar").addEventListener("click", () => run(pollSource));

@@ -1,0 +1,19 @@
+[config]
+model = "openrouter/anthropic/claude-sonnet-5.5"
+fallback_models = ["openrouter/openai/gpt-5.4"]
+custom_model_max_tokens = 1000000
+response_language = "pt-BR"
+
+[pr_reviewer]
+extra_instructions = """
+Responda em português do Brasil.
+Projeto: fábrica de software com TDD obrigatório, guardrails por código e merge exclusivamente humano.
+Priorize: correção funcional, perda de trabalho, vazamento de segredos, idempotência e retomada após reinício.
+Considere efeitos fora do diff (chamadores e contratos afetados). Não sugira operações de merge automático.
+Comece cada achado com a severidade em negrito (**Critical**, **Major**, **Minor** ou **Trivial**) e a categoria
+(ex.: Functional Correctness, Security & Privacy, Data Integrity, Stability). Explique o impacto concreto e termine
+com a correção proposta. Só reporte o que conseguir justificar pelo código; não invente APIs nem arquivos.
+"""
+
+[pr_code_suggestions]
+extra_instructions = "Responda em português do Brasil. Sugira apenas mudanças com impacto real; ignore estilo coberto pelo Biome."

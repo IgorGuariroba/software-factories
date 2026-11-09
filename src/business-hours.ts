@@ -1,4 +1,4 @@
-import { type BusinessCalendar, WEEKDAYS } from "./config.js";
+import { type BusinessCalendar, type ProjectConfig, WEEKDAYS } from "./config.js";
 
 type LocalDate = { year: number; month: number; day: number };
 
@@ -44,9 +44,62 @@ const nextDay = ({ year, month, day }: LocalDate): LocalDate => {
 const isoDate = ({ year, month, day }: LocalDate) =>
   `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
+/** Feriados legais BR/SP/Mogi (não inclui pontos facultativos).
+ * Fontes: leis federais 662/1949, 6.802/1980 e 14.759/2023;
+ * lei SP 9.497/1997; http://www2.cmmc.com.br/feriados.
+ */
+function isMogiHoliday(date: LocalDate): boolean {
+  const fixed = [
+    "01-01",
+    "04-21",
+    "05-01",
+    "07-09",
+    "07-26",
+    "09-01",
+    "09-07",
+    "10-12",
+    "11-02",
+    "11-15",
+    "11-20",
+    "12-25",
+  ];
+  if (fixed.includes(isoDate(date).slice(5))) return true;
+  // Computus gregoriano (Meeus): Paixão de Cristo = Páscoa - 2, Corpus Christi = Páscoa + 60.
+  const y = date.year;
+  const a = y % 19,
+    b = Math.floor(y / 100),
+    c = y % 100;
+  const d = Math.floor(b / 4),
+    e = b % 4,
+    f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3),
+    h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4),
+    k = c % 4,
+    l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  const easter = Date.UTC(y, month - 1, day);
+  const current = Date.UTC(y, date.month - 1, date.day);
+  return current === easter - 2 * 86_400_000 || current === easter + 60 * 86_400_000;
+}
+
+/** Próximo início permitido: projetos pessoais ficam livres; empresa usa também feriados BR/SP/Mogi. */
+export function nextProjectActivity(config: Pick<ProjectConfig, "activity" | "calendar">, now: number): number {
+  return config.activity === "business-hours"
+    ? addBusinessHours({ ...config.calendar, legalHolidays: true }, now, 0)
+    : now;
+}
+
 function isWorkday(calendar: BusinessCalendar, date: LocalDate): boolean {
   const weekday = WEEKDAYS[new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()];
-  return weekday !== undefined && calendar.workdays.includes(weekday) && !calendar.holidays.includes(isoDate(date));
+  return (
+    weekday !== undefined &&
+    calendar.workdays.includes(weekday) &&
+    !calendar.holidays.includes(isoDate(date)) &&
+    !(calendar.legalHolidays && isMogiHoliday(date))
+  );
 }
 
 /** Horas de um dia útil do calendário (ex.: 09:00–18:00 → 9). */

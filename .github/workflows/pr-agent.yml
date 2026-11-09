@@ -1,0 +1,96 @@
+name: PR Agent
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  pr-agent:
+    # Ignora bots (inclusive a fábrica e o CodeRabbit). Comandos por comentário só de quem tem acesso de escrita
+    # ao repositório e só /review ou /improve: evita gasto de tokens e uso do token por terceiros.
+    # PRs de fork não têm review automático (pull_request_target exporia secrets); um mantenedor pode pedir
+    # /review ou /improve neles conscientemente: o agente só lê o diff, sem executar código do PR. Rascunhos esperam.
+    if: >-
+      github.event.sender.type != 'Bot' && (
+        (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository) || (
+          github.event.issue.pull_request &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+          (startsWith(github.event.comment.body, '/review') || startsWith(github.event.comment.body, '/improve'))
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: PR Agent (review e improve via OpenRouter)
+        # Imagem fixada por digest (pragent/pr-agent 0.49.0-github_action), atestação verificada com
+        # `gh attestation verify oci://index.docker.io/pragent/pr-agent@<digest> --repo The-PR-Agent/pr-agent`.
+        uses: docker://pragent/pr-agent@sha256:b1ed6e8de56eb4d6e4169ee0d5c209bb5ed1ef071a01c0c042c64b80192a785c
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
+          # Modelo no env: o .pr_agent.toml do repositório só vale a partir do branch padrão.
+          CONFIG.MODEL: "openrouter/anthropic/claude-sonnet-5.5"
+          CONFIG.FALLBACK_MODELS: '["openrouter/openai/gpt-5.4"]'
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "1000000"
+          CONFIG.RESPONSE_LANGUAGE: "pt-BR"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "true"
+          # Walkthrough como comentário (não reescreve a descrição do PR), no estilo do CodeRabbit.
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          PR_DESCRIPTION.PUBLISH_DESCRIPTION_AS_COMMENT: "true"
+          PR_DESCRIPTION.ENABLE_PR_DIAGRAM: "true"
+          # Achados também como comentários na linha, com risco, recomendação de merge e cenários de falha.
+          PR_REVIEWER.INLINE_KEY_ISSUES: "true"
+          PR_REVIEWER.NUM_MAX_FINDINGS: "8"
+          PR_REVIEWER.REQUIRE_RISK_ASSESSMENT: "true"
+          PR_REVIEWER.REQUIRE_MERGE_RECOMMENDATION: "true"
+          PR_REVIEWER.REQUIRE_FAILURE_MODES: "true"
+          PR_REVIEWER.ENABLE_HELP_TEXT: "false"
+          # Sugestões importantes (nota >= 7) viram sugestão aplicável na linha; sem autoavaliação válida, ficam só na tabela.
+          PR_CODE_SUGGESTIONS.DUAL_PUBLISHING_SCORE_THRESHOLD: "7"
+          PR_CODE_SUGGESTIONS.SUGGESTIONS_SCORE_THRESHOLD: "5"
+          PR_CODE_SUGGESTIONS.SCORE_ON_REFLECTION_FAILURE: "5"
+          # Revisa também a cada push no PR (padrão ignora synchronize).
+          GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
+
+  review-gate:
+    # Política do review: achado Critical ou Major do PR-Agent bloqueia o merge até a thread ser resolvida.
+    # Roda depois do review; ao resolver as threads, rode este job de novo (Re-run) para liberar.
+    needs: pr-agent
+    if: always() && github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # O script vem da base, não do PR. O YAML deste workflow, porém, vem do PR: mudança em .github/ precisa de
+      # revisão humana, porque é por ela que um PR poderia afrouxar o portão.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: scripts/review-gate.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      # Falha fechado: sem review publicado (pr-agent falhou ou foi pulado), não há como afirmar que não há achados.
+      - name: Review do PR-Agent concluído
+        if: needs.pr-agent.result != 'success'
+        run: |
+          echo "::error::o job pr-agent terminou como '${{ needs.pr-agent.result }}'; sem review, o portão não libera"
+          exit 1
+      - name: Achados Critical/Major sem resolver
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/review-gate.mjs

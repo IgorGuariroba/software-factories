@@ -29,16 +29,27 @@ const STATUS = {
   cancelada: "Cancelada",
   bloqueada: "Bloqueada",
   vetada: "Vetada",
+  "aguardando-entrega": "Aguardando merge humano",
 };
 
 const STAGE = {
+  triagem: "Triagem",
   assumir: "Assumir o card",
   veto: "Prazo de veto",
   spec: "Grill e SPEC",
   implementacao: "Implementação",
+  review: "Review",
+  entrega: "PR/MR e merge humano",
 };
 
-const RETRO_STAGE = { spec: "Retrô da SPEC", implementacao: "Retrô da implementação", tarefa: "Retrô consolidada" };
+const RETRO_STAGE = {
+  triagem: "Retrô da triagem",
+  review: "Retrô do review",
+  mr: "Retrô do PR/MR",
+  spec: "Retrô da SPEC",
+  implementacao: "Retrô da implementação",
+  tarefa: "Retrô consolidada",
+};
 
 const RETRO_STATUS = { "em-andamento": "em andamento", concluida: "concluída", falhou: "desistiu (a tarefa seguiu)" };
 
@@ -156,6 +167,7 @@ export function describeEvent(e) {
     case "command":
       return `Comando pelo ${e.via}: ${e.text} (${e.result})`;
     case "retro":
+    case "progress":
       return e.message;
     case "delivery":
       return `Mensagem descartada no ${e.via} depois de ${e.attempts} tentativas`;
@@ -169,3 +181,141 @@ export function describeEvent(e) {
  * @param {Record<string, any>} w
  */
 export const writeSituation = (w) => (w.type === "blocked" ? "barrada" : w.dryRun ? "dry-run" : "feita");
+
+const PIPELINE = [
+  ["triagem", "Triagem"],
+  ["spec", "Grill e SPEC"],
+  ["implementacao", "Implementação (TDD)"],
+  ["review", "Review"],
+  ["entrega", "PR/MR"],
+  ["merge", "Merge humano"],
+];
+/** Etapas anteriores ao fluxo que contam como a primeira etapa. */
+const STAGE_INDEX = { triagem: 0, assumir: 0, veto: 0, spec: 1, implementacao: 2, review: 3, entrega: 4 };
+
+/**
+ * Etapas do fluxo com o estado de cada uma: feito, atual, espera (pausada ou aguardando você), bloqueado, pendente.
+ * @param {{status: string, stage?: string | null, publication?: {status: string} | null}} task
+ * @returns {{key: string, label: string, state: "feito" | "atual" | "espera" | "bloqueado" | "pendente"}[]}
+ */
+export function pipelineSteps(task) {
+  const merged = task.publication?.status === "merged" || (task.status === "concluida" && task.stage === "entrega");
+  const current = merged
+    ? PIPELINE.length
+    : task.status === "aguardando-entrega"
+      ? 5
+      : (STAGE_INDEX[task.stage ?? ""] ?? -1);
+  const here =
+    task.status === "bloqueada" || task.status === "cancelada" || task.status === "vetada"
+      ? "bloqueado"
+      : ["pausada", "aguardando-humano", "aguardando-veto", "aguardando-entrega", "enfileirada"].includes(task.status)
+        ? "espera"
+        : "atual";
+  return PIPELINE.map(([key, label], i) => ({
+    key,
+    label,
+    state: i < current ? "feito" : i === current ? here : "pendente",
+  }));
+}
+
+/**
+ * O que a Tarefa precisa de você agora, numa frase; `null` quando a fábrica está trabalhando sozinha.
+ * @param {Record<string, any>} task
+ * @returns {string | null}
+ */
+const WAITING = "Aguardando você.";
+
+/** Seção que resolve a pendência atual, sem depender dos canais externos.
+ * @param {Record<string, any>} task
+ */
+export function actionTab(task) {
+  if ((task.triage?.review ?? task.triageReview) === "draft" || task.specReview === "draft") return "spec";
+  if (task.questions?.some((q) => q.answer === null) || task.pendingQuestion) return "perguntas";
+  if (task.status === "aguardando-entrega" || ["implementacao", "review", "entrega"].includes(task.stage))
+    return "implementacao";
+  if (task.status === "pausada" && task.retros?.length) return "retros";
+  return "atividade";
+}
+
+/** @param {Record<string, any>} task */
+export function canAnswerQuestion(task, question) {
+  return (
+    ["aguardando-humano", "pausada"].includes(task.status) &&
+    question.answer === null &&
+    question.publication !== "sending"
+  );
+}
+
+export function nextAction(task) {
+  if (task.status === "bloqueada") return `Bloqueada: ${task.reason ?? "motivo não informado"}`;
+  if (task.status === "aguardando-entrega") return "PR/MR aberto; aguardando CI, comentários e o seu merge.";
+  if (task.status === "aguardando-veto") return "Prazo de veto em andamento: vete se não quiser que a fábrica siga.";
+  if (task.status === "aguardando-humano") {
+    // Aceita o detalhe da Tarefa e o resumo da lista (`triageReview`, `pendingQuestion`).
+    if ((task.triage?.review ?? task.triageReview) === "draft") return "Revise a triagem: aceite ou recuse a issue.";
+    if (task.specReview === "draft") return "Aprove a SPEC e os Tickets para continuar.";
+    const open = task.questions?.find((q) => q.answer === null);
+    if (open?.publication === "draft") return `Revise a pergunta ${open.n} antes do envio, na aba Perguntas.`;
+    const pending = open && open.publication !== "sending" ? open.n : task.pendingQuestion;
+    if (pending) return `Responda à pergunta ${pending} na aba Perguntas.`;
+    return WAITING;
+  }
+  if (task.status === "pausada") {
+    const retro = task.retros?.at(-1);
+    return retro && retro.status === "concluida"
+      ? "Tarefa pausada após a retrô. Retome para continuar; as sugestões da retrô são opcionais e não impedem a retomada."
+      : "Pausada: retome quando quiser continuar.";
+  }
+  return null;
+}
+
+/**
+ * Linha de destaque do cartão do quadro: a ação pendente quando é a vez de quem acompanha; senão o motivo da espera,
+ * sem a faixa de ação (esperar vaga, bloqueio).
+ * @param {Record<string, any>} task
+ * @returns {{text: string, yourTurn: boolean} | null}
+ */
+export function cardHint(task) {
+  const action = nextAction(task);
+  if (action && action !== WAITING) return { text: action, yourTurn: task.status !== "bloqueada" };
+  if (action === WAITING && task.reason) return { text: task.reason, yourTurn: false };
+  return action ? { text: action, yourTurn: true } : null;
+}
+
+const ACTIVITY_KIND = {
+  task: "status",
+  progress: "progresso",
+  write: "escrita",
+  blocked: "escrita",
+  error: "erro",
+  question: "pergunta",
+  notify: "aviso",
+  retro: "retro",
+};
+
+/**
+ * Atividade da Tarefa, mais recente primeiro. Mudanças de status seguidas viram só a última (o vaivém de fila
+ * a cada tentativa não interessa a quem acompanha).
+ * @param {Record<string, any>[]} events
+ * @returns {{at: string, kind: string, text: string}[]}
+ */
+export function activity(events) {
+  const kept = events.filter((e, i) => !(e.type === "task" && events[i + 1]?.type === "task"));
+  return kept.map((e) => ({ at: e.at, kind: ACTIVITY_KIND[e.type] ?? "evento", text: describeEvent(e) })).reverse();
+}
+
+/**
+ * Colunas do quadro: uma por etapa do fluxo (quem não começou fica em Triagem) e as encerradas no fim.
+ * @template {{status: string, stage?: string | null}} T
+ * @param {T[]} tasks
+ * @returns {{key: string, label: string, tasks: T[]}[]}
+ */
+export function boardColumns(tasks) {
+  const columns = PIPELINE.slice(0, 5).map(([key, label]) => ({ key, label, tasks: /** @type {T[]} */ ([]) }));
+  const closed = { key: "encerradas", label: "Encerradas", tasks: /** @type {T[]} */ ([]) };
+  for (const task of tasks) {
+    if (isTerminal(task)) closed.tasks.push(task);
+    else columns[STAGE_INDEX[task.stage ?? ""] ?? 0].tasks.push(task);
+  }
+  return [...columns, closed];
+}

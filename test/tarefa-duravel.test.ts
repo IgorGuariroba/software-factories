@@ -345,6 +345,7 @@ describe("schema da API", () => {
     expect(schema.openapi).toMatch(/^3\./);
     expect(Object.keys(schema.paths).sort()).toEqual(
       [
+        "/settings/retro",
         "/daemon",
         "/daemon/pause",
         "/daemon/resume",
@@ -361,9 +362,11 @@ describe("schema da API", () => {
         "/tasks/{project}/{key}/questions/{n}",
         "/tasks/{project}/{key}/questions/{n}/answer",
         "/tasks/{project}/{key}/questions/{n}/approve",
+        "/tasks/{project}/{key}/questions/{n}/answer",
         "/tasks/{project}/{key}/questions/{n}/reminder",
         "/tasks/{project}/{key}/questions/{n}/reminder/approve",
         "/tasks/{project}/{key}/resume",
+        "/tasks/{project}/{key}/repair",
         "/tasks/{project}/{key}/triage",
         "/tasks/{project}/{key}/triage/decide",
         "/tasks/{project}/{key}/spec",
