@@ -1,0 +1,14 @@
+#!/bin/sh
+# Match the Conventional Commits pattern used by the PR title workflow.
+# Git-generated merge messages are not ordinary commit titles.
+if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+  exit 0
+fi
+
+title=$(sed -n '1p' "$1")
+if printf '%s\n' "$title" | grep -qE '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: [^ ].*'; then
+  exit 0
+fi
+
+echo "✋ Commit title must follow Conventional Commits, e.g. 'fix(web): correct button'." >&2
+exit 1
