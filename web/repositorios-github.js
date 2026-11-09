@@ -29,7 +29,7 @@ export function sugerirProjeto(repo) {
     .join("")
     .toUpperCase()
     .slice(0, 4);
-  if (prefixo.length < 2) prefixo = (base.replace(/[^a-z0-9]/g, "") + "XX").slice(0, 2).toUpperCase();
+  if (prefixo.length < 2) prefixo = `${base.replace(/[^a-z0-9]/g, "")}XX`.slice(0, 2).toUpperCase();
   if (!/^[A-Z]/.test(prefixo)) prefixo = `P${prefixo}`.slice(0, 4);
   return { nome, prefixo };
 }
