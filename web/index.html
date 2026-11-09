@@ -9,20 +9,6 @@
     <script type="module" src="/web/app.js"></script>
   </head>
   <body>
-    <dialog id="configuracao-retros" aria-labelledby="configuracao-retros-titulo">
-      <form id="form-retros" class="resposta">
-        <h2 id="configuracao-retros-titulo">Publicações de retrô</h2>
-        <p>Escolha o repositório GitHub onde as sugestões aprovadas serão publicadas como issues. Esta configuração é global para todos os projetos.</p>
-        <label for="repositorio-retros">Repositório público (dono/nome)</label>
-        <input id="repositorio-retros" name="repo" required maxlength="200" placeholder="usuario/software-factories" aria-describedby="retros-impacto" />
-        <p id="retros-impacto">Salvar não publica nada. Cada proposta continua exigindo revisão e aprovação. A escolha fica salva neste daemon e vale sem reinício; substitui o valor inicial do ambiente.</p>
-        <p id="retros-config-status" role="status"></p>
-        <div class="acoes">
-          <button type="submit" id="salvar-retros">Salvar configuração</button>
-          <button type="button" id="fechar-configuracao-retros">Fechar</button>
-        </div>
-      </form>
-    </dialog>
     <p id="aviso" class="aviso" role="alert" hidden></p>
 
     <div class="layout">
@@ -67,16 +53,46 @@
         </section>
         <section class="pagina-simples" data-tela="fonte" hidden aria-labelledby="titulo-fonte">
           <h2 id="titulo-fonte">Fonte de demandas</h2>
-          <p>Consulte os cards elegíveis ou solicite uma busca por novas demandas.</p>
-          <div class="painel-area"><h3>Cards elegíveis</h3><p>A consulta mostra os cards disponíveis na fonte, sem iniciar o processamento.</p>
-            <div class="acoes"><button type="button" id="atualizar-elegiveis">Consultar a Fonte</button><button type="button" id="buscar">Buscar na Fonte</button></div>
-            <ul id="elegiveis" class="lista"></ul>
+          <p class="introducao">Pré-visualize os cards elegíveis ou traga novas demandas para a fila.</p>
+          <div class="cartao-area">
+            <div class="cartao-cabeca">
+              <div>
+                <h3>Demandas elegíveis</h3>
+                <p>Pré-visualizar só consulta a fonte. Buscar novas demandas enfileira os cards atribuídos a você.</p>
+              </div>
+              <div class="acoes">
+                <button type="button" id="atualizar-elegiveis" class="secundario">Pré-visualizar elegíveis</button>
+                <button type="button" id="buscar" class="primario">Buscar novas demandas</button>
+              </div>
+            </div>
+            <ul id="elegiveis" class="lista-demandas" aria-label="Demandas elegíveis"></ul>
+            <div id="elegiveis-vazio" class="estado-vazio">
+              <span class="icone-vazio" data-icone="inbox" aria-hidden="true"></span>
+              <p><strong>Nenhuma demanda carregada no momento</strong></p>
+              <p>Use “Pré-visualizar elegíveis” para listar os cards disponíveis na fonte.</p>
+            </div>
           </div>
         </section>
         <section class="pagina-simples" data-tela="configuracoes" hidden aria-labelledby="titulo-configuracoes">
           <h2 id="titulo-configuracoes">Configurações</h2>
-          <p>Gerencie as configurações compartilhadas pela fábrica.</p>
-          <div class="painel-area"><h3>Publicações de retrô</h3><p>Escolha o repositório de destino das sugestões aprovadas.</p><button type="button" id="configurar-retros">Configurar publicações</button></div>
+          <p class="introducao">Preferências compartilhadas por todos os projetos desta fábrica.</p>
+          <form id="form-retros" class="cartao-area">
+            <div class="cartao-cabeca">
+              <div>
+                <h3>Publicações de retrô</h3>
+                <p>Repositório GitHub público onde as sugestões aprovadas viram issues. Salvar não publica nada: cada proposta continua exigindo revisão e aprovação.</p>
+              </div>
+            </div>
+            <div class="campo">
+              <label for="repositorio-retros">Repositório público (dono/nome)</label>
+              <input id="repositorio-retros" name="repo" required maxlength="200" placeholder="usuario/software-factories" aria-describedby="retros-impacto" />
+            </div>
+            <p id="retros-impacto" class="ajuda">Vale sem reinício e substitui o valor inicial de <code>FACTORY_RETRO_REPO</code>.</p>
+            <div class="cartao-rodape">
+              <p id="retros-config-status" role="status"></p>
+              <button type="submit" id="salvar-retros" class="primario">Salvar</button>
+            </div>
+          </form>
         </section>
       </main>
 
