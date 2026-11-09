@@ -7,6 +7,7 @@ export class PageElement {
   value = "";
   disabled = false;
   hidden = false;
+  open = false;
   className = "";
   classList = { toggle: (_name: string, _force?: boolean) => {} };
   dataset: Record<string, string> = {};
@@ -25,6 +26,12 @@ export class PageElement {
   }
   getAttribute(name: string): string | null {
     return this.attributes.get(name) ?? null;
+  }
+  showModal(): void {
+    this.open = true;
+  }
+  close(): void {
+    this.open = false;
   }
   addEventListener(name: string, listener: (event: PageEvent) => unknown): void {
     this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]);
