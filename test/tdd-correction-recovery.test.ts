@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES } from "../src/config.js";
 import { deliverReview, FakeModel, scriptImplementer, write } from "./fakes/fake-model.js";
@@ -10,6 +12,76 @@ afterEach(async () => {
   await factory?.close();
   if (root) await removeTempRoot(root);
 });
+
+it("retoma correção interrompida com teste RED pendente antes de sincronizar a base", async () => {
+  root = await tempRoot();
+  const repo = await createRemoteRepo(root, "app");
+  const model = new FakeModel();
+  scriptImplementer(
+    model,
+    {
+      spec: "Valor e dobro",
+      tickets: [{ titulo: "Valor", aceite: "retorna um" }],
+    },
+    [
+      write({
+        "test/value.test.mjs":
+          "import {test} from 'node:test';import assert from 'node:assert/strict';import {value} from '../src/value.mjs';test('valor',()=>assert.equal(value,1));",
+      }),
+      write({ "src/value.mjs": "export const value = 1;" }),
+      write({
+        "test/dobro.test.mjs":
+          "import {test} from 'node:test';import assert from 'node:assert/strict';import {dobro} from '../src/value.mjs';test('dobro',()=>assert.equal(dobro(2),4));",
+      }),
+      write({
+        "src/value.mjs": "export const value = 1; export const dobro = n => n * 2;",
+      }),
+    ],
+  );
+  model.respondReview = () =>
+    model.reviewCalls.length === 1
+      ? deliverReview("corrigir", "Falta dobro", [{ titulo: "Dobro", aceite: "dobro de dois é quatro" }])
+      : deliverReview("aprovado", "Critérios atendidos");
+  const original = model.respond;
+  const started = hold();
+  const release = hold();
+  let suspended = false;
+  model.respond = async (call) => {
+    if (!suspended && call.lastRole === "toolResult" && call.input.includes("Dobro")) {
+      suspended = true;
+      started.release();
+      await release.promise;
+    }
+    return original(call);
+  };
+  factory = await startTestFactory({
+    cards: [{ key: "PROJ-1", title: "Valor", status: "A Fazer", assignee: USER }],
+    model,
+    config: {
+      repositories: [
+        {
+          path: repo.user,
+          prefix: "PROJ",
+          test: {
+            command: [process.execPath, "--test"],
+            timeoutSeconds: 10,
+            files: DEFAULT_TEST_FILES,
+          },
+        },
+      ],
+    },
+  });
+  await poll(factory);
+  await started.promise;
+  const path = join(factory.stateDir, "worktrees", "exemplo", "PROJ-1", "test/dobro.test.mjs");
+  expect(await readFile(path, "utf8")).toContain("dobro(2)");
+  const restarting = factory.restart();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  release.release();
+  factory = await restarting;
+  await waitForStatus(factory, "PROJ-1", "concluida", 5000);
+  expect(await repo.show("feature/PROJ-1-valor", "src/value.mjs")).toContain("dobro");
+}, 15000);
 
 it.each([
   { verdict: "aprovado", status: "concluida", restart: false },

@@ -414,7 +414,10 @@ export async function startFactory(opts: {
                     currentTask.publication.number,
                   )
                 : undefined;
-            if ((!remote || remote.state === "open") && (await syncBase())) await reviewLoop();
+            if (!remote || remote.state === "open") {
+              const resumed = await resumeCorrections();
+              if ((await syncBase()) || resumed) await reviewLoop();
+            }
             outcome = await runDelivery({
               taskId: input.id,
               runtime,
@@ -541,9 +544,8 @@ export async function startFactory(opts: {
         });
       }
 
-      async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
-        await syncBase();
-        // Um reinício dentro da implementação de correções deve retomá-la antes de pedir outro review normal.
+      async function resumeCorrections(): Promise<boolean> {
+        // Retoma o TDD pendente antes de exigir clone limpo para sincronização ou review.
         const interrupted = (await readState()).tasks.find((t) => t.id === input.id);
         if (interrupted?.implementation && interrupted.delivery) {
           const done = new Set([
@@ -551,8 +553,17 @@ export async function startFactory(opts: {
             ...(interrupted.implementation.verifiedTickets ?? []).map((c) => c.ticket),
           ]);
           const originalCount = interrupted.delivery.tickets.length;
-          if (interrupted.correctionTickets?.some((_, index) => !done.has(originalCount + index))) await implement();
+          if (interrupted.correctionTickets?.some((_, index) => !done.has(originalCount + index))) {
+            await implement();
+            return true;
+          }
         }
+        return false;
+      }
+
+      async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
+        await resumeCorrections();
+        await syncBase();
         for (;;) {
           const verdict = await runReview({
             harness,
