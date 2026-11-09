@@ -492,6 +492,13 @@ export const API_SCHEMA = {
         responses: ok,
       },
     },
+    "/github/repos": {
+      get: {
+        summary:
+          "Catálogo dos repositórios que o GitHub App acessa (só leitura), com id, privacidade, instalação e o plugue atual de cada um",
+        responses: ok,
+      },
+    },
     "/repos/plugar": {
       post: { summary: "Reativa o repositório de um projeto já configurado (corpo: { repo })", responses: ok },
     },

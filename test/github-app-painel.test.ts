@@ -24,7 +24,11 @@ const githubFalso = (() => {
     }
     if (caminho === "/app/installations/180265101/access_tokens") return json({ token: "ghs_token_falso" });
     if (caminho === "/installation/repositories") {
-      return json({ repositories: [{ full_name: "IgorGuariroba/software-factories" }] });
+      return json({
+        repositories: [
+          { id: 42, full_name: "IgorGuariroba/software-factories", private: false, owner: { login: "IgorGuariroba" } },
+        ],
+      });
     }
     return json({ message: "Not Found" }, 404);
   };
@@ -120,5 +124,50 @@ describe("GET /github-app: o painel do App em Configurações", () => {
     const painel = await api<Painel>(factory, "GET", "/github-app");
     expect(painel.app.erro).toBe("GitHub respondeu 401 em /app");
     expect(painel.repositorios[0]?.coberto).toBeNull();
+  });
+});
+
+describe("GET /github/repos: catálogo do App com o plugue atual", () => {
+  it("lista os repositórios do App com id e privacidade, e marca os plugados", async () => {
+    factory = await startTestFactory({
+      config: githubConfig("IgorGuariroba/software-factories"),
+      githubApp: { appId: 5685212, privateKeyPath: await chaveNoDisco(), fetch: githubFalso },
+    });
+    const catalogo = await api<{
+      configurado: boolean;
+      repos: { id: number; nome: string; privado: boolean; plugado: { projeto: string; status: string } | null }[];
+    }>(factory, "GET", "/github/repos");
+    expect(catalogo.configurado).toBe(true);
+    expect(catalogo.repos).toEqual([
+      expect.objectContaining({
+        id: 42,
+        nome: "IgorGuariroba/software-factories",
+        privado: false,
+        plugado: expect.objectContaining({ status: "ativo" }),
+      }),
+    ]);
+  });
+
+  it("sem App configurado, responde sem repositórios e sem erro inventado", async () => {
+    factory = await startTestFactory({ config: githubConfig("dono/repo") });
+    const catalogo = await api<{ configurado: boolean; erro?: string; repos: unknown[] }>(
+      factory,
+      "GET",
+      "/github/repos",
+    );
+    expect(catalogo).toMatchObject({ configurado: false, repos: [] });
+    expect(catalogo.erro).toBeUndefined();
+  });
+
+  it("falha do GitHub vira erro, sem repositórios, e nunca expõe token", async () => {
+    const falha = (async () => json({ message: "Bad credentials" }, 401)) as unknown as typeof fetch;
+    factory = await startTestFactory({
+      config: githubConfig("dono/repo"),
+      githubApp: { appId: 5685212, privateKeyPath: await chaveNoDisco(), fetch: falha },
+    });
+    const bruto = JSON.stringify(await api(factory, "GET", "/github/repos"));
+    expect(bruto).toContain("GitHub respondeu 401 em /app");
+    expect(bruto).not.toContain("BEGIN");
+    expect(bruto).not.toContain("ghs_");
   });
 });
