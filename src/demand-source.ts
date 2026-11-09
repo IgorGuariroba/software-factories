@@ -24,6 +24,20 @@ export interface CardComment {
   body: string;
 }
 
+/** Estado de uma issue, como a reconciliação a compara com as Tarefas. */
+export interface IssueSnapshot {
+  number: number;
+  title: string;
+  body: string | null;
+  state: "open" | "closed";
+  labels: string[];
+  /** Quantas sub-issues tem; uma issue com sub-issues é um épico. */
+  subIssues: number;
+  pullRequest: boolean;
+  /** Última alteração (ISO 8601): distingue duas versões da mesma issue. */
+  updatedAt: string;
+}
+
 /** Um PR que cita a issue (Fonte GitHub). */
 export interface LinkedPullRequest {
   number: number;
@@ -60,4 +74,9 @@ export interface DemandSource {
    * Fontes com triagem (GitHub).
    */
   dismiss?(key: string, reason: "completed" | "not_planned" | "duplicate"): Promise<void>;
+  /**
+   * Issues que mudaram desde `since` (ISO 8601), abertas ou fechadas, numa só consulta por repositório. Usada pela
+   * reconciliação de startup para recuperar o que o webhook perdeu (ADR-0015). Só nas Fontes com webhook (GitHub).
+   */
+  listChangedSince?(since: string): Promise<IssueSnapshot[]>;
 }

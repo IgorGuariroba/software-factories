@@ -125,3 +125,19 @@ _Avoid_: docs, wiki
 **Dry-run**:
 Modo em que a fábrica lê os sistemas de verdade e apenas registra as escritas que faria.
 _Avoid_: simulação, modo teste
+
+## Sincronização
+
+**Entrega**:
+Evento que o GitHub envia ao receptor do webhook quando uma issue muda. Cada entrega tem um identificador próprio, e
+o reenvio de uma entrega falha usa o mesmo identificador.
+_Avoid_: notificação, callback
+
+**Receptor do webhook**:
+Porta local que recebe as entregas do GitHub App, atrás de um túnel. Só aceita entregas com assinatura válida.
+_Avoid_: API, endpoint público
+
+**Escopo desatualizado**:
+Estado de uma Tarefa cujo card mudou no GitHub depois de a Tarefa começar a executar. A SPEC é refeita, ou a Tarefa
+para se a implementação já começou.
+_Avoid_: spec obsoleta, drift

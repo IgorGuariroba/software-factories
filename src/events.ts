@@ -52,7 +52,15 @@ export type FactoryEvent =
       at: string;
       project: string;
       target: string;
-      reason: "pergunta-sem-resposta" | "aguardando-veto" | "sugestao-repo-time" | "retro-pronta" | "triagem";
+      reason:
+        | "pergunta-sem-resposta"
+        | "aguardando-veto"
+        | "sugestao-repo-time"
+        | "retro-pronta"
+        | "triagem"
+        | "escopo-alterado"
+        | "repositorio-desvinculado"
+        | "repo-sem-projeto";
       message: string;
       /** Até quando o usuário pode agir (ex.: o fim do prazo de veto), em ISO 8601. */
       until?: string;

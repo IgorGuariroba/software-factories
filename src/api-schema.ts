@@ -482,6 +482,19 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/repos": {
+      get: { summary: "Repositórios monitorados e o vínculo de cada um (ativo ou desativado)", responses: ok },
+    },
+    "/repos/plugar": {
+      post: { summary: "Reativa o repositório de um projeto já configurado (corpo: { repo })", responses: ok },
+    },
+    "/repos/desplugar": {
+      post: {
+        summary:
+          "Desativa o repositório: cancela as Tarefas não iniciadas (corpo: { repo, force? }); Tarefa em execução exige force",
+        responses: ok,
+      },
+    },
     "/daemon": { get: { summary: "Estado do daemon ({ paused })", responses: ok } },
     "/daemon/pause": { post: { summary: "Pausa o daemon: nenhuma tarefa nova começa", responses: ok } },
     "/daemon/resume": { post: { summary: "Retoma o daemon", responses: ok } },

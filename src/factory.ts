@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
+import { AvisoLote } from "./aviso-lote.js";
 import { synchronizeBase } from "./base-sync.js";
 import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
@@ -47,12 +48,22 @@ import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhament
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
+import {
+  applyInstallationDelivery as applyInstallationToState,
+  applyIssueDelivery as applyToState,
+  type InstallationDelivery,
+  type IssueDelivery,
+  reconciliarIssues,
+  type WebhookEffect,
+  type WebhookProject,
+} from "./github-webhook.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
+import { ativarProjeto, desativarProjeto, repoDesativado, tarefasAtivas } from "./repositorios.js";
 import { respostaNaoSei } from "./resposta-tecnica.js";
 import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
@@ -84,6 +95,7 @@ import {
   trustedContext,
 } from "./triage.js";
 import { webFile } from "./web.js";
+import { startWebhookListener } from "./webhook-listener.js";
 
 export interface FactoryProject {
   config: ProjectConfig;
@@ -130,15 +142,35 @@ export interface FactoryCommands {
   answerQuestion?(id: string, n: number, answer: string): Promise<boolean>;
 }
 
+/** Vínculo de um projeto monitorado com o GitHub, como a página e a API o mostram. */
+export interface RepoListItem {
+  project: string;
+  repo: string;
+  status: "ativo" | "desativado";
+  installationId: number | null;
+  motivo: string | null;
+}
+
 export interface RunningFactory {
   url: string;
   /** Os mesmos comandos da API, para as interfaces de gestão no processo do daemon. */
   commands: FactoryCommands;
+  /** Entrega `issues` do GitHub já interpretada (ver `parseGitHubDelivery`). O receptor HTTP chama este método. */
+  applyGitHubDelivery(delivery: IssueDelivery | InstallationDelivery): Promise<void>;
+  /** Repositórios monitorados: vínculo atual de cada um. */
+  listRepos(): Promise<RepoListItem[]>;
+  plugRepo(repo: string): Promise<{ status: number; body: unknown }>;
+  unplugRepo(repo: string, force: boolean): Promise<{ status: number; body: unknown }>;
+  /** URL local do receptor do webhook, quando ele está ligado. */
+  webhookUrl?: string;
   close(): Promise<void>;
 }
 
 /** Estados em que a fábrica assume um card. */
 const ELIGIBLE: ReadonlySet<CardState> = new Set(["todo", "in_progress"]);
+
+/** Quantas entregas do webhook a fábrica lembra para não reaplicar reenvios (ver `FactoryState.deliveries`). */
+const DELIVERY_MEMORY = 1000;
 
 /** Estado mais avançado para onde a fábrica move cards no M1. */
 const TRANSITION_LIMIT: CardState = "in_progress";
@@ -279,6 +311,13 @@ export async function startFactory(opts: {
    * Sem `repo`, as propostas da fábrica ficam só registradas na Tarefa.
    */
   retro?: { sink?: RetroSink; repo?: string };
+  /**
+   * Receptor dos webhooks do GitHub: porta local (um túnel encaminha até ela) e o secret do GitHub App. Sem ele, a
+   * fábrica não recebe entregas.
+   */
+  webhook?: { port: number; secret: string };
+  /** Agrupamento de avisos em rajada (ver `AvisoLote`). Padrão: 10 s de silêncio. Zero desliga o agrupamento. */
+  avisos?: { janelaMs?: number };
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
   const clock: FactoryClock = opts.clock ?? { now: Date.now };
@@ -763,7 +802,8 @@ export async function startFactory(opts: {
           taskId: runtime.taskId,
           model: project.config.roles.spec,
           context: runtime.context,
-          requestId: `spec-${questions.length}`,
+          // Uma SPEC refeita por mudança de escopo tem outro identificador: o motor não reaproveita a resposta antiga.
+          requestId: `spec-${questions.length}-r${(await readState()).tasks.find((t) => t.id === input.id)?.specRevision ?? 0}`,
           exclude: await triageConversations(),
           input: specInput({
             card,
@@ -1231,7 +1271,10 @@ export async function startFactory(opts: {
   /** Cards elegíveis na Fonte agora. Num repositório monitorado, as issues mais antigas primeiro. */
   async function queue(): Promise<QueueItem[]> {
     const items: QueueItem[] = [];
+    const state = await readState();
     for (const { config, source } of projects.values()) {
+      // Repositório desativado não entra na busca: nenhuma Tarefa nova dele (ADR-0015).
+      if (repoDesativado(state, config.name)) continue;
       const cards = await source.listAssignedCards(config.source.assignee);
       if (config.source.type === "github") cards.sort((a, b) => issueOrder(a.key) - issueOrder(b.key));
       for (const card of cards) {
@@ -1252,6 +1295,12 @@ export async function startFactory(opts: {
    * repositório monitorado, no máximo `maxActive` Tarefas não terminadas por vez.
    */
   async function poll(): Promise<void> {
+    try {
+      await reconcileRepos();
+    } catch (err) {
+      // Uma falha do GitHub nesta consulta não pode impedir a busca dos cards.
+      console.error("[fábrica] sincronização com o GitHub falhou:", redactSecrets(String(err)));
+    }
     await checkAnswers();
     const eligible = await queue();
     await harness.commit(async (tx) => {
@@ -1299,6 +1348,8 @@ export async function startFactory(opts: {
     let wakeAt = Number.POSITIVE_INFINITY;
     for (const task of state.tasks) {
       if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
+      // Repositório desativado: a Tarefa espera o replugue ou o desplugue (ADR-0015).
+      if (repoDesativado(state, task.project)) continue;
       const project = projects.get(task.project);
       if (!project) {
         if (!missingProjectReported.has(task.id)) {
@@ -1404,6 +1455,156 @@ export async function startFactory(opts: {
   react();
 
   // --- Comandos ----------------------------------------------------------------------------------
+
+  /** Avisos ao usuário: uma rajada vira um resumo por projeto e motivo, em vez de um aviso por card (ver `AvisoLote`). */
+  const avisos = new AvisoLote({
+    janelaMs: opts.avisos?.janelaMs ?? 10_000,
+    now: () => clock.now(),
+    armTimer,
+    emit: (aviso) =>
+      events.append({
+        type: "notify",
+        project: aviso.project,
+        target: aviso.target,
+        reason: aviso.reason,
+        message: aviso.message,
+      }),
+  });
+
+  /** Projetos monitorados como os reducers do webhook os veem. */
+  const webhookProjects = (): WebhookProject[] =>
+    [...projects.values()].map((p) => ({ name: p.config.name, config: p.config }));
+
+  /**
+   * Executa os efeitos que o estado não executa sozinho: parar uma execução durável e registrar um aviso ao usuário.
+   */
+  async function runWebhookEffects(effects: WebhookEffect[]): Promise<void> {
+    for (const effect of effects) {
+      if (effect.type === "abortar") {
+        const durableId = (await readState()).tasks.find((t) => t.id === effect.id)?.durableId;
+        if (durableId !== null && durableId !== undefined) await harness.abortTask(durableId as TaskId, context);
+        continue;
+      }
+      await avisos.add({
+        type: "notificar",
+        project: effect.project,
+        target: effect.target,
+        reason: effect.reason,
+        message: effect.message,
+      });
+    }
+  }
+
+  /** Janela de sobreposição da consulta de alterações: cobre edições feitas enquanto a própria consulta rodava. */
+  const SYNC_OVERLAP_MS = 60_000;
+
+  /**
+   * Reconciliação (ADR-0015): para cada repositório ativo, consulta o que mudou desde a última sincronização e aplica o
+   * que o webhook não entregou. Sem sincronização anterior, só grava a linha de base: a busca cuida dos cards abertos.
+   */
+  async function reconcileRepos(): Promise<void> {
+    const startedAt = new Date(clock.now()).toISOString();
+    for (const { config, source } of projects.values()) {
+      if (config.source.type !== "github" || !source.listChangedSince) continue;
+      const state = await readState();
+      if (repoDesativado(state, config.name)) continue;
+      const since = state.sincronizadoEm?.[config.name];
+      if (since !== undefined) {
+        const snapshots = await source.listChangedSince(new Date(Date.parse(since) - SYNC_OVERLAP_MS).toISOString());
+        const deliveries = reconciliarIssues({ state, project: { name: config.name, config }, snapshots });
+        for (const delivery of deliveries) await applyGitHubDelivery(delivery);
+      }
+      await harness.commit(async (tx) => {
+        const current = await tx.doc(StateDoc);
+        current.sincronizadoEm = { ...current.sincronizadoEm, [config.name]: startedAt };
+      }, context);
+    }
+  }
+
+  /**
+   * Aplica uma entrega do GitHub (issue ou instalação do App) ao estado e executa os efeitos. Um reenvio de entrega já
+   * aplicada não muda nada (ver `FactoryState.deliveries`).
+   */
+  async function applyGitHubDelivery(delivery: IssueDelivery | InstallationDelivery): Promise<void> {
+    let effects: WebhookEffect[] = [];
+    let duplicate = false;
+    await harness.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      if (state.deliveries?.includes(delivery.deliveryId)) {
+        duplicate = true;
+        return;
+      }
+      effects =
+        "repo" in delivery
+          ? applyToState({ state, delivery, projects: webhookProjects(), newRef: newTaskRef })
+          : applyInstallationToState({ state, delivery, projects: webhookProjects() });
+      state.deliveries = [...(state.deliveries ?? []), delivery.deliveryId].slice(-DELIVERY_MEMORY);
+    }, context);
+    if (!duplicate) await runWebhookEffects(effects);
+  }
+
+  /** Acha o projeto monitorado de um repositório (`dono/nome`, sem diferenciar caixa). */
+  const projectByRepo = (repo: string): string | undefined => {
+    for (const { config } of projects.values()) {
+      if (config.source.type === "github" && config.source.repo.toLowerCase() === repo.toLowerCase())
+        return config.name;
+    }
+    return undefined;
+  };
+
+  /** Vínculos dos projetos monitorados: o que está ativo, o que foi desativado e de qual instalação veio. */
+  async function listRepos(): Promise<RepoListItem[]> {
+    const state = await readState();
+    const repos: RepoListItem[] = [];
+    for (const { config } of projects.values()) {
+      if (config.source.type !== "github") continue;
+      const binding = state.repos?.[config.name];
+      repos.push({
+        project: config.name,
+        repo: config.source.repo,
+        status: binding?.status ?? "ativo",
+        installationId: binding?.installationId ?? null,
+        motivo: binding?.motivo ?? null,
+      });
+    }
+    return repos;
+  }
+
+  /**
+   * Desplugue: desativa o repositório de um projeto. Uma Tarefa ativa só para com `force`; sem ele, a resposta é 409 e
+   * nada muda.
+   */
+  async function unplugRepo(repo: string, force: boolean): Promise<{ status: number; body: unknown }> {
+    const project = projectByRepo(repo);
+    if (!project) return { status: 404, body: { error: `nenhum projeto monitora ${repo}` } };
+    const state = await readState();
+    const ativas = tarefasAtivas(state, project).map((t) => t.id);
+    if (ativas.length > 0 && !force)
+      return {
+        status: 409,
+        body: {
+          error: "há Tarefa em execução neste repositório; confirme com force para cancelá-la",
+          tarefasAtivas: ativas,
+        },
+      };
+    let effects: WebhookEffect[] = [];
+    await harness.commit(async (tx) => {
+      const current = await tx.doc(StateDoc);
+      effects = desativarProjeto({ state: current, project, repo, motivo: "desplugado pelo usuário", force }).effects;
+    }, context);
+    await runWebhookEffects(effects);
+    return { status: 200, body: { ok: true, project, repo, status: "desativado", tarefasCanceladas: ativas } };
+  }
+
+  /** Plugue: reativa um repositório já configurado (não cria projeto: a config fica no YAML, ADR-0010). */
+  async function plugRepo(repo: string): Promise<{ status: number; body: unknown }> {
+    const project = projectByRepo(repo);
+    if (!project) return { status: 404, body: { error: `nenhum projeto monitora ${repo}; configure o YAML primeiro` } };
+    await harness.commit(async (tx) => {
+      ativarProjeto({ state: await tx.doc(StateDoc), project, repo });
+    }, context);
+    return { status: 200, body: { ok: true, project, repo, status: "ativo" } };
+  }
 
   /** Altera uma Tarefa no estado durável. Retorna `false` se ela não existe. */
   async function updateTask(id: string, change: (task: QueuedTask, state: FactoryState) => void): Promise<boolean> {
@@ -2008,6 +2209,17 @@ export async function startFactory(opts: {
         const found = await commands[command](id);
         return found ? json(res, 200, { ok: true }) : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
+      if (route === "GET /repos") return json(res, 200, await listRepos());
+      if (route === "POST /repos/plugar" || route === "POST /repos/desplugar") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { repo?: unknown; force?: unknown } | undefined;
+        if (typeof body?.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(body.repo.trim()))
+          return json(res, 400, { error: "informe o repositório no formato dono/nome" });
+        const repo = body.repo.trim();
+        const result =
+          route === "POST /repos/plugar" ? await plugRepo(repo) : await unplugRepo(repo, body.force === true);
+        return json(res, result.status, result.body);
+      }
       if (route === "GET /daemon") return json(res, 200, { paused: (await readState()).daemonPaused });
       if (route === "POST /daemon/pause" || route === "POST /daemon/resume") {
         await commands.setDaemonPaused(route.endsWith("pause"));
@@ -2051,6 +2263,16 @@ export async function startFactory(opts: {
     polling = run.catch(() => undefined);
     return run;
   }
+  /** Uma tarefa de sincronização na mesma fila das buscas: nunca roda ao mesmo tempo que elas. */
+  function serializedTask(task: () => Promise<void>): Promise<void> {
+    const run = polling.then(task);
+    polling = run.catch(() => undefined);
+    return run;
+  }
+  // Sincronização de startup (ADR-0015): recupera o que o webhook perdeu enquanto o daemon esteve fora.
+  void serializedTask(reconcileRepos).catch((err) =>
+    console.error("[fábrica] sincronização de startup falhou:", redactSecrets(String(err))),
+  );
   // O timer pula o tick se ainda houver busca pendente, para não acumular buscas com a Fonte lenta.
   const pollTimer =
     opts.pollIntervalMs &&
@@ -2092,12 +2314,28 @@ export async function startFactory(opts: {
 
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
+  // Receptor do webhook: só entrega issues já validadas pela assinatura; a aplicação é `applyGitHubIssue`.
+  const webhookListener = opts.webhook
+    ? await startWebhookListener({
+        port: opts.webhook.port,
+        secret: opts.webhook.secret,
+        onIssues: applyGitHubDelivery,
+        onInstallation: applyGitHubDelivery,
+      })
+    : undefined;
   return {
     url: `http://127.0.0.1:${port}`,
+    webhookUrl: webhookListener?.url,
     commands,
+    applyGitHubDelivery,
+    listRepos,
+    plugRepo,
+    unplugRepo,
     close: async () => {
       closing = true;
+      await avisos.flush();
       await bridge?.stop();
+      await webhookListener?.close();
       if (pollTimer) clearInterval(pollTimer);
       disarmRetry?.();
       for (const stream of streams) stream.end();

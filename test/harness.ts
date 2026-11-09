@@ -92,6 +92,10 @@ interface TestFactoryOptions {
   retroSink?: MemoryRetroSink;
   /** Repositório da fábrica para as issues de retrô; `null` desliga (como sem `FACTORY_RETRO_REPO`). */
   retroRepo?: string | null;
+  /** Secret do GitHub App: liga o receptor do webhook numa porta livre (`webhookUrl`). */
+  webhookSecret?: string;
+  /** Janela de agrupamento dos avisos. Padrão nos testes: 0 (cada aviso sai na hora). */
+  avisoJanelaMs?: number;
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória e estado durável num diretório temporário. */
@@ -117,6 +121,8 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     management: opts.telegram && { port: opts.telegram, chat: TELEGRAM_CHAT, user: TELEGRAM_USER },
     teams: opts.teams,
     retro: { sink: retroSink, repo: retroRepo ?? undefined },
+    webhook: opts.webhookSecret ? { port: 0, secret: opts.webhookSecret } : undefined,
+    avisos: { janelaMs: opts.avisoJanelaMs ?? 0 },
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
     ],

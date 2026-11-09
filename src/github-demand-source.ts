@@ -1,5 +1,12 @@
 import { execFile } from "node:child_process";
-import type { Card, CardComment, DemandSource, LinkedPullRequest, TextAttachment } from "./demand-source.js";
+import type {
+  Card,
+  CardComment,
+  DemandSource,
+  IssueSnapshot,
+  LinkedPullRequest,
+  TextAttachment,
+} from "./demand-source.js";
 
 export interface GhExecResult {
   stdout: string;
@@ -42,7 +49,8 @@ export const STATUS_LABEL = "fabrica:";
 export const OPEN_STATUS = "aberta";
 export const CLOSED_STATUS = "fechada";
 
-interface RawIssue {
+/** Issue como a API do GitHub a devolve (e como o webhook `issues` a envia). */
+export interface RawIssue {
   number: number;
   title: string;
   body?: string | null;
@@ -71,8 +79,24 @@ interface RawComment {
   user?: { login?: string } | null;
 }
 
-function labelNames(issue: RawIssue): string[] {
+export function labelNames(issue: RawIssue): string[] {
   return (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? "")));
+}
+
+/**
+ * Card da Fonte a partir de uma issue. Fonte única da regra de status (label `fabrica:<status>`, ou `aberta`/`fechada`),
+ * usada também pelo webhook.
+ */
+export function cardOfIssue(opts: { project: string; assignee: string }, issue: RawIssue): Card {
+  const label = labelNames(issue).find((n) => n.startsWith(STATUS_LABEL));
+  const status = issue.state === "closed" ? CLOSED_STATUS : label ? label.slice(STATUS_LABEL.length) : OPEN_STATUS;
+  return {
+    key: `${opts.project}-${issue.number}`,
+    title: issue.title,
+    status,
+    assignee: opts.assignee,
+    description: issue.body ?? "",
+  };
 }
 
 export class GitHubDemandSource implements DemandSource {
@@ -103,15 +127,7 @@ export class GitHubDemandSource implements DemandSource {
   }
 
   private toCard(issue: RawIssue): Card {
-    const label = labelNames(issue).find((n) => n.startsWith(STATUS_LABEL));
-    const status = issue.state === "closed" ? CLOSED_STATUS : label ? label.slice(STATUS_LABEL.length) : OPEN_STATUS;
-    return {
-      key: `${this.opts.project}-${issue.number}`,
-      title: issue.title,
-      status,
-      assignee: this.opts.assignee,
-      description: issue.body ?? "",
-    };
+    return cardOfIssue(this.opts, issue);
   }
 
   async listAssignedCards(assignee: string): Promise<Card[]> {
@@ -245,6 +261,24 @@ export class GitHubDemandSource implements DemandSource {
       await this.removeLabel(path, label, key);
     if (issue.state !== "closed")
       await this.api(["-X", "PATCH", path], `fechar ${key}`, { state: "closed", state_reason: reason });
+  }
+
+  /** Issues do repositório alteradas desde `since`, abertas ou fechadas, numa paginação só. */
+  async listChangedSince(since: string): Promise<IssueSnapshot[]> {
+    const raw = await this.list<RawIssue & { updated_at?: string }>(
+      `repos/${this.opts.repo}/issues?state=all&since=${encodeURIComponent(since)}&per_page=100`,
+      "issues alteradas",
+    );
+    return raw.map((i) => ({
+      number: i.number,
+      title: i.title,
+      body: i.body ?? null,
+      state: i.state === "closed" ? "closed" : "open",
+      labels: labelNames(i),
+      subIssues: i.sub_issues_summary?.total ?? 0,
+      pullRequest: Boolean(i.pull_request),
+      updatedAt: i.updated_at ?? new Date(0).toISOString(),
+    }));
   }
 
   formatMention(personId: string): string {
