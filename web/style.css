@@ -1989,3 +1989,120 @@ details[open] > summary.disclosure .chevron {
     min-height: 44px;
   }
 }
+
+/* Navegação por responsabilidades da operação. */
+.navegacao-principal {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 28px 12px;
+  border-right: 1px solid var(--borda);
+  background: var(--superficie);
+}
+.nav-legenda {
+  margin: 16px 12px 6px;
+  color: var(--suave);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+.navegacao-principal a {
+  padding: 10px 12px;
+  border-radius: var(--r-controle);
+  color: var(--suave);
+  text-decoration: none;
+  font-weight: 600;
+}
+.navegacao-principal a:hover,
+.navegacao-principal a[aria-current="page"] {
+  background: var(--fundo);
+  color: var(--destaque);
+}
+.quadro-area > [hidden],
+[data-tela][hidden] {
+  display: none;
+}
+.quadro-area:has(#quadro:not(.modo-lista)) {
+  display: block;
+  height: auto;
+}
+.atalhos-inicio {
+  margin-top: 40px;
+}
+.atalhos-inicio h2,
+.pagina-simples h2 {
+  margin-bottom: 4px;
+}
+.atalhos-inicio > p,
+.pagina-simples > p,
+.painel-area p {
+  color: var(--suave);
+}
+.atalhos-grade {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.atalhos-grade a,
+.painel-area {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px;
+  border: 1px solid var(--borda);
+  border-radius: var(--r-painel);
+  background: var(--superficie);
+  color: var(--texto);
+  text-decoration: none;
+  box-shadow: var(--sombra);
+}
+.atalhos-grade a:hover {
+  border-color: var(--destaque);
+}
+.atalhos-grade strong {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.atalhos-grade small {
+  color: var(--suave);
+  line-height: 1.5;
+}
+.pagina-simples {
+  max-width: 900px;
+}
+.painel-area {
+  align-items: flex-start;
+  margin-top: 28px;
+}
+.painel-area h3,
+.painel-area p {
+  margin: 0;
+}
+.painel-area .lista {
+  align-self: stretch;
+}
+@media (max-width: 760px) {
+  .layout {
+    flex-direction: column;
+  }
+  .navegacao-principal {
+    flex: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--borda);
+  }
+  .navegacao-principal a {
+    white-space: nowrap;
+  }
+  .nav-legenda {
+    display: none;
+  }
+  .atalhos-grade {
+    grid-template-columns: 1fr;
+  }
+}
