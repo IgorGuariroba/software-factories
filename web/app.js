@@ -28,6 +28,7 @@ import {
   saveRetroSettings,
   vetoTask,
 } from "./api.js";
+import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
 import {
   actionsFor,
@@ -79,6 +80,7 @@ let taskView = "lista";
 let daemonPaused = false;
 /** Tarefa aberta no detalhe, pelo hash `#/tarefa/<projeto>/<card>`. */
 let selected = null;
+let detailReturn = "tarefas";
 /** Id opaco de uma issue da fábrica colado na página (`#/retro/<id>`), resolvido para a Tarefa quando a lista chega. */
 let pendingRef = null;
 
@@ -373,37 +375,39 @@ function actionButtons(task) {
   });
 }
 
-/* Ícones SVG 16px, stroke 1.75, herdam a cor do texto. Montados por DOM, sem HTML a partir de string. */
-const ICON_PATHS = {
-  up: "M8 13V3M3.5 7.5 8 3l4.5 4.5",
-  down: "M8 3v10M3.5 8.5 8 13l4.5-4.5",
-};
-function svgIcon(name) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+/* Ícones Lucide (web/icones.js), 16px por padrão, herdam a cor do texto. Montados por DOM, sem HTML a partir de string. */
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgIcon(name, tamanho = 16) {
+  const svg = document.createElementNS(SVG_NS, "svg");
   for (const [attr, value] of Object.entries({
-    viewBox: "0 0 16 16",
-    width: "16",
-    height: "16",
+    viewBox: "0 0 24 24",
+    width: String(tamanho),
+    height: String(tamanho),
     "aria-hidden": "true",
     fill: "none",
     stroke: "currentColor",
-    "stroke-width": "1.75",
+    "stroke-width": "2",
     "stroke-linecap": "round",
     "stroke-linejoin": "round",
   }))
     svg.setAttribute(attr, value);
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", ICON_PATHS[name]);
-  svg.append(path);
+  for (const [tag, attrs] of ICONES[name] ?? []) {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [attr, value] of Object.entries(attrs)) node.setAttribute(attr, value);
+    svg.append(node);
+  }
   return svg;
 }
+
+/* Ícones estáticos da página: <span data-icone="nome"> recebe o SVG da biblioteca. */
+for (const slot of document.querySelectorAll("[data-icone]")) slot.replaceChildren(svgIcon(slot.dataset.icone));
 
 function moveButton(task, delta) {
   const order = moveTask(tasks, task.id, delta);
   const label = delta < 0 ? "Subir" : "Descer";
   const button = el("button", {
     className: "mover-botao",
-    icon: delta < 0 ? "up" : "down",
+    icon: delta < 0 ? "arrow-up" : "arrow-down",
     attrs: { type: "button", title: label, "aria-label": `${label} ${task.key} na fila` },
     onClick: () => order && run(() => reorderTasks(order)),
   });
@@ -449,8 +453,43 @@ function taskCard(task) {
   return el("li", {}, card);
 }
 
+function triageRow(task) {
+  const hint = cardHint(task);
+  const link = el(
+    "a",
+    {
+      className: "triagem-link",
+      attrs: { href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}` },
+    },
+    el("span", {
+      className: `triagem-dot ${task.status === "bloqueada" ? "bloqueada" : hint?.yourTurn ? "atencao" : ""}`,
+    }),
+    el("span", { className: "triagem-chave", text: task.key }),
+    el("span", { className: "triagem-titulo", text: task.title }),
+    el("span", { className: "triagem-estado", text: hint?.text ?? statusLabel(task.status) }),
+  );
+  link.addEventListener("click", () => {
+    detailReturn = "inicio";
+  });
+  const actions = el("div", { className: "triagem-acoes" });
+  if (task.status === "bloqueada" && actionsFor(task).includes("retomar")) {
+    const resume = actionButtons(task).find((button) => button.textContent === "Retomar");
+    if (resume) actions.append(resume);
+  }
+  actions.append(
+    el("a", { text: hint?.yourTurn ? "Revisar" : "Inspecionar", attrs: { href: link.getAttribute("href") } }),
+  );
+  actions.querySelector("a").addEventListener("click", () => {
+    detailReturn = "inicio";
+  });
+  return el("li", { className: "triagem-linha" }, link, actions);
+}
+
 function renderTasks() {
   const visible = visibleTasks(tasks, taskFilter, $("busca-tarefas").value);
+  const overview = priorityTasks(visibleTasks(tasks, taskFilter, ""));
+  $("triagem-lista").replaceChildren(...overview.map(triageRow));
+  $("triagem-vazia").hidden = overview.length > 0;
   const counts = workspaceCounts(tasks);
   for (const [key, count] of Object.entries(counts)) $(`total-${key}`).textContent = String(count);
   for (const button of document.querySelectorAll("[data-filtro]"))
@@ -816,7 +855,8 @@ function readSelection() {
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
   const page = location.hash.match(/^#\/(inicio|tarefas|fonte|configuracoes)$/)?.[1];
-  showPage(selected || pendingRef ? "tarefas" : page);
+  if (page) detailReturn = page === "inicio" ? "inicio" : "tarefas";
+  showPage(selected ? detailReturn : pendingRef ? "tarefas" : page);
   syncSheet();
 }
 
@@ -959,7 +999,6 @@ $("busca-tarefas").addEventListener("input", renderTasks);
 for (const button of document.querySelectorAll("[data-filtro]"))
   button.addEventListener("click", () => {
     taskFilter = button.dataset.filtro;
-    location.hash = "#/tarefas";
     renderTasks();
   });
 for (const button of document.querySelectorAll("[data-modo]"))
@@ -972,7 +1011,7 @@ $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDa
 $("buscar").addEventListener("click", () => run(pollSource));
 $("atualizar-elegiveis").addEventListener("click", refreshQueue);
 $("fechar-detalhe").addEventListener("click", () => {
-  location.hash = "#/tarefas";
+  location.hash = `#/${detailReturn}`;
 });
 window.addEventListener("hashchange", () => {
   readSelection();

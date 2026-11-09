@@ -9,17 +9,6 @@
     <script type="module" src="/web/app.js"></script>
   </head>
   <body>
-    <header class="topo">
-      <div class="marca"><span class="marca-icone" aria-hidden="true">F</span><div><h1>Fábrica de Software</h1><span class="marca-legenda">Seu trabalho, em movimento.</span></div></div>
-      <div class="controles">
-        <span id="conexao" class="selo" role="status">conectando…</span>
-        <span id="daemon" class="selo">daemon: …</span>
-        <button type="button" id="alternar-daemon" disabled>Pausar daemon</button>
-
-        
-      </div>
-    </header>
-
     <dialog id="configuracao-retros" aria-labelledby="configuracao-retros-titulo">
       <form id="form-retros" class="resposta">
         <h2 id="configuracao-retros-titulo">Publicações de retrô</h2>
@@ -38,32 +27,30 @@
 
     <div class="layout">
       <nav class="navegacao-principal" aria-label="Navegação principal">
+        <div class="marca"><span class="marca-icone" aria-hidden="true">F</span><h1>Fábrica de Software</h1></div>
         <span class="nav-legenda">ESPAÇO DE TRABALHO</span>
-        <a href="#/inicio" data-pagina="inicio">Visão geral</a>
-        <a href="#/tarefas" data-pagina="tarefas">Tarefas</a>
-        <a href="#/fonte" data-pagina="fonte">Fonte de demandas</a>
+        <a href="#/inicio" data-pagina="inicio"><span class="icone-nav" data-icone="layout-dashboard" aria-hidden="true"></span>Visão geral</a>
+        <a href="#/tarefas" data-pagina="tarefas"><span class="icone-nav" data-icone="list-checks" aria-hidden="true"></span>Tarefas</a>
+        <a href="#/fonte" data-pagina="fonte"><span class="icone-nav" data-icone="inbox" aria-hidden="true"></span>Fonte de demandas</a>
         <span class="nav-legenda">ADMINISTRAÇÃO</span>
-        <a href="#/configuracoes" data-pagina="configuracoes">Configurações</a>
+        <a href="#/configuracoes" data-pagina="configuracoes"><span class="icone-nav" data-icone="settings" aria-hidden="true"></span>Configurações</a>
+        <div class="controles"><span id="conexao" class="selo" role="status">conectando…</span><span id="daemon" class="selo">daemon: …</span><button type="button" id="alternar-daemon" disabled>Pausar daemon</button></div>
       </nav>
       <main class="quadro-area" aria-label="Quadro de tarefas">
         <section class="visao-geral" aria-labelledby="titulo-visao">
           <h2 id="titulo-visao">Central de trabalho</h2>
           <p class="introducao">Veja o que a fábrica está fazendo e o que precisa de você.</p>
           <div class="resumo" aria-label="Filtrar tarefas por situação">
-            <button type="button" class="metrica" data-filtro="todas" aria-pressed="true"><span>Todas as tarefas</span><strong id="total-todas">0</strong><small>Todo o trabalho</small></button>
-            <button type="button" class="metrica" data-filtro="atencao" aria-pressed="false"><span>Aguardando você</span><strong id="total-atencao">0</strong><small>Decisões pendentes</small></button>
-            <button type="button" class="metrica" data-filtro="execucao" aria-pressed="false"><span>Em execução</span><strong id="total-execucao">0</strong><small>Em andamento</small></button>
-            <button type="button" class="metrica" data-filtro="bloqueadas" aria-pressed="false"><span>Bloqueadas</span><strong id="total-bloqueadas">0</strong><small>Exigem ação</small></button>
+            <button type="button" class="metrica" data-filtro="todas" aria-pressed="true"><span>Todas</span><strong id="total-todas">0</strong></button>
+            <button type="button" class="metrica" data-filtro="atencao" aria-pressed="false"><span>Aguardando você</span><strong id="total-atencao">0</strong></button>
+            <button type="button" class="metrica" data-filtro="execucao" aria-pressed="false"><span>Em execução</span><strong id="total-execucao">0</strong></button>
+            <button type="button" class="metrica" data-filtro="bloqueadas" aria-pressed="false"><span>Bloqueadas</span><strong id="total-bloqueadas">0</strong></button>
           </div>
         </section>
-        <section class="atalhos-inicio" data-tela="inicio" aria-labelledby="proximos-passos">
-          <h2 id="proximos-passos">Seu espaço de trabalho</h2>
-          <p>Escolha uma área para acompanhar a operação da fábrica.</p>
-          <div class="atalhos-grade">
-            <a href="#/tarefas"><strong>Acompanhar tarefas <span aria-hidden="true">→</span></strong><small>Consulte o andamento, revise pendências e acesse o histórico.</small></a>
-            <a href="#/fonte"><strong>Consultar a fonte <span aria-hidden="true">→</span></strong><small>Veja os cards elegíveis e busque novas demandas.</small></a>
-            <a href="#/configuracoes"><strong>Configurar publicações <span aria-hidden="true">→</span></strong><small>Gerencie o destino das sugestões de retrô.</small></a>
-          </div>
+        <section class="triagem" data-tela="inicio" aria-labelledby="titulo-triagem">
+          <div class="triagem-cabeca"><div><h2 id="titulo-triagem">Fila de triagem</h2><p>Decisões e tarefas que precisam de atenção.</p></div><a href="#/tarefas">Ver todas as tarefas →</a></div>
+          <p id="triagem-vazia" class="vazio" hidden>Nenhuma tarefa encontrada neste filtro.</p>
+          <ul id="triagem-lista" class="triagem-lista" aria-label="Fila de triagem"></ul>
         </section>
         <section data-tela="tarefas" hidden aria-labelledby="titulo-fila">
         <div class="barra">
@@ -99,7 +86,7 @@
         <article id="detalhe" aria-labelledby="titulo-detalhe" hidden>
           <nav class="detalhe-navegacao" aria-label="Navegação da tarefa">
             <button type="button" id="fechar-detalhe" aria-label="Fechar detalhe">← Voltar às tarefas</button>
-            <details class="menu-config" id="menu-acoes-tarefa"><summary class="disclosure">Ações da tarefa<svg class="chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg></summary><div id="detalhe-acoes" class="menu-conteudo acoes"></div></details>
+            <details class="menu-config" id="menu-acoes-tarefa"><summary class="disclosure">Ações da tarefa<span class="chevron" data-icone="chevron-right" aria-hidden="true"></span></summary><div id="detalhe-acoes" class="menu-conteudo acoes"></div></details>
           </nav>
           <header class="cabecalho">
             <div>
