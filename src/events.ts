@@ -60,7 +60,8 @@ export type FactoryEvent =
         | "triagem"
         | "escopo-alterado"
         | "repositorio-desvinculado"
-        | "repo-sem-projeto";
+        | "repo-sem-projeto"
+        | "repositorio-renomeado";
       message: string;
       /** Até quando o usuário pode agir (ex.: o fim do prazo de veto), em ISO 8601. */
       until?: string;

@@ -1,5 +1,5 @@
 /** Motivos de aviso ao usuário que a fábrica agrupa numa rajada. */
-export type MotivoAviso = "escopo-alterado" | "repositorio-desvinculado" | "repo-sem-projeto";
+export type MotivoAviso = "escopo-alterado" | "repositorio-desvinculado" | "repo-sem-projeto" | "repositorio-renomeado";
 
 /** Aviso ao usuário já pronto para o log de eventos. */
 export interface AvisoEmitido {

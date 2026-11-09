@@ -2,8 +2,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { IssueSnapshot } from "./demand-source.js";
-import type { FactoryState, QueuedTask } from "./durable.js";
+import type { FactoryState, OrigemGitHub, QueuedTask } from "./durable.js";
 import { cardOfIssue, labelNames, type RawIssue } from "./github-demand-source.js";
+import { tarefaDaIssue } from "./github-identidade.js";
 import { ativarProjeto, desativarProjeto, repoDesativado } from "./repositorios.js";
 
 const PREFIX = "sha256=";
@@ -36,6 +37,10 @@ export type IssueDelivery = {
   action: IssueAction;
   /** Repositório "dono/nome", como veio no payload. */
   repo: string;
+  /** Id numérico do repositório (estável; sobrevive a renomeação). Ausente só em entregas sem esse dado. */
+  repoId?: number;
+  /** Instalação do App que entregou o evento, quando o payload a traz. */
+  installationId?: number;
   issue: RawIssue;
 };
 
@@ -86,7 +91,8 @@ const IssuesPayload = z
         sub_issues_summary: z.object({ total: z.number().optional() }).passthrough().nullish(),
       })
       .passthrough(),
-    repository: z.object({ full_name: z.string().min(3) }).passthrough(),
+    repository: z.object({ full_name: z.string().min(3), id: z.number().int().positive().optional() }).passthrough(),
+    installation: z.object({ id: z.number().int().positive() }).passthrough().optional(),
   })
   .passthrough();
 
@@ -101,7 +107,7 @@ export function parseGitHubDelivery(opts: {
   if (!opts.deliveryId) return { kind: "invalido", reason: "entrega sem X-GitHub-Delivery" };
   const parsed = IssuesPayload.safeParse(opts.body);
   if (!parsed.success) return { kind: "invalido", reason: "payload de issues incompleto" };
-  const { action, issue, repository } = parsed.data;
+  const { action, issue, repository, installation } = parsed.data;
   if (!(ISSUE_ACTIONS as readonly string[]).includes(action))
     return { kind: "ignorado", reason: `ação issues.${action} não tratada` };
   return {
@@ -110,6 +116,8 @@ export function parseGitHubDelivery(opts: {
       deliveryId: opts.deliveryId,
       action: action as IssueAction,
       repo: repository.full_name,
+      ...(repository.id !== undefined ? { repoId: repository.id } : {}),
+      ...(installation ? { installationId: installation.id } : {}),
       issue: issue as RawIssue,
     },
   };
@@ -149,7 +157,7 @@ export type WebhookEffect =
       type: "notificar";
       project: string;
       target: string;
-      reason: "escopo-alterado" | "repositorio-desvinculado" | "repo-sem-projeto";
+      reason: "escopo-alterado" | "repositorio-desvinculado" | "repo-sem-projeto" | "repositorio-renomeado";
       message: string;
     };
 
@@ -178,6 +186,82 @@ export function scopeOf(body: string | null | undefined): QueuedTask["scope"] {
 }
 
 /**
+ * Projeto monitorado de uma entrega. Pelo id do repositório quando o vínculo já o conhece (ADR-0015, Fase 4): assim um
+ * repositório renomeado continua sendo o mesmo projeto. Sem vínculo, casa pelo nome e grava o id para as próximas.
+ */
+function projetoDaEntrega(
+  state: FactoryState,
+  projects: WebhookProject[],
+  delivery: IssueDelivery,
+): { project: WebhookProject; renomeadoDe?: string } | undefined {
+  const githubs = projects.filter((p) => p.config.source.type === "github");
+  if (delivery.repoId !== undefined) {
+    const porId = githubs.find((p) => state.repos?.[p.name]?.repoId === delivery.repoId);
+    if (porId?.config.source.type === "github") {
+      const configurado = porId.config.source.repo;
+      const renomeadoDe = configurado.toLowerCase() === delivery.repo.toLowerCase() ? undefined : configurado;
+      return { project: porId, ...(renomeadoDe ? { renomeadoDe } : {}) };
+    }
+  }
+  const repo = delivery.repo.toLowerCase();
+  const porNome = githubs.find((p) => p.config.source.type === "github" && p.config.source.repo.toLowerCase() === repo);
+  if (!porNome) return undefined;
+  if (delivery.repoId !== undefined) gravarRepoId(state, porNome.name, delivery.repo, delivery.repoId);
+  return { project: porNome };
+}
+
+/** Grava o id do repositório no vínculo do projeto, sem mudar o status (uma desativação continua desativada). */
+export function gravarRepoId(state: FactoryState, project: string, repo: string, repoId: number): void {
+  const previo = state.repos?.[project];
+  if (previo?.repoId === repoId) return;
+  state.repos = {
+    ...state.repos,
+    [project]: {
+      repo: previo?.repo ?? repo,
+      status: previo?.status ?? "ativo",
+      repoId,
+      ...(previo?.installationId !== undefined ? { installationId: previo.installationId } : {}),
+      ...(previo?.motivo !== undefined ? { motivo: previo.motivo } : {}),
+    },
+  };
+}
+
+/**
+ * Tarefa da issue, pela identidade (Fase 4): primeiro a que já tem a origem; depois a legada, da busca antiga, com a
+ * mesma chave e sem origem, que recebe a origem. Uma Tarefa com a mesma chave mas de outra origem não é tocada: a
+ * identidade não se mistura.
+ */
+function tarefaDaEntrega(
+  state: FactoryState,
+  id: string,
+  delivery: IssueDelivery,
+): { task: QueuedTask | undefined; outraIdentidade: boolean } {
+  if (delivery.repoId !== undefined) {
+    const porOrigem = tarefaDaIssue(state.tasks, delivery.repoId, delivery.issue.number);
+    if (porOrigem) return { task: porOrigem, outraIdentidade: false };
+  }
+  const porChave = state.tasks.find((t) => t.id === id);
+  if (!porChave) return { task: undefined, outraIdentidade: false };
+  if (porChave.origem === undefined && delivery.repoId !== undefined) {
+    porChave.origem = origemDaEntrega(delivery);
+    return { task: porChave, outraIdentidade: false };
+  }
+  if (porChave.origem === undefined) return { task: porChave, outraIdentidade: false };
+  return { task: undefined, outraIdentidade: true };
+}
+
+function origemDaEntrega(delivery: IssueDelivery): OrigemGitHub | undefined {
+  if (delivery.repoId === undefined || delivery.issue.id === undefined) return undefined;
+  return {
+    repoId: delivery.repoId,
+    repo: delivery.repo,
+    issueId: delivery.issue.id,
+    issueNumber: delivery.issue.number,
+    ...(delivery.installationId !== undefined ? { installationId: delivery.installationId } : {}),
+  };
+}
+
+/**
  * Aplica uma entrega `issues` ao estado. Repositório não plugado, PR e ações fora do escopo não mudam nada.
  * Muta `state` (rascunho de uma transação durável) e devolve os efeitos que a fábrica deve executar.
  */
@@ -188,28 +272,41 @@ export function applyIssueDelivery(opts: {
   newRef: () => string;
 }): WebhookEffect[] {
   const { state, delivery, newRef } = opts;
-  const repo = delivery.repo.toLowerCase();
-  const project = opts.projects.find(
-    (p) => p.config.source.type === "github" && p.config.source.repo.toLowerCase() === repo,
-  );
-  if (project?.config.source.type !== "github") return [];
+  const achado = projetoDaEntrega(state, opts.projects, delivery);
+  if (!achado) return [];
+  const project = achado.project;
+  if (project.config.source.type !== "github") return [];
   // Repositório desativado: nenhum evento de issue cria ou muda Tarefa (ADR-0015).
   if (repoDesativado(state, project.name)) return [];
   const source = project.config.source;
   const issue = delivery.issue;
   if (issue.pull_request || delivery.action === "assigned" || delivery.action === "unassigned") return [];
 
+  // Renomeado: a Tarefa segue o mesmo repositório, mas a configuração ainda tem o nome antigo. Avisa para atualizar o YAML.
+  const avisoRenomeado: WebhookEffect[] = achado.renomeadoDe
+    ? [
+        {
+          type: "notificar",
+          project: project.name,
+          target: project.name,
+          reason: "repositorio-renomeado",
+          message: `o repositório de ${project.name} mudou de nome no GitHub (era ${achado.renomeadoDe}, agora ${delivery.repo}). Atualize source.repo no YAML do projeto.`,
+        },
+      ]
+    : [];
+
   const card = cardOfIssue({ project: source.project, assignee: source.assignee }, issue);
   const id = `${project.name}/${card.key}`;
-  const task = state.tasks.find((t) => t.id === id);
+  const { task, outraIdentidade } = tarefaDaEntrega(state, id, delivery);
+  if (outraIdentidade) return avisoRenomeado;
 
   if (delivery.action === "closed" || delivery.action === "deleted") {
-    if (!task || TERMINAL.has(task.status)) return [];
+    if (!task || TERMINAL.has(task.status)) return avisoRenomeado;
     task.reason = delivery.action === "closed" ? CLOSED_REASON : REMOVED_REASON;
     // Mesma regra do cancelamento pelo usuário: sem execução durável, a Tarefa termina aqui; com ela, a parada a fecha.
-    if (task.durableId !== null) return [{ type: "abortar", id }];
+    if (task.durableId !== null) return [...avisoRenomeado, { type: "abortar", id }];
     task.status = "cancelada";
-    return [];
+    return avisoRenomeado;
   }
 
   if (task) {
@@ -217,7 +314,7 @@ export function applyIssueDelivery(opts: {
       task.status = "enfileirada";
       task.reason = null;
     }
-    if (TERMINAL.has(task.status)) return [];
+    if (TERMINAL.has(task.status)) return avisoRenomeado;
     task.title = issue.title;
     task.scope = scopeOf(issue.body);
     // Com a Tarefa em execução (ou com entrega pendente), o texto que o agente já leu ficou velho: marca e avisa.
@@ -226,6 +323,7 @@ export function applyIssueDelivery(opts: {
       task.specDirty = true;
       if (task.status === "ativa") task.pauseRequested = true;
       return [
+        ...avisoRenomeado,
         {
           type: "notificar",
           project: project.name,
@@ -239,11 +337,14 @@ export function applyIssueDelivery(opts: {
         },
       ];
     }
-    return [];
+    return avisoRenomeado;
   }
 
   const cardState = project.config.statuses[card.status];
-  if (!cardState || !isEligible(project.config, cardState, issue)) return [];
+  if (!cardState || !isEligible(project.config, cardState, issue)) return avisoRenomeado;
+  // A chave já existe com outra identidade: não cria duplicata (o caso foi tratado acima, mas a guarda fica).
+  if (state.tasks.some((t) => t.id === id)) return avisoRenomeado;
+  const origem = origemDaEntrega(delivery);
   state.tasks.push({
     id,
     project: project.name,
@@ -262,8 +363,9 @@ export function applyIssueDelivery(opts: {
     delivery: null,
     implementation: null,
     scope: scopeOf(issue.body),
+    ...(origem ? { origem } : {}),
   });
-  return [];
+  return avisoRenomeado;
 }
 
 /** Uma issue vira Tarefa só se está aberta, num estado elegível, fora dos épicos e dentro das chaves permitidas. */

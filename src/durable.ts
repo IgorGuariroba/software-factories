@@ -360,6 +360,8 @@ export type ImportacaoRepo = {
 export type RepoBinding = {
   repo: string;
   status: "ativo" | "desativado";
+  /** Id numérico do repositório no GitHub, gravado na primeira entrega ou importação (Fase 4): sobrevive a renomeação. */
+  repoId?: number;
   /** Instalação do GitHub App que trouxe o repositório, quando conhecida. */
   installationId?: number;
   /** Por que está desativado (exibido na página e nos avisos). */
