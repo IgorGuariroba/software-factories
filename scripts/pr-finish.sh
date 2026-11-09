@@ -20,19 +20,21 @@ INFO="$(gh pr view "$PR" --json state,headRefName,headRefOid,url --jq '[.state,.
 IFS=$'\t' read -r STATE HEAD_BRANCH HEAD_OID URL <<<"$INFO"
 echo "PR #$PR ($STATE): $URL"
 
-# 1) Espera todos os checks. `gh pr checks --watch` sai com erro se algum check falhar.
+# 1) Espera todos os checks terminarem. Logo após o push os checks demoram a aparecer, e um check novo
+#    pode surgir depois de outro já ter terminado; por isso espera até haver checks e nenhum pendente.
+count_checks() { gh pr checks "$PR" --json bucket --jq "$1" 2>/dev/null || true; }
 echo "Aguardando checks do CI…"
-# Logo após abrir o PR, o GitHub ainda não registrou os checks; espera aparecerem (até ~5 min).
-for _ in $(seq 1 30); do
-  COUNT="$(gh pr view "$PR" --json statusCheckRollup --jq '.statusCheckRollup | length')"
-  [ "$COUNT" -gt 0 ] && break
+READY=0
+for _ in $(seq 1 90); do
+  TOTAL="$(count_checks 'length')"
+  PENDING="$(count_checks '[.[] | select(.bucket == "pending")] | length')"
+  if [ "${TOTAL:-0}" -gt 0 ] && [ "${PENDING:-1}" -eq 0 ]; then READY=1; break; fi
   sleep 10
 done
-[ "$COUNT" -gt 0 ] || die "nenhum check apareceu no PR #$PR"
-# `gh pr checks --watch` sai com erro se algum check falhar.
-if ! gh pr checks "$PR" --watch --interval 15; then
-  die "há check reprovado ou cancelado no PR #$PR; veja: gh pr checks $PR"
-fi
+[ "$READY" -eq 1 ] || die "os checks do PR #$PR não terminaram a tempo; veja: gh pr checks $PR"
+gh pr checks "$PR" || true
+FAILED="$(count_checks '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length')"
+[ "${FAILED:-1}" -eq 0 ] || die "há check reprovado ou cancelado no PR #$PR; veja: gh pr checks $PR"
 echo "Todos os checks estão verdes."
 
 # 2) Merge é decisão do dono do PR. Sem merge, paramos aqui sem tocar na branch local.
