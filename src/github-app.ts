@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 import { readFile as readFileFromDisk } from "node:fs/promises";
+import type { RawIssue } from "./github-demand-source.js";
 
 /**
  * Painel do GitHub App (ADR-0015): consulta as instalações do App com o JWT dele e diz quais repositórios plugados
@@ -133,7 +134,12 @@ export function catalogoDoApp(app: Pick<GitHubAppStatus, "instalacoes">): Catalo
 export interface GitHubAppChecker {
   /** Estado atual; a consulta ao GitHub é reaproveitada por `ttlMs` para não estourar o limite da API. */
   status(): Promise<GitHubAppStatus>;
+  /** Issues abertas de um repositório, por todas as páginas, com o token da instalação (leitura; PRs vêm junto). */
+  issuesAbertas(repo: string, instalacaoId: number): Promise<RawIssue[]>;
 }
+
+/** Tempo máximo de uma chamada à API: um GitHub travado não segura a fila de importação para sempre. */
+const TIMEOUT_CHAMADA_MS = 30_000;
 
 /**
  * Consulta o App no GitHub. A chave é lida do arquivo a cada consulta real (não fica em memória entre elas).
@@ -153,17 +159,31 @@ export function createGitHubAppChecker(opts: {
   const ttlMs = opts.ttlMs ?? 5 * 60_000;
   let cached: { at: number; status: GitHubAppStatus } | undefined;
 
+  /** Chamada autenticada à API. Só o status HTTP vai para a mensagem: nunca o token nem a resposta crua. */
+  async function chamar(path: string, token: string, init: RequestInit = {}): Promise<unknown> {
+    const res = await fetchFn(`https://api.github.com${path}`, {
+      ...init,
+      signal: AbortSignal.timeout(TIMEOUT_CHAMADA_MS),
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, ...init.headers },
+    });
+    if (!res.ok) throw new Error(`GitHub respondeu ${res.status} em ${path.split("?")[0]}`);
+    return res.json() as Promise<unknown>;
+  }
+
+  /** Token de instalação (1 hora), trocado com um JWT novo: a chave é lida de novo do arquivo a cada troca. */
+  async function tokenDaInstalacao(instalacaoId: number): Promise<string> {
+    if (opts.appId === undefined || !opts.privateKeyPath) throw new Error("GitHub App não configurado");
+    const jwt = createAppJwt({ appId: opts.appId, privateKeyPem: await readKey(opts.privateKeyPath), nowMs: now() });
+    const { token } = (await chamar(`/app/installations/${instalacaoId}/access_tokens`, jwt, { method: "POST" })) as {
+      token: string;
+    };
+    return token;
+  }
+
   async function consultar(appId: number, privateKeyPem: string): Promise<GitHubAppStatus> {
     const consultadoEm = new Date(now()).toISOString();
     const jwt = createAppJwt({ appId, privateKeyPem, nowMs: now() });
-    const github = async (path: string, init: RequestInit = {}, token = jwt) => {
-      const res = await fetchFn(`https://api.github.com${path}`, {
-        ...init,
-        headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, ...init.headers },
-      });
-      if (!res.ok) throw new Error(`GitHub respondeu ${res.status} em ${path.split("?")[0]}`);
-      return res.json() as Promise<unknown>;
-    };
+    const github = (path: string, init: RequestInit = {}, token = jwt) => chamar(path, token, init);
     const app = (await github("/app")) as { id: number; slug: string; name: string };
     const lista = await todasAsPaginas(
       github,
@@ -177,9 +197,7 @@ export function createGitHubAppChecker(opts: {
     );
     const instalacoes: GitHubAppInstallation[] = [];
     for (const item of lista) {
-      const { token } = (await github(`/app/installations/${item.id}/access_tokens`, { method: "POST" })) as {
-        token: string;
-      };
+      const token = await tokenDaInstalacao(item.id);
       const repos = await todasAsPaginas(
         (caminho) => github(caminho, {}, token),
         "/installation/repositories",
@@ -210,6 +228,14 @@ export function createGitHubAppChecker(opts: {
   }
 
   return {
+    async issuesAbertas(repo, instalacaoId) {
+      const token = await tokenDaInstalacao(instalacaoId);
+      return todasAsPaginas(
+        (caminho) => chamar(caminho, token),
+        `/repos/${repo}/issues?state=open`,
+        (corpo) => corpo as RawIssue[],
+      );
+    },
     async status() {
       if (opts.appId === undefined || !opts.privateKeyPath) {
         return { configurado: false, instalacoes: [], consultadoEm: new Date(now()).toISOString() };

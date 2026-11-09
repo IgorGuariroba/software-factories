@@ -51,6 +51,8 @@ export const CLOSED_STATUS = "fechada";
 
 /** Issue como a API do GitHub a devolve (e como o webhook `issues` a envia). */
 export interface RawIssue {
+  /** Id numérico estável da issue no GitHub (ADR-0015, Fase 3): a identidade da importação. */
+  id?: number;
   number: number;
   title: string;
   body?: string | null;

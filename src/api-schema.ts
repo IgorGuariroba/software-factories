@@ -499,6 +499,13 @@ export const API_SCHEMA = {
         responses: ok,
       },
     },
+    "/github/importar": {
+      post: {
+        summary:
+          "Importa as issues abertas (sem PRs) de um repositório do App para a fábrica, na fila (corpo: { repoId }). Responde 202 com o registro; repetir não duplica",
+        responses: ok,
+      },
+    },
     "/repos/plugar": {
       post: { summary: "Reativa o repositório de um projeto já configurado (corpo: { repo })", responses: ok },
     },
