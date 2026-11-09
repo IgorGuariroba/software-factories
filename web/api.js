@@ -47,8 +47,6 @@ export const getReminderPreview = (project, key, n) =>
   api("GET", `/tasks/${seg(project)}/${seg(key)}/questions/${n}/reminder`);
 export const approveReminder = (project, key, n, revision) =>
   api("POST", `/tasks/${seg(project)}/${seg(key)}/questions/${n}/reminder/approve`, { revision });
-export const answerQuestion = (project, key, n, answer) =>
-  api("POST", `/tasks/${seg(project)}/${seg(key)}/questions/${n}/answer`, { answer });
 export const getQuestionPreview = (project, key, n) => api("GET", `/tasks/${seg(project)}/${seg(key)}/questions/${n}`);
 export const approveQuestion = (project, key, n, revision) =>
   api("POST", `/tasks/${seg(project)}/${seg(key)}/questions/${n}/approve`, { revision });

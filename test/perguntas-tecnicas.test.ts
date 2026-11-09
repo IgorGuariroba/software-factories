@@ -75,7 +75,7 @@ async function pendente() {
   });
   const mensagem = contexto.telegram.texts().find((texto) => texto.includes(PERGUNTA));
   expect(mensagem).toContain("PROJ-1");
-  expect(mensagem).toContain("/responder exemplo/PROJ-1 1");
+  expect(mensagem).toContain("Toque em Responder");
   return contexto;
 }
 

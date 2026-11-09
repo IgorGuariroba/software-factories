@@ -8,6 +8,8 @@ export class PageElement {
   disabled = false;
   hidden = false;
   className = "";
+  classList = { toggle: (_name: string, _force?: boolean) => {} };
+  dataset: Record<string, string> = {};
   isConnected = true;
   private text = "";
   constructor(readonly tagName: string) {}
@@ -64,6 +66,13 @@ interface PageEvent {
 }
 export class PageDocument {
   private readonly ids = new Map<string, PageElement>();
+  activeElement: PageElement | null = null;
+  querySelectorAll(_selector: string): PageElement[] {
+    return [];
+  }
+  querySelector(_selector: string): PageElement {
+    return this.getElementById("abas");
+  }
   createElement(tag: string): PageElement {
     return new PageElement(tag.toUpperCase());
   }

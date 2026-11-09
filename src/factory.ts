@@ -56,10 +56,10 @@ import {
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
+import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
 import { respostaNaoSei } from "./resposta-tecnica.js";
-import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
-import { isRetroRepository } from "./retro-settings.js"
+import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
 import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
 import { createReviewExtension, runReview } from "./review-stage.js";
@@ -450,7 +450,24 @@ export async function startFactory(opts: {
       });
 
       if (step === "implementar") {
-        await implement();
+        const current = (await readState()).tasks.find((task) => task.id === input.id);
+        const card = await source.getCard(input.key);
+        if (!card) throw new Error(`card ${input.key} não existe mais`);
+        const repository =
+          current?.repositoryPath !== undefined
+            ? project.config.repositories?.find((candidate) => candidate.path === current.repositoryPath)
+            : resolveRepository(project.config.repositories, card);
+        if (project.config.repositories?.length && !repository) {
+          if (current && pendingQuestion(current)) return "aguardar";
+          await ask(
+            current?.questions ?? [],
+            repositoryQuestion(card, project.config.repositories),
+            "tecnica",
+            "repositorio",
+          );
+          return "aguardar";
+        }
+        await implement(repository?.path);
         return undefined;
       }
 
@@ -473,12 +490,13 @@ export async function startFactory(opts: {
       await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
       return undefined;
 
-      async function implement(): Promise<void> {
+      async function implement(repositoryPath?: string): Promise<void> {
         const current = (await readState()).tasks.find((t) => t.id === input.id);
         if (!current?.delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
         await runImplementation({
+          repositoryPath,
           harness,
           runtime,
           taskId: input.id,

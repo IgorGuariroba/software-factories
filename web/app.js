@@ -108,22 +108,36 @@ const answerDrafts = new Map();
 
 function answerQuestionControls(task, question) {
   const id = `${task.id}#${question.n}`;
-  const field = el("textarea", { attrs: { rows: "3", maxlength: "20000", "aria-label": `Resposta à pergunta ${question.n}`, placeholder: "Sua resposta" } });
+  const field = el("textarea", {
+    attrs: {
+      rows: "3",
+      maxlength: "20000",
+      "aria-label": `Resposta à pergunta ${question.n}`,
+      placeholder: "Sua resposta",
+    },
+  });
   field.value = answerDrafts.get(id) ?? "";
   field.addEventListener("input", () => answerDrafts.set(id, field.value));
   const button = el("button", { text: "Responder", attrs: { type: "button" } });
   button.addEventListener("click", async () => {
     const answer = field.value.trim();
-    if (!answer || answer.length > 20000) return showError(new Error("A resposta deve ter entre 1 e 20000 caracteres."));
-    button.disabled = true; field.disabled = true;
+    if (!answer || answer.length > 20000)
+      return showError(new Error("A resposta deve ter entre 1 e 20000 caracteres."));
+    button.disabled = true;
+    field.disabled = true;
     try {
       await answerQuestion(task.project, task.key, question.n, answer);
-      answerDrafts.delete(id); clearError(); await refresh();
-    } catch (err) { showError(err); }
-    finally { button.disabled = false; field.disabled = false; }
+      answerDrafts.delete(id);
+      clearError();
+      await refresh();
+    } catch (err) {
+      showError(err);
+    } finally {
+      button.disabled = false;
+      field.disabled = false;
+    }
   });
   return el("div", {}, el("label", { text: "Sua resposta" }), field, button);
-}
 }
 
 function reviewReminderButton(task, question) {
@@ -558,7 +572,6 @@ function renderDetail(task) {
                       ? "(pendente)"
                       : `Resposta: ${q.answer}`,
             }),
-            ...(q.answer === null ? [answerQuestionControls(task, q)] : []),
             ...(q.publication === "draft" ? [reviewQuestionButton(task, q)] : []),
             ...(canAnswerQuestion(task, q)
               ? [

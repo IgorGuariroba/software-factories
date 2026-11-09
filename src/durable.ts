@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { QuestionRef } from "./channel.js";
 import type { CardState, FormatCommand, TestCommand } from "./config.js";
-import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js"
+import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TriageResult } from "./triage.js";

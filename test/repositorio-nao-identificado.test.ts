@@ -132,7 +132,7 @@ async function pendente(opcoes: Parameters<typeof iniciar>[0] = {}) {
   await eventually(() => expect(telegram.texts()).toContainEqual(expect.stringContaining(pergunta.text)));
   const mensagem = telegram.texts().find((texto) => texto.includes(pergunta.text));
   expect(mensagem).toContain("PROJ-1");
-  expect(mensagem).toContain("/responder exemplo/PROJ-1 1");
+  expect(mensagem).toContain("Toque em Responder");
   expect(detalhe.implementation).toBeNull();
   expect(existsSync(join(f.stateDir, "worktrees", "exemplo", "PROJ-1"))).toBe(false);
   expect(model.calls.some((call) => call.tools.includes("escrever_arquivo"))).toBe(false);
@@ -192,7 +192,7 @@ describe("card sem repositório identificável usa o fluxo de pergunta técnica"
     expect(mensagens.filter((texto) => /guardrail|bloquead/iu.test(texto))).toEqual([]);
     const mensagem = mensagens.find((texto) => texto.includes(pergunta.text));
     expect(mensagem).toContain("Pergunta 1 sobre PROJ-1 (exemplo)");
-    expect(mensagem).toContain("/responder exemplo/PROJ-1 1");
+    expect(mensagem).toContain("Toque em Responder");
 
     await poll(f);
     await settle();

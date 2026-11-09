@@ -327,35 +327,6 @@ export const API_SCHEMA = {
         },
       },
     },
-    "/tasks/{project}/{key}/questions/{n}/answer": {
-      post: {
-        summary: "Registra a sua resposta a uma pergunta pendente e retoma a Tarefa",
-        parameters: [
-          { name: "project", in: "path", required: true, schema: { type: "string" } },
-          { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "n", in: "path", required: true, schema: { type: "integer" } },
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                required: ["answer"],
-                properties: { answer: { type: "string", minLength: 1, maxLength: 20000 } },
-              },
-            },
-          },
-        },
-        responses: {
-          ...ok,
-          "400": { description: "Resposta vazia ou longa demais" },
-          "404": { description: "Pergunta inexistente" },
-          "409": { description: "Pergunta já respondida ou indisponível" },
-          "415": { description: "Content-Type inválido" },
-        },
-      },
-    },
     "/tasks/{project}/{key}/retros/{stage}/{n}": {
       get: {
         summary: "Prévia do conteúdo público de uma proposta pendente",
