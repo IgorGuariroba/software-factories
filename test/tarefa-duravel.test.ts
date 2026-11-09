@@ -351,6 +351,7 @@ describe("schema da API", () => {
         "/daemon/resume",
         "/events",
         "/events/stream",
+        "/github-app",
         "/openapi.json",
         "/poll",
         "/queue",

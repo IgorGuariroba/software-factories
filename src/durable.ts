@@ -310,6 +310,8 @@ export type FactoryState = {
   repos?: Record<string, RepoBinding>;
   /** Última sincronização com o GitHub por projeto (ISO 8601): a próxima consulta de alterações parte daqui. */
   sincronizadoEm?: Record<string, string>;
+  /** Quando a fábrica recebeu a última entrega do webhook (ISO 8601). Ausente = nenhuma ainda. Só para o painel do App. */
+  ultimoWebhookEm?: string;
 };
 
 /** Estado do repositório de um projeto monitorado, mudado por desplugue ou por eventos da instalação do App. */

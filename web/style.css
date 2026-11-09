@@ -2860,3 +2860,93 @@ summary.disclosure .chevron svg {
   gap: 2px;
   min-width: 0;
 }
+
+/* Fluxo de ligação do GitHub App (Configurações): checklist vertical com estado por etapa, no padrão de painéis de
+   integração: marca de concluído à esquerda, texto no meio, estado e ação à direita. */
+.fluxo-app {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.etapa-app {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--borda, #3a3f47);
+  border-radius: 8px;
+}
+
+.etapa-marca {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--borda, #3a3f47);
+  font-size: 0.85rem;
+}
+
+.etapa-texto {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.etapa-texto strong {
+  font-weight: 600;
+}
+
+.etapa-texto span {
+  color: var(--texto-secundario, #9aa3ad);
+  font-size: 0.9rem;
+}
+
+.etapa-app em {
+  font-style: normal;
+  font-size: 0.8rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.etapa-acao {
+  grid-column: 2 / -1;
+  justify-self: start;
+}
+
+.etapa-feito .etapa-marca {
+  background: #1f3d2b;
+  border-color: #1f3d2b;
+  color: #8fd8a8;
+}
+
+.etapa-feito em {
+  background: #1f3d2b;
+  color: #8fd8a8;
+}
+
+.etapa-pendente em {
+  background: #3d3320;
+  color: #e8c77a;
+}
+
+.etapa-desconhecido em {
+  background: #2c3038;
+  color: #aab2bd;
+}
+
+@media (max-width: 560px) {
+  .etapa-app {
+    grid-template-columns: 1.5rem 1fr;
+  }
+
+  .etapa-app em {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

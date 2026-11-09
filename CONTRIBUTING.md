@@ -159,6 +159,7 @@ O receptor de entregas do GitHub é um listener próprio, em `127.0.0.1`, separa
 
 - `FACTORY_WEBHOOK_PORT`: porta do receptor. Sem ela, o receptor não sobe.
 - `FACTORY_GITHUB_WEBHOOK_SECRET`: secret do GitHub App, lido do ambiente e removido do processo logo depois. Sem ele, com a porta definida, o daemon não sobe.
+- `FACTORY_GITHUB_APP_ID` e `FACTORY_GITHUB_APP_PRIVATE_KEY_PATH`: o número do App e o caminho do arquivo da chave privada, para o painel **GitHub App** de Configurações (`GET /github-app`). O painel só lê: consulta as instalações do App e marca quais repositórios plugados estão cobertos. A chave é aberta a cada consulta real (cache de 5 min) e não é guardada em estado nem em log. Sem essas duas, o painel mostra que o App não está configurado.
 - O GitHub só chega até o receptor por um túnel (cloudflared, smee) que encaminha `POST /webhooks/github` para essa porta.
 
 Repositórios em runtime (ADR-0015): `GET /repos` lista o vínculo de cada projeto monitorado; `POST /repos/desplugar` com `{ "repo": "dono/nome" }` cancela as Tarefas não iniciadas (uma Tarefa em execução responde 409, a menos que venha `"force": true`); `POST /repos/plugar` reativa um repositório já configurado no YAML.

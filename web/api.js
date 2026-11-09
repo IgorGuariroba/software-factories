@@ -13,7 +13,12 @@ export async function api(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(payload.error ?? `${method} ${path}: HTTP ${res.status}`);
+  if (!res.ok) {
+    // O corpo vai junto: alguns erros trazem dados que a tela usa (ex.: as Tarefas que impedem um desplugue).
+    const err = new Error(payload.error ?? `${method} ${path}: HTTP ${res.status}`);
+    err.payload = payload;
+    throw err;
+  }
   return payload;
 }
 
@@ -30,6 +35,10 @@ export const getDaemon = () => api("GET", "/daemon");
 export const getRetroSettings = () => api("GET", "/settings/retro");
 export const saveRetroSettings = (repo) => api("POST", "/settings/retro", { repo });
 export const pollSource = () => api("POST", "/poll");
+export const getRepos = () => api("GET", "/repos");
+export const getGithubApp = () => api("GET", "/github-app");
+export const plugRepo = (repo) => api("POST", "/repos/plugar", { repo });
+export const unplugRepo = (repo, force = false) => api("POST", "/repos/desplugar", { repo, force });
 export const pauseDaemon = () => api("POST", "/daemon/pause");
 export const resumeDaemon = () => api("POST", "/daemon/resume");
 export const reorderTasks = (ids) => api("POST", "/tasks/order", { ids });

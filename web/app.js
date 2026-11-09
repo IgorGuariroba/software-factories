@@ -10,9 +10,11 @@ import {
   decideTriage,
   eventStream,
   getDaemon,
+  getGithubApp,
   getQuestionPreview,
   getQueue,
   getReminderPreview,
+  getRepos,
   getRetroPreview,
   getRetroSettings,
   getSpecPreview,
@@ -21,15 +23,19 @@ import {
   getTriagePreview,
   pauseDaemon,
   pauseTask,
+  plugRepo,
   pollSource,
   reorderTasks,
   resumeDaemon,
   resumeTask,
   saveRetroSettings,
+  unplugRepo,
   vetoTask,
 } from "./api.js";
+import { alertaGithubApp, etapasGithubApp, linhasGithubApp, progressoGithubApp } from "./github-app.js";
 import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
+import { linhasRepositorios, mensagemTarefasAtivas } from "./repositorios.js";
 import {
   actionsFor,
   actionTab,
@@ -862,7 +868,11 @@ function showPage(page) {
   const previous = document.querySelector("[data-tela]:not([hidden])")?.dataset.tela;
   document.querySelector(".visao-geral").hidden = current !== "inicio";
   for (const section of document.querySelectorAll("[data-tela]")) section.hidden = section.dataset.tela !== current;
-  if (current === "configuracoes" && previous !== "configuracoes") loadRetroSettings();
+  if (current === "configuracoes" && previous !== "configuracoes") {
+    loadRetroSettings();
+    loadGithubApp();
+    loadRepos();
+  }
   for (const link of document.querySelectorAll("[data-pagina]")) {
     if (link.dataset.pagina === current) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -990,6 +1000,154 @@ function connect() {
     status.className = "selo alerta";
   });
 }
+
+/** Desplugue pendente de confirmação: repositório e Tarefas que estão em execução nele. */
+let desplugePendente = null;
+
+/** Texto de cada estado de etapa do fluxo do GitHub App. */
+const rotuloEtapa = { feito: "feito", pendente: "pendente", desconhecido: "não dá para saber" };
+
+/** Painel do GitHub App em Configurações: receptor, App, instalações e cobertura dos repositórios (só leitura). */
+async function loadGithubApp() {
+  const status = $("github-app-status");
+  try {
+    const painel = await getGithubApp();
+    $("github-app-lista").replaceChildren(
+      ...linhasGithubApp(painel).map((linha) =>
+        el(
+          "li",
+          { className: `linha-app linha-${linha.tom}` },
+          el("strong", { text: linha.rotulo }),
+          el("span", { text: linha.valor }),
+        ),
+      ),
+    );
+    const etapas = etapasGithubApp(painel);
+    $("github-app-progresso").textContent = progressoGithubApp(etapas);
+    $("github-app-fluxo").replaceChildren(
+      ...etapas.map((etapa) =>
+        el(
+          "li",
+          { className: `etapa-app etapa-${etapa.estado}`, attrs: { "data-estado": etapa.estado } },
+          el("span", {
+            className: "etapa-marca",
+            attrs: { "aria-hidden": "true" },
+            text: etapa.estado === "feito" ? "✓" : "",
+          }),
+          el(
+            "div",
+            { className: "etapa-texto" },
+            el("strong", { text: etapa.titulo }),
+            el("span", { text: etapa.descricao }),
+          ),
+          el("em", { text: rotuloEtapa[etapa.estado] }),
+          etapa.acao
+            ? el("a", {
+                className: "secundario etapa-acao",
+                text: etapa.acao.rotulo,
+                attrs: { href: etapa.acao.url, target: "_blank", rel: "noopener" },
+              })
+            : "",
+        ),
+      ),
+    );
+    const alerta = alertaGithubApp(painel);
+    $("github-app-alerta").textContent = alerta ?? "";
+    $("github-app-alerta").hidden = alerta === undefined;
+    status.textContent = "";
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Lista os repositórios monitorados na seção de Configurações. */
+async function loadRepos() {
+  // Só escreve no status em caso de erro: a mensagem de uma ação (plugar, desplugar) não pode ser apagada aqui.
+  try {
+    renderRepos(linhasRepositorios(await getRepos()));
+  } catch (err) {
+    $("repos-status").textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+function renderRepos(linhas) {
+  const lista = $("repos-lista");
+  lista.replaceChildren();
+  $("repos-vazio").hidden = linhas.length > 0;
+  for (const linha of linhas) {
+    const desplugar = linha.acao === "desplugar";
+    const rotulo = desplugar ? "Desplugar" : "Plugar";
+    lista.append(
+      el(
+        "li",
+        {},
+        el("strong", { text: linha.repositorio }),
+        " ",
+        el("span", { className: "selo", text: linha.estado }),
+        el("p", {
+          className: "ajuda",
+          text: `${linha.projeto} · ${linha.origem}${linha.motivo ? ` · ${linha.motivo}` : ""}`,
+        }),
+        el("button", {
+          type: "button",
+          className: desplugar ? "secundario" : "primario",
+          text: rotulo,
+          attrs: { "aria-label": `${rotulo} ${linha.repositorio}` },
+          onClick: () => (desplugar ? desplugarRepo(linha.repositorio, false) : plugarRepo(linha.repositorio)),
+        }),
+      ),
+    );
+  }
+}
+
+async function plugarRepo(repo) {
+  const status = $("repos-status");
+  try {
+    await plugRepo(repo);
+    status.textContent = `${repo} plugado: a próxima busca enfileira os cards dele.`;
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+  await loadRepos();
+}
+
+/**
+ * Desplugue. Sem `force`, uma Tarefa em execução devolve 409 com a lista: a tela pede confirmação antes de cancelá-la.
+ */
+async function desplugarRepo(repo, force) {
+  const status = $("repos-status");
+  try {
+    await unplugRepo(repo, force);
+    esconderConfirmacao();
+    status.textContent = `${repo} desplugado. As Tarefas não iniciadas dele foram canceladas.`;
+  } catch (err) {
+    const ativas = err instanceof Error ? err.payload?.tarefasAtivas : undefined;
+    if (ativas?.length && !force) {
+      desplugePendente = repo;
+      $("repos-confirmacao-texto").textContent = mensagemTarefasAtivas(ativas);
+      $("repos-confirmacao").hidden = false;
+      $("repos-confirmar").focus();
+    } else {
+      esconderConfirmacao();
+      status.textContent = err instanceof Error ? err.message : String(err);
+    }
+  }
+  await loadRepos();
+}
+
+function esconderConfirmacao() {
+  desplugePendente = null;
+  $("repos-confirmacao").hidden = true;
+  $("repos-confirmacao-texto").textContent = "";
+}
+
+$("repos-manter").addEventListener("click", () => {
+  esconderConfirmacao();
+  $("repos-status").textContent = "Repositório mantido conectado; nada foi alterado.";
+});
+$("repos-confirmar").addEventListener("click", () => {
+  if (desplugePendente) desplugarRepo(desplugePendente, true);
+});
 
 /** Carrega o repositório atual no formulário inline de Configurações, ao abrir a página. */
 async function loadRetroSettings() {

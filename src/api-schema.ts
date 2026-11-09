@@ -485,6 +485,13 @@ export const API_SCHEMA = {
     "/repos": {
       get: { summary: "Repositórios monitorados e o vínculo de cada um (ativo ou desativado)", responses: ok },
     },
+    "/github-app": {
+      get: {
+        summary:
+          "Painel do GitHub App (só leitura): receptor do webhook, instalações do App e cobertura de cada repositório plugado",
+        responses: ok,
+      },
+    },
     "/repos/plugar": {
       post: { summary: "Reativa o repositório de um projeto já configurado (corpo: { repo })", responses: ok },
     },
