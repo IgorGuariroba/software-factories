@@ -7,6 +7,7 @@ import {
   approveRetro,
   approveSpec,
   cancelTask,
+  criarProjetoGithub,
   decideTriage,
   eventStream,
   getDaemon,
@@ -42,6 +43,7 @@ import {
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
+  sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
   visibilidade,
@@ -1113,18 +1115,29 @@ function renderCatalogoGithub() {
 
 function linhaCatalogoGithub(repo) {
   const estado = estadoImportacao(repo);
-  const botao = estado.rotuloBotao
-    ? el("button", {
-        type: "button",
-        className: "primario",
-        text: estado.rotuloBotao,
-        attrs: {
-          "aria-label": `${estado.rotuloBotao} de ${repo.nome}`,
-          ...(estado.podeImportar ? {} : { disabled: "" }),
-        },
-        onClick: () => importarGithub(repo),
-      })
-    : "";
+  let acao = "";
+  let formulario = "";
+  if (estado.criarProjeto) {
+    formulario = formularioProjetoGithub(repo);
+    acao = el("button", {
+      type: "button",
+      className: "primario",
+      text: estado.rotuloBotao,
+      attrs: { "aria-label": `${estado.rotuloBotao} para ${repo.nome}`, "aria-expanded": "false" },
+      onClick: (ev) => alternarFormulario(ev.currentTarget, formulario),
+    });
+  } else if (estado.rotuloBotao) {
+    acao = el("button", {
+      type: "button",
+      className: "primario",
+      text: estado.rotuloBotao,
+      attrs: {
+        "aria-label": `${estado.rotuloBotao} de ${repo.nome}`,
+        ...(estado.podeImportar ? {} : { disabled: "" }),
+      },
+      onClick: () => importarGithub(repo),
+    });
+  }
   return el(
     "li",
     { className: `repo-gh linha-${estado.tom}`, attrs: { "data-estado": estado.rotulo } },
@@ -1137,14 +1150,100 @@ function linhaCatalogoGithub(repo) {
     ),
     el("p", {
       className: "ajuda",
-      text: `${repo.plugado ? `Projeto ${repo.plugado.projeto}` : "Nenhum projeto no YAML"} · ${textoImportacao(repo.importacao)}`,
+      text: `${repo.plugado ? `Projeto ${repo.plugado.projeto}` : "Sem projeto configurado"} · ${textoImportacao(repo.importacao)}`,
     }),
     estado.ajuda ? el("p", { className: "ajuda", text: estado.ajuda }) : "",
-    botao,
+    acao,
+    formulario,
   );
 }
 
-$("repos-gh-busca").addEventListener("input", renderCatalogoGithub);
+function alternarFormulario(botao, formulario) {
+  formulario.hidden = !formulario.hidden;
+  botao.setAttribute("aria-expanded", String(!formulario.hidden));
+  if (!formulario.hidden) formulario.querySelector("input")?.focus();
+}
+
+/**
+ * Formulário para criar o projeto de um repositório (ADR-0016). Nome e prefixo vêm sugeridos; o ensaio começa marcado,
+ * então a fábrica não escreve no GitHub até o usuário desligá-lo. O servidor confere o resto (conflitos, regras).
+ */
+function formularioProjetoGithub(repo) {
+  const sugestao = sugerirProjeto(repo.nome);
+  const status = el("p", { className: "ajuda", attrs: { role: "status" } });
+  const form = el(
+    "form",
+    { className: "form-projeto", attrs: { hidden: "" } },
+    el(
+      "label",
+      { className: "campo" },
+      el("span", { text: "Nome do projeto" }),
+      el("input", {
+        attrs: {
+          name: "nome",
+          required: "",
+          value: sugestao.nome,
+          pattern: "[a-z][a-z0-9-]{1,39}",
+          autocomplete: "off",
+        },
+      }),
+    ),
+    el(
+      "label",
+      { className: "campo" },
+      el("span", { text: "Prefixo das chaves (ex.: SF-12)" }),
+      el("input", {
+        attrs: {
+          name: "prefixo",
+          required: "",
+          value: sugestao.prefixo,
+          pattern: "[A-Za-z][A-Za-z0-9]{1,9}",
+          autocomplete: "off",
+        },
+      }),
+    ),
+    el(
+      "label",
+      { className: "ajuda" },
+      el("input", { attrs: { type: "checkbox", name: "ensaio", checked: "" } }),
+      " Ensaio: a fábrica não escreve no GitHub até você desligar",
+    ),
+    el(
+      "div",
+      { className: "acoes" },
+      el("button", { type: "submit", className: "primario", text: "Criar projeto" }),
+      el("button", {
+        type: "button",
+        className: "secundario",
+        text: "Cancelar",
+        onClick: () => {
+          form.hidden = true;
+        },
+      }),
+    ),
+    status,
+  );
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const dados = new FormData(form);
+    status.textContent = "Criando o projeto…";
+    try {
+      const criado = await criarProjetoGithub({
+        repoId: repo.id,
+        nome: String(dados.get("nome") ?? "").trim(),
+        prefixo: String(dados.get("prefixo") ?? "").trim(),
+        ensaio: dados.get("ensaio") === "on",
+      });
+      $("repos-gh-status").textContent = `Projeto ${criado.projeto} criado para ${criado.repo}${
+        criado.ensaio ? ", em ensaio" : ""
+      }. Agora dá para importar as issues.`;
+      await loadCatalogoGithub();
+    } catch (err) {
+      status.textContent = err instanceof Error ? err.message : String(err);
+    }
+  });
+  return form;
+}
 
 /** Pede a importação; a fila roda em segundo plano, e o redesenho acompanha pelo polling. */
 async function importarGithub(repo) {

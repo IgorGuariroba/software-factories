@@ -354,6 +354,7 @@ describe("schema da API", () => {
         "/github-app",
         "/github/repos",
         "/github/importar",
+        "/projetos/github",
         "/openapi.json",
         "/poll",
         "/queue",

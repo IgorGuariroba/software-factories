@@ -98,6 +98,8 @@ interface TestFactoryOptions {
   githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
   /** Janela de agrupamento dos avisos. Padrão nos testes: 0 (cada aviso sai na hora). */
   avisoJanelaMs?: number;
+  /** Fonte dos projetos criados pela interface. Padrão: uma Fonte em memória vazia (sem cards). */
+  createSource?: (config: ProjectConfig) => import("../src/demand-source.js").DemandSource;
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória e estado durável num diretório temporário. */
@@ -126,6 +128,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     webhook: opts.webhookSecret ? { port: 0, secret: opts.webhookSecret } : undefined,
     avisos: { janelaMs: opts.avisoJanelaMs ?? 0 },
     githubApp: opts.githubApp,
+    createSource: opts.createSource ?? (() => new MemoryDemandSource([])),
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
     ],
