@@ -1,5 +1,6 @@
 import type { QueuedTask } from "./durable.js";
 import type { FactoryEvent } from "./events.js";
+import { blockedResumeKind } from "./task-resume.js";
 
 /** Uma Tarefa como a API a lista em `GET /tasks`. */
 export const taskSummary = ({
@@ -15,6 +16,7 @@ export const taskSummary = ({
   specReview,
   triage,
   questions,
+  implementation,
 }: QueuedTask) => ({
   id,
   /** Identificador opaco da Tarefa: o único que sai no link das issues públicas da fábrica. */
@@ -23,6 +25,7 @@ export const taskSummary = ({
   key,
   title,
   status,
+  resumeAllowed: status === "pausada" || blockedResumeKind({ status, stage, implementation, reason }) !== null,
   stage: stage ?? null,
   attempts,
   reason,
@@ -91,12 +94,14 @@ export function taskDetail(task: QueuedTask, events: FactoryEvent[]) {
     triage: task.triage
       ? { verdict: task.triage.result.verdict, reason: task.triage.result.reason, review: task.triage.review }
       : null,
-    tickets: task.delivery?.tickets ?? [],
+    tickets: [...(task.delivery?.tickets ?? []), ...(task.correctionTickets ?? [])],
     implementation: implementation
       ? {
           branch: implementation.branch,
           branchOrigin: implementation.branchOrigin ?? null,
           repairs: implementation.repairs ?? [],
+          verifiedTickets: implementation.verifiedTickets ?? [],
+          synchronization: implementation.synchronization ?? null,
           commits: implementation.commits,
           pushed: implementation.pushed,
           baseline: implementation.baseline ?? null,

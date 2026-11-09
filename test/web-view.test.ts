@@ -44,6 +44,13 @@ describe("ações de cada tarefa na página", () => {
     expect(actionsFor({ status: "pausada" })).toEqual(["retomar", "cancelar"]);
   });
 
+  it("oferece retomada de bloqueio somente com autorização do backend", () => {
+    expect(actionsFor({ status: "bloqueada", resumeAllowed: true })).toEqual(["retomar"]);
+    expect(actionsFor({ status: "bloqueada", resumeAllowed: false })).toEqual([]);
+    expect(actionsFor({ status: "bloqueada" })).toEqual([]);
+    expect(actionsFor({ status: "concluida", resumeAllowed: true })).toEqual([]);
+  });
+
   it("uma tarefa encerrada não tem ações", () => {
     for (const status of ["concluida", "cancelada", "bloqueada", "vetada"]) expect(actionsFor({ status })).toEqual([]);
   });

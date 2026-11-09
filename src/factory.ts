@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { API_SCHEMA } from "./api-schema.js";
+import { synchronizeBase } from "./base-sync.js";
 import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
@@ -46,13 +47,7 @@ import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhament
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
-import {
-  baselineBlockedReason,
-  baselineWorkspaceBlockedReason,
-  createImplementationExtension,
-  runImplementation,
-  StageBlocked,
-} from "./implement-stage.js";
+import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
@@ -74,6 +69,7 @@ import {
   SpecExtension,
   specInput,
 } from "./spec-stage.js";
+import { blockedResumeKind } from "./task-resume.js";
 import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
@@ -413,6 +409,18 @@ export async function startFactory(opts: {
           };
           let outcome: Awaited<ReturnType<typeof runDelivery>>;
           try {
+            const currentTask = (await readState()).tasks.find((t) => t.id === input.id);
+            const remote =
+              currentTask?.publication?.number && currentTask.implementation && !project.config.dryRun
+                ? await project.codeHost.inspectRequest(
+                    currentTask.implementation.worktree,
+                    currentTask.publication.number,
+                  )
+                : undefined;
+            if (!remote || remote.state === "open") {
+              const resumed = await resumeCorrections();
+              if ((await syncBase()) || resumed) await reviewLoop();
+            }
             outcome = await runDelivery({
               taskId: input.id,
               runtime,
@@ -495,6 +503,7 @@ export async function startFactory(opts: {
         if (!current?.delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
         const card = await source.getCard(input.key);
         if (!card) throw new Error(`card ${input.key} não existe mais`);
+        if (current.implementation?.synchronization?.status === "iniciada") await syncBase();
         await runImplementation({
           repositoryPath,
           harness,
@@ -511,6 +520,28 @@ export async function startFactory(opts: {
           model: project.config.roles.implementer ?? project.config.roles.spec,
           deps: implementationDeps,
           tools: implementationTools,
+          originalTicketCount: current.delivery.tickets.length,
+          canReassessCorrections: async (head) => {
+            const latest = (await readState()).tasks.find((t) => t.id === input.id);
+            // A guarda vem antes da suíte; um review em andamento deve ser retomado, não descartado.
+            return Boolean(latest?.review && (latest.review.head !== head || latest.review.status !== "corrigir"));
+          },
+          reassessCorrections: async (head, diagnostic) => {
+            const verdict = await runReview({
+              harness,
+              runtime,
+              taskId: input.id,
+              config: project.config,
+              worktreesRoot: implementationDeps.worktreesRoot,
+              tools: reviewTools,
+              verification: { head, diagnostic },
+            });
+            const latest = (await readState()).tasks.find((t) => t.id === input.id);
+            return {
+              approved: verdict === "aprovado",
+              feedback: `Review de reavaliação: ${latest?.review?.summary ?? "evidência insuficiente"}`,
+            };
+          },
         });
       }
 
@@ -524,7 +555,36 @@ export async function startFactory(opts: {
           await events.append({ type: "progress", project: input.project, target: input.key, message });
       }
 
+      async function syncBase(): Promise<boolean> {
+        return synchronizeBase({
+          taskId: input.id,
+          runtime,
+          harness,
+          config: project.config,
+          deps: implementationDeps,
+        });
+      }
+
+      async function resumeCorrections(): Promise<boolean> {
+        // Retoma o TDD pendente antes de exigir clone limpo para sincronização ou review.
+        const interrupted = (await readState()).tasks.find((t) => t.id === input.id);
+        if (interrupted?.implementation && interrupted.delivery) {
+          const done = new Set([
+            ...interrupted.implementation.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket),
+            ...(interrupted.implementation.verifiedTickets ?? []).map((c) => c.ticket),
+          ]);
+          const originalCount = interrupted.delivery.tickets.length;
+          if (interrupted.correctionTickets?.some((_, index) => !done.has(originalCount + index))) {
+            await implement();
+            return true;
+          }
+        }
+        return false;
+      }
+
       async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
+        await resumeCorrections();
+        await syncBase();
         for (;;) {
           const verdict = await runReview({
             harness,
@@ -1412,16 +1472,7 @@ export async function startFactory(opts: {
         task.pauseRequested = false;
         if (task.status === "pausada") task.status = "enfileirada";
         // O usuário corrigiu o ambiente: nova tentativa mede o baseline, sem aceitar o vermelho como TDD.
-        if (
-          task.status === "bloqueada" &&
-          task.stage === "implementacao" &&
-          task.implementation &&
-          task.implementation.commits.length === 0 &&
-          ((task.implementation.baseline === "vermelha" &&
-            task.reason === baselineBlockedReason(task.implementation.branch)) ||
-            (task.implementation.baseline === null &&
-              task.reason === baselineWorkspaceBlockedReason(task.implementation.branch)))
-        ) {
+        if (blockedResumeKind(task as QueuedTask) === "baseline" && task.implementation) {
           task.implementation.baseline = null;
           task.durableId = null;
           task.gateId = null;
@@ -1430,12 +1481,15 @@ export async function startFactory(opts: {
         }
         // TDD recusado no limite: quem retoma mudou o que impedia (config, formatador, ambiente). Novas tentativas na
         // mesma fase; os commits aceitos ficam.
-        if (
-          task.status === "bloqueada" &&
-          (task.stage === "implementacao" || task.stage === "review") &&
-          task.implementation &&
-          task.reason?.startsWith("TDD recusado ")
-        ) {
+        if (blockedResumeKind(task as QueuedTask) === "base-sync" && task.implementation) {
+          if (task.implementation.synchronization?.status === "iniciada")
+            task.implementation.synchronization.attempts = 0;
+          task.durableId = null;
+          task.gateId = null;
+          task.reason = null;
+          task.status = "enfileirada";
+        }
+        if (blockedResumeKind(task as QueuedTask) === "tdd" && task.implementation) {
           task.implementation.rejections = 0;
           task.implementation.feedback = null;
           task.durableId = null;
