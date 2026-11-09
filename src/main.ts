@@ -44,6 +44,30 @@ function telegramFromEnv() {
   return { port: createTelegramBot({ token, chat }), chat, user };
 }
 
+/**
+ * Webhook do GitHub App: porta local do receptor (um túnel encaminha o GitHub até ela) e o secret do App. O secret sai
+ * do ambiente do processo logo após a leitura, como o token do Telegram: git, testes e acli não o herdam.
+ */
+function webhookFromEnv(): { port: number; secret: string } | undefined {
+  const rawPort = process.env.FACTORY_WEBHOOK_PORT;
+  const secret = process.env.FACTORY_GITHUB_WEBHOOK_SECRET;
+  delete process.env.FACTORY_GITHUB_WEBHOOK_SECRET;
+  if (!rawPort) {
+    if (secret) console.warn("[fábrica] webhook desligado: defina FACTORY_WEBHOOK_PORT para ligá-lo.");
+    return undefined;
+  }
+  const port = Number(rawPort);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    console.error(`FACTORY_WEBHOOK_PORT inválido: "${rawPort}" (use uma porta de 1 a 65535)`);
+    process.exit(1);
+  }
+  if (!secret) {
+    console.error("FACTORY_GITHUB_WEBHOOK_SECRET ausente: o receptor do webhook exige o secret do GitHub App");
+    process.exit(1);
+  }
+  return { port, secret };
+}
+
 /** Repositório público da fábrica para as issues de retrô (`dono/nome`). Sem ele, as propostas só ficam registradas. */
 const retroRepo = process.env.FACTORY_RETRO_REPO?.trim() || undefined;
 if (retroRepo && !isRetroRepository(retroRepo)) {
@@ -88,6 +112,7 @@ try {
     management: telegramFromEnv(),
     teams: teamsClient && createTeamsMcpNotifier(teamsClient),
     retro: { sink: createGhRetroSink(), repo: retroRepo },
+    webhook: webhookFromEnv(),
   });
   console.log(`[fábrica] API local em ${daemon.url}`);
   const stop = () =>

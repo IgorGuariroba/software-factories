@@ -12,6 +12,7 @@ import type { QuestionRef } from "./channel.js";
 import type { CardState, FormatCommand, TestCommand } from "./config.js";
 import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { FactoryEvent } from "./events.js";
+import { repoDesativado } from "./repositorios.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TriageResult } from "./triage.js";
 
@@ -166,6 +167,21 @@ export type QueuedTask = {
    * a SPEC e os Tickets) republica a mesma entrega, sem chamar o modelo de novo nem trocar uma SPEC válida.
    */
   delivery?: SpecDelivery | null;
+  /**
+   * Escopo do card como a Fonte o entregou por último (webhook do GitHub): descrição e checkboxes de aceite.
+   * Ausente em Tarefas criadas pela busca.
+   */
+  scope?: { description: string; checkboxes: { done: number; total: number } } | null;
+  /**
+   * O escopo mudou no GitHub depois de a Tarefa já estar em execução. A SPEC é refeita antes de qualquer código novo,
+   * ou a Tarefa para se a implementação já começou (ver `scopeGate`).
+   */
+  specDirty?: boolean;
+  /**
+   * Quantas vezes a SPEC foi refeita por mudança de escopo. Entra no `requestId` da submissão à SPEC: o motor deduplica
+   * submissões pelo `requestId`, então refazer com o mesmo identificador devolveria a SPEC antiga sem chamar o modelo.
+   */
+  specRevision?: number;
   /** Correções de review, dentro dos critérios já aprovados; cada uma ganha novo ciclo TDD. */
   correctionTickets?: SpecDelivery["tickets"];
   correctionRounds?: number;
@@ -282,6 +298,28 @@ export type FactoryState = {
   retroRepo?: string;
   daemonPaused: boolean;
   tasks: QueuedTask[];
+  /**
+   * `X-GitHub-Delivery` das entregas do webhook já aplicadas, as mais recentes por último. O GitHub reenvia entregas
+   * falhas com o mesmo identificador: reaplicar um fechamento antigo cancelaria uma Tarefa já reaberta.
+   */
+  deliveries?: string[];
+  /**
+   * Vínculo de cada projeto de repositório monitorado com o GitHub, por nome do projeto. Ausente = ativo (a config do
+   * YAML manda). Só guarda o que mudou em runtime: desativação e a instalação de origem.
+   */
+  repos?: Record<string, RepoBinding>;
+  /** Última sincronização com o GitHub por projeto (ISO 8601): a próxima consulta de alterações parte daqui. */
+  sincronizadoEm?: Record<string, string>;
+};
+
+/** Estado do repositório de um projeto monitorado, mudado por desplugue ou por eventos da instalação do App. */
+export type RepoBinding = {
+  repo: string;
+  status: "ativo" | "desativado";
+  /** Instalação do GitHub App que trouxe o repositório, quando conhecida. */
+  installationId?: number;
+  /** Por que está desativado (exibido na página e nos avisos). */
+  motivo?: string;
 };
 
 /** Estado da fila e do daemon, durável na sessão. */
@@ -494,6 +532,27 @@ export function recordAnswer(state: FactoryState, id: string, n: number, answer:
 }
 
 /** Se a Tarefa espera uma pessoa: resposta de pergunta ou aprovação da SPEC. */
+/** Passos que acontecem antes da SPEC: a SPEC que vier depois já lê o card atual. */
+const PRE_SPEC_STEPS: ReadonlySet<Step> = new Set<Step>([
+  "triar",
+  RETRO_STEP.triagem,
+  "comentar",
+  "transicionar",
+  "spec",
+]);
+
+export type ScopeVerdict = "seguir" | "refazer-spec" | "bloquear";
+
+/**
+ * O que fazer com uma Tarefa cujo escopo mudou no GitHub, no limite de um passo. Antes da SPEC, segue. Depois dela e
+ * sem código ainda, refaz a SPEC. Com a implementação iniciada, bloqueia: trocar a SPEC no meio dos commits deixaria o
+ * progresso (indexado pelos tickets antigos) inconsistente, e essa decisão é do usuário.
+ */
+export function scopeGate(task: Pick<QueuedTask, "specDirty" | "implementation">, step: Step): ScopeVerdict {
+  if (!task.specDirty || PRE_SPEC_STEPS.has(step)) return "seguir";
+  return task.implementation ? "bloquear" : "refazer-spec";
+}
+
 export const awaitsHuman = (task: QueuedTask): boolean =>
   pendingQuestion(task) !== undefined || task.specReview === "draft" || task.triage?.review === "draft";
 
@@ -573,7 +632,15 @@ export function createTarefaTask(steps: TarefaSteps) {
       const state = await tx.doc(StateDoc);
       const queued = findTask(state, task.input.id);
       const availableAt = steps.availableAt?.(task.input) ?? runtime.now();
-      if (!state.daemonPaused && !queued.pauseRequested && availableAt <= runtime.now()) {
+      // Repositório desativado segura a Tarefa mesmo que ela tenha sido retomada (ADR-0015).
+      if (
+        !state.daemonPaused &&
+        !queued.pauseRequested &&
+        availableAt <= runtime.now() &&
+        !repoDesativado(state, queued.project)
+      ) {
+        // A SPEC lê o card a partir daqui: uma mudança que chegar depois marca o escopo de novo.
+        if (step === "spec") queued.specDirty = false;
         const stage = STAGE[step];
         if (stage) queued.stage = stage;
         return undefined;
@@ -587,6 +654,24 @@ export function createTarefaTask(steps: TarefaSteps) {
       return { status: "waiting", checkpoint: { phase: step }, on: [gate], policy: "allSettled" };
     }, context);
     if (gated) return;
+
+    // Escopo alterado no GitHub: antes da SPEC segue; depois, refaz a SPEC ou para (ver `scopeGate`).
+    let verdict: ScopeVerdict = "seguir";
+    await runtime.commit(async (tx) => {
+      const queued = findTask(await tx.doc(StateDoc), task.input.id);
+      verdict = scopeGate(queued, step);
+      if (verdict === "seguir") return undefined;
+      if (verdict === "refazer-spec") {
+        queued.delivery = null;
+        queued.specRevision = (queued.specRevision ?? 0) + 1;
+        return { status: "running", checkpoint: { phase: "spec" } };
+      }
+      queued.status = "bloqueada";
+      queued.reason = "escopo alterado depois do início da implementação; revise o card e recrie a Tarefa";
+      queued.gateId = null;
+      return { status: "terminal", outcome: { status: "completed", result: null } };
+    }, context);
+    if (verdict !== "seguir") return;
 
     let outcome: "aguardar" | "recusada" | "adiar" | "acompanhar" | undefined;
     try {

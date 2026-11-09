@@ -153,6 +153,20 @@ npx vitest run test/management-telegram.contract.test.ts
 
 Sem as duas variáveis, o arquivo é pulado. Contra o real, os testes de recepção que dependem de simular o usuário são pulados; o bot não pode ter webhook configurado (o `getUpdates` falha com webhook ativo).
 
+### Webhook do GitHub App (ADR-0015)
+
+O receptor de entregas do GitHub é um listener próprio, em `127.0.0.1`, separado da API local:
+
+- `FACTORY_WEBHOOK_PORT`: porta do receptor. Sem ela, o receptor não sobe.
+- `FACTORY_GITHUB_WEBHOOK_SECRET`: secret do GitHub App, lido do ambiente e removido do processo logo depois. Sem ele, com a porta definida, o daemon não sobe.
+- O GitHub só chega até o receptor por um túnel (cloudflared, smee) que encaminha `POST /webhooks/github` para essa porta.
+
+Repositórios em runtime (ADR-0015): `GET /repos` lista o vínculo de cada projeto monitorado; `POST /repos/desplugar` com `{ "repo": "dono/nome" }` cancela as Tarefas não iniciadas (uma Tarefa em execução responde 409, a menos que venha `"force": true`); `POST /repos/plugar` reativa um repositório já configurado no YAML.
+
+Reconciliação (ADR-0015): no startup e a cada busca, cada repositório ativo é consultado desde a última sincronização para recuperar o que o webhook perdeu. Avisos em rajada viram um resumo, com janela de 10 s (`avisos.janelaMs` na fábrica; zero desliga o agrupamento nos testes).
+
+Testes: `test/webhook-http.test.ts` (receptor, com HTTP real em porta livre) e `test/webhook-recebimento.test.ts` (fábrica inteira, com a assinatura do secret de teste). Nenhum teste fala com o GitHub real.
+
 ### Fonte Jira
 
 O adaptador Jira (`src/jira-demand-source.ts`) fala com o Jira pelo `acli` (Atlassian CLI), já autenticado na máquina (`acli jira auth login`); `ACLI_PATH` aponta para o binário se ele não estiver no `PATH`. Em `source.assignee`, use o seu accountId ou o seu e-mail do Jira.

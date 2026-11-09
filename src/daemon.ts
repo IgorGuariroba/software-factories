@@ -60,9 +60,12 @@ export async function startDaemon(opts: {
   management?: { port: ManagementInterface; chat: string; user?: string };
   /** Issues da fábrica: a porta e o repositório público da fábrica (global ao daemon). */
   retro?: { sink?: RetroSink; repo?: string };
+  /** Receptor do webhook do GitHub App (global ao daemon). Sem ele, a fábrica não recebe entregas. */
+  webhook?: { port: number; secret: string };
 }): Promise<RunningFactory> {
   const configs = await loadProjects(opts.configDir);
   return startFactory({
+    webhook: opts.webhook,
     port: opts.port,
     statePath: opts.statePath,
     pollIntervalMs: opts.pollIntervalMs,

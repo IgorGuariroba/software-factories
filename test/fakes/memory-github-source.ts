@@ -1,4 +1,4 @@
-import type { LinkedPullRequest } from "../../src/demand-source.js";
+import type { IssueSnapshot, LinkedPullRequest } from "../../src/demand-source.js";
 import { MemoryDemandSource } from "./memory-demand-source.js";
 
 /** Fonte em memória com o que só o GitHub tem: PRs que citam a issue e a baixa com motivo. */
@@ -6,6 +6,12 @@ export class MemoryGitHubSource extends MemoryDemandSource {
   pullRequests = new Map<string, LinkedPullRequest[]>();
   /** Baixas dadas, na ordem. */
   dismissed: { key: string; reason: string }[] = [];
+  /** O que a consulta de alterações devolve: o teste define o que o GitHub "mudou" desde a última sincronização. */
+  changedSince: IssueSnapshot[] = [];
+
+  async listChangedSince(_since: string): Promise<IssueSnapshot[]> {
+    return this.changedSince.map((s) => ({ ...s, labels: [...s.labels] }));
+  }
 
   async linkedPullRequests(key: string): Promise<LinkedPullRequest[]> {
     return [...(this.pullRequests.get(key) ?? [])];
