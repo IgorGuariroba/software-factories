@@ -330,7 +330,9 @@ function reviewRetroButton(task, retro, proposal) {
             el("button", {
               text: "Configurar repositório",
               attrs: { type: "button", "data-configurar-retros": "" },
-              onClick: openRetroSettings,
+              onClick: () => {
+                location.hash = "#/configuracoes";
+              },
             }),
           );
       }
@@ -440,7 +442,7 @@ function taskCard(task) {
       el("span", { className: "chave", text: task.key }),
       el("span", { className: "projeto", text: task.project }),
     ),
-    el("span", { className: "titulo" }, el("span", { className: `situacao ${task.status}` }), task.title),
+    el("span", { className: "titulo", text: task.title }),
     ...(hint ? [el("span", { className: "dica", text: hint.text })] : []),
     el(
       "span",
@@ -453,42 +455,53 @@ function taskCard(task) {
   return el("li", {}, card);
 }
 
-function triageRow(task) {
+/**
+ * Linha de tarefa única, usada pela Visão Geral (triagem) e pela lista de Tarefas:
+ * mesma ordem de colunas, mesma densidade. `origem` é a página de volta ao fechar o detalhe.
+ */
+function taskRow(task, origem) {
   const hint = cardHint(task);
+  const isSelected = selected && task.project === selected.project && task.key === selected.key;
   const link = el(
     "a",
     {
-      className: "triagem-link",
-      attrs: { href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}` },
+      className: "linha-link",
+      attrs: {
+        href: `#/tarefa/${encodeURIComponent(task.project)}/${encodeURIComponent(task.key)}`,
+        ...(isSelected ? { "aria-current": "page" } : {}),
+      },
     },
     el("span", {
-      className: `triagem-dot ${task.status === "bloqueada" ? "bloqueada" : hint?.yourTurn ? "atencao" : ""}`,
+      className: `linha-ponto ${task.status === "bloqueada" ? "bloqueada" : hint?.yourTurn ? "atencao" : ""}`,
     }),
-    el("span", { className: "triagem-chave", text: task.key }),
-    el("span", { className: "triagem-titulo", text: task.title }),
-    el("span", { className: "triagem-estado", text: hint?.text ?? statusLabel(task.status) }),
+    el("span", { className: "linha-chave", text: task.key }),
+    el("span", { className: "linha-projeto", text: task.project }),
+    el("span", { className: "linha-titulo", text: task.title }),
+    el("span", { className: "linha-subtitulo", text: hint?.text ?? "" }),
+    statusPill(task),
+    el("span", { className: "linha-contador", text: `${task.attempts}×`, attrs: { title: "tentativas" } }),
   );
   link.addEventListener("click", () => {
-    detailReturn = "inicio";
+    detailReturn = origem;
   });
-  const actions = el("div", { className: "triagem-acoes" });
+  const actions = el("div", { className: "linha-acoes" });
   if (task.status === "bloqueada" && actionsFor(task).includes("retomar")) {
     const resume = actionButtons(task).find((button) => button.textContent === "Retomar");
     if (resume) actions.append(resume);
   }
-  actions.append(
-    el("a", { text: hint?.yourTurn ? "Revisar" : "Inspecionar", attrs: { href: link.getAttribute("href") } }),
+  if (!isTerminal(task)) actions.append(moveButton(task, -1), moveButton(task, 1));
+  return el(
+    "li",
+    { className: `linha-tarefa${isSelected ? " selecionada" : ""}${hint?.yourTurn ? " sua-vez" : ""}` },
+    link,
+    actions,
   );
-  actions.querySelector("a").addEventListener("click", () => {
-    detailReturn = "inicio";
-  });
-  return el("li", { className: "triagem-linha" }, link, actions);
 }
 
 function renderTasks() {
   const visible = visibleTasks(tasks, taskFilter, $("busca-tarefas").value);
   const overview = priorityTasks(visibleTasks(tasks, taskFilter, ""));
-  $("triagem-lista").replaceChildren(...overview.map(triageRow));
+  $("triagem-lista").replaceChildren(...overview.map((task) => taskRow(task, "inicio")));
   $("triagem-vazia").hidden = overview.length > 0;
   const counts = workspaceCounts(tasks);
   for (const [key, count] of Object.entries(counts)) $(`total-${key}`).textContent = String(count);
@@ -521,8 +534,8 @@ function renderTasks() {
     $("quadro").replaceChildren(
       el(
         "ol",
-        { className: "cartoes lista-tarefas", attrs: { "aria-label": "Lista de tarefas" } },
-        ...priorityTasks(visible).map(taskCard),
+        { className: "linha-lista", attrs: { "aria-label": "Lista de tarefas" } },
+        ...priorityTasks(visible).map((task) => taskRow(task, "tarefas")),
       ),
     );
   const open = tasks.filter((t) => !isTerminal(t)).length;
@@ -532,7 +545,7 @@ function renderTasks() {
 
 function renderDaemon() {
   const badge = $("daemon");
-  badge.textContent = daemonPaused ? "daemon: pausado" : "daemon: rodando";
+  badge.textContent = daemonPaused ? "Daemon pausado" : "Daemon ativo";
   badge.className = `selo ${daemonPaused ? "alerta" : "ok"}`;
   const toggle = $("alternar-daemon");
   toggle.textContent = daemonPaused ? "Retomar daemon" : "Pausar daemon";
@@ -841,8 +854,10 @@ showTab(currentTab);
 
 function showPage(page) {
   const current = ["inicio", "tarefas", "fonte", "configuracoes"].includes(page) ? page : "inicio";
+  const previous = document.querySelector("[data-tela]:not([hidden])")?.dataset.tela;
   document.querySelector(".visao-geral").hidden = current !== "inicio";
   for (const section of document.querySelectorAll("[data-tela]")) section.hidden = section.dataset.tela !== current;
+  if (current === "configuracoes" && previous !== "configuracoes") loadRetroSettings();
   for (const link of document.querySelectorAll("[data-pagina]")) {
     if (link.dataset.pagina === current) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -922,16 +937,19 @@ async function refresh() {
 
 async function refreshQueue() {
   const list = $("elegiveis");
+  const empty = $("elegiveis-vazio");
+  empty.hidden = true;
   list.replaceChildren(el("li", { className: "vazio", text: "Consultando…" }));
   try {
     const cards = await getQueue();
     list.replaceChildren(
-      ...(cards.length === 0
-        ? [el("li", { className: "vazio", text: "Nenhum card elegível." })]
-        : cards.map((c) => el("li", {}, el("strong", { text: c.key }), ` ${c.title} (${c.status}, ${c.project})`))),
+      ...cards.map((c) => el("li", {}, el("strong", { text: c.key }), ` ${c.title} (${c.status}, ${c.project})`)),
     );
+    // Sem cards, o estado vazio explica o que fazer em vez de deixar a área em branco.
+    empty.hidden = cards.length > 0;
   } catch (err) {
     list.replaceChildren();
+    empty.hidden = false;
     showError(err);
   }
 }
@@ -958,27 +976,24 @@ function connect() {
   });
 }
 
-async function openRetroSettings() {
-  const dialog = $("configuracao-retros");
+/** Carrega o repositório atual no formulário inline de Configurações, ao abrir a página. */
+async function loadRetroSettings() {
+  const input = $("repositorio-retros");
   const status = $("retros-config-status");
   const save = $("salvar-retros");
   status.textContent = "Carregando configuração…";
   save.disabled = true;
-  $("repositorio-retros").disabled = true;
-  dialog.showModal();
+  input.disabled = true;
   try {
     const settings = await getRetroSettings();
-    $("repositorio-retros").value = settings.repo ?? "";
-    $("repositorio-retros").disabled = !settings.available;
+    input.value = settings.repo ?? "";
+    input.disabled = !settings.available;
     status.textContent = settings.available ? "" : "Adaptador de publicação indisponível neste daemon.";
     save.disabled = !settings.available;
-    $("repositorio-retros").focus();
   } catch (err) {
     status.textContent = err instanceof Error ? err.message : String(err);
   }
 }
-$("configurar-retros").addEventListener("click", openRetroSettings);
-$("fechar-configuracao-retros").addEventListener("click", () => $("configuracao-retros").close());
 $("form-retros").addEventListener("submit", async (event) => {
   event.preventDefault();
   const save = $("salvar-retros");
@@ -987,7 +1002,7 @@ $("form-retros").addEventListener("submit", async (event) => {
     const settings = await saveRetroSettings($("repositorio-retros").value.trim());
     $("repositorio-retros").value = settings.repo;
     $("retros-config-status").textContent =
-      "Configuração salva e aplicada. Feche esta janela e revise novamente a publicação. Nenhuma issue foi publicada.";
+      "Configuração salva e aplicada. Nenhuma issue foi publicada: revise cada proposta antes de aprovar.";
   } catch (err) {
     $("retros-config-status").textContent = err instanceof Error ? err.message : String(err);
   } finally {

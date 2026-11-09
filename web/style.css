@@ -1356,52 +1356,9 @@ summary:focus-visible {
   overflow: visible;
 }
 
-.lista-tarefas {
-  gap: var(--sp-2);
-}
-
-.lista-tarefas .cartao {
-  grid-template-columns: 8.5rem minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-2) var(--sp-4);
-  box-shadow: none;
-  padding: var(--sp-3) var(--sp-4);
-}
-
-.lista-tarefas .cabeca {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.35rem;
-}
-
-.lista-tarefas .dica {
-  grid-column: 2;
-  grid-row: 2;
-}
-
-.lista-tarefas .meta {
-  grid-column: 3;
-  grid-row: 1 / span 2;
-  justify-content: flex-end;
-  max-width: 250px;
-}
-
 @media (max-width: 1200px) {
   .resumo {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .lista-tarefas .cartao {
-    grid-template-columns: 1fr;
-  }
-  .lista-tarefas .cabeca {
-    flex-direction: row;
-    align-items: center;
-  }
-  .lista-tarefas .meta,
-  .lista-tarefas .dica {
-    grid-column: auto;
-    grid-row: auto;
-    max-width: none;
   }
 }
 
@@ -2324,85 +2281,6 @@ body {
   padding: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
-.triagem-linha {
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-.triagem-linha:hover,
-.triagem-linha:focus-within {
-  background: #18181b;
-}
-.triagem-link {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  align-items: center;
-  gap: 12px;
-  padding: 8px;
-  color: #f4f4f5;
-  text-decoration: none;
-  font-size: 13px;
-}
-.triagem-dot {
-  flex: 0 0 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #71717a;
-}
-.triagem-dot.atencao {
-  background: #f59e0b;
-}
-.triagem-dot.bloqueada {
-  background: #ef4444;
-}
-.triagem-chave {
-  color: #a1a1aa;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.triagem-titulo {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-}
-.triagem-estado {
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #a1a1aa;
-  font-size: 12px;
-}
-.triagem-acoes {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-right: 8px;
-  opacity: 0;
-}
-.triagem-linha:hover .triagem-acoes,
-.triagem-linha:focus-within .triagem-acoes {
-  opacity: 1;
-}
-.triagem-acoes a,
-.triagem-acoes button {
-  min-height: 28px;
-  padding: 4px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  background: #121215;
-  color: #e4e4e7;
-  text-decoration: none;
-  font-size: 12px;
-}
-@media (hover: none) {
-  .triagem-acoes {
-    opacity: 1;
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .controles #conexao.ok::before,
   .controles #daemon.ok::before {
@@ -2429,9 +2307,6 @@ body {
   .quadro-area {
     padding: 24px 16px;
   }
-  .triagem-estado {
-    display: none;
-  }
 }
 
 .controles > button:not(#buscar) {
@@ -2454,4 +2329,395 @@ summary.disclosure .chevron {
 .navegacao-principal .icone-nav svg,
 summary.disclosure .chevron svg {
   display: block;
+}
+
+/* ===== Passada 2 · shell fixo, linha única de tarefa, kanban e configurações inline ===== */
+
+/* Shell: a sidebar ocupa a altura da janela; só a área de conteúdo rola. O rodapé do daemon fica sempre visível. */
+.layout {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.navegacao-principal {
+  flex: 0 0 240px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.quadro-area {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px 40px;
+}
+
+/* Status do daemon: um único ponto pulsante; o "ao vivo" do stream vira texto de apoio. */
+.controles #conexao.ok::before {
+  content: "· ";
+  display: inline;
+  width: auto;
+  height: auto;
+  margin: 0;
+  border-radius: 0;
+  background: none;
+  animation: none;
+  color: #71717a;
+}
+
+/* Kanban: as quatro colunas cabem na largura comum; a coluna que não couber rola na horizontal. */
+.quadro:not(.modo-lista) {
+  flex: none;
+  min-height: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 1fr);
+  grid-auto-rows: auto;
+  align-items: start;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.quadro:not(.modo-lista) .coluna {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.quadro:not(.modo-lista) .coluna .cartoes {
+  flex: none;
+  max-height: calc(100dvh - 260px);
+  overflow-y: auto;
+}
+
+.quadro:not(.modo-lista) .cartao .titulo {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+/* Lista de tarefas e triagem: uma linha por tarefa, 44px, divisórias de 1px. */
+.linha-lista,
+.triagem-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.linha-tarefa {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.linha-tarefa:hover,
+.linha-tarefa:focus-within {
+  background: #141417;
+}
+
+.linha-tarefa.selecionada {
+  background: #18181b;
+}
+
+.linha-link {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  color: #f4f4f5;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.linha-ponto {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #71717a;
+}
+
+.linha-ponto.atencao {
+  background: #f59e0b;
+}
+
+.linha-ponto.bloqueada {
+  background: #ef4444;
+}
+
+.linha-chave {
+  flex: 0 0 auto;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 12px;
+  color: #a1a1aa;
+  white-space: nowrap;
+}
+
+.linha-projeto {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: #a1a1aa;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.linha-titulo {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.linha-subtitulo {
+  flex: 0 1 240px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #71717a;
+  font-size: 12px;
+}
+
+.linha-link .selo {
+  flex: 0 0 auto;
+}
+
+.linha-contador {
+  flex: 0 0 auto;
+  min-width: 28px;
+  text-align: right;
+  color: #71717a;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.linha-acoes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+
+.linha-tarefa:hover .linha-acoes,
+.linha-tarefa:focus-within .linha-acoes {
+  opacity: 1;
+}
+
+.linha-acoes button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #121215;
+  color: #e4e4e7;
+  font-size: 12px;
+}
+
+@media (hover: none) {
+  .linha-acoes {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1100px) {
+  .linha-projeto,
+  .linha-subtitulo {
+    display: none;
+  }
+}
+
+/* Fonte e Configurações: cartão com cabeçalho (texto à esquerda, ações à direita) e rodapé de ação. */
+.cartao-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: #0e0e11;
+}
+
+.cartao-cabeca {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.cartao-cabeca h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cartao-cabeca p {
+  max-width: 62ch;
+  margin: 4px 0 0;
+  color: #71717a;
+  font-size: 12px;
+}
+
+.cartao-cabeca .acoes {
+  display: flex;
+  gap: 8px;
+}
+
+.cartao-area button {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #121215;
+  color: #e4e4e7;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cartao-area button.primario {
+  border-color: #f4f4f5;
+  background: #f4f4f5;
+  color: #09090b;
+  font-weight: 600;
+}
+
+.cartao-area button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cartao-rodape {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cartao-rodape p {
+  margin: 0;
+  color: #71717a;
+  font-size: 12px;
+}
+
+.campo {
+  display: grid;
+  gap: 6px;
+}
+
+.campo label {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+#repositorio-retros {
+  width: 100%;
+  max-width: 420px;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #09090b;
+  color: #f4f4f5;
+  font: inherit;
+  font-size: 13px;
+}
+
+.ajuda {
+  margin: 0;
+  color: #71717a;
+  font-size: 12px;
+}
+
+.lista-demandas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.lista-demandas:empty {
+  display: none;
+}
+
+.lista-demandas li {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.estado-vazio {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 40px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #a1a1aa;
+  font-size: 13px;
+  text-align: center;
+}
+
+.estado-vazio p {
+  margin: 0;
+}
+
+.estado-vazio strong {
+  color: #f4f4f5;
+  font-weight: 600;
+}
+
+.estado-vazio .icone-vazio {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 4px;
+  color: #52525b;
+}
+
+.estado-vazio .icone-vazio svg {
+  display: block;
+}
+
+@media (max-width: 760px) {
+  .layout {
+    height: auto;
+    overflow: visible;
+  }
+  .navegacao-principal {
+    height: auto;
+    overflow-y: visible;
+  }
+  .quadro-area {
+    height: auto;
+    overflow: visible;
+    padding: 24px 16px;
+  }
+  .linha-tarefa {
+    flex-wrap: wrap;
+  }
+}
+
+/* Mesma especificidade da regra de quadro acima: a área de conteúdo continua sendo quem rola. */
+.quadro-area:has(#quadro:not(.modo-lista)) {
+  display: block;
+  height: 100%;
+  overflow-y: auto;
 }
