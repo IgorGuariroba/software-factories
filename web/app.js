@@ -103,36 +103,41 @@ async function run(command) {
   await refresh();
 }
 
-/** Rascunhos das respostas: sobrevivem ao redesenho ao vivo do detalhe enquanto você digita. */
+/** Rascunhos das respostas persistem no redesenho; servidor classifica a resposta. */
 const answerDrafts = new Map();
 
-function answerForm(task, question) {
+function answerQuestionControls(task, question) {
   const id = `${task.id}#${question.n}`;
   const field = el("textarea", {
-    attrs: { rows: "3", "aria-label": `Resposta à pergunta ${question.n}`, placeholder: "Sua resposta" },
+    attrs: {
+      rows: "3",
+      maxlength: "20000",
+      "aria-label": `Resposta à pergunta ${question.n}`,
+      placeholder: "Sua resposta",
+    },
   });
   field.value = answerDrafts.get(id) ?? "";
   field.addEventListener("input", () => answerDrafts.set(id, field.value));
-  const send = el("button", {
-    text: "Responder",
-    attrs: { type: "submit" },
-  });
-  const form = el("form", { className: "resposta" }, field, send);
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
+  const button = el("button", { text: "Responder", attrs: { type: "button" } });
+  button.addEventListener("click", async () => {
     const answer = field.value.trim();
-    if (!answer) return;
-    send.disabled = true;
-    run(async () => {
-      try {
-        await answerQuestion(task.project, task.key, question.n, answer);
-        answerDrafts.delete(id);
-      } finally {
-        send.disabled = false;
-      }
-    });
+    if (!answer || answer.length > 20000)
+      return showError(new Error("A resposta deve ter entre 1 e 20000 caracteres."));
+    button.disabled = true;
+    field.disabled = true;
+    try {
+      await answerQuestion(task.project, task.key, question.n, answer);
+      answerDrafts.delete(id);
+      clearError();
+      await refresh();
+    } catch (err) {
+      showError(err);
+    } finally {
+      button.disabled = false;
+      field.disabled = false;
+    }
   });
-  return form;
+  return el("div", {}, el("label", { text: "Sua resposta" }), field, button);
 }
 
 function reviewReminderButton(task, question) {
@@ -610,7 +615,7 @@ function renderDetail(task) {
                     className: "vazio",
                     text: "Responda por aqui para continuar. A resposta fica na fábrica, sem enviar mensagem aos canais externos.",
                   }),
-                  answerForm(task, q),
+                  answerQuestionControls(task, q),
                 ]
               : []),
             ...(q.reminder === "draft" && q.answer === null ? [reviewReminderButton(task, q)] : []),

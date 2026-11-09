@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { QuestionRef } from "./channel.js";
 import type { CardState, FormatCommand, TestCommand } from "./config.js";
+import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { FactoryEvent } from "./events.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TriageResult } from "./triage.js";
@@ -42,7 +43,9 @@ export type Question = {
   /** Número da pergunta na Tarefa (1, 2, …). */
   n: number;
   /** Quem levantou a pergunta: o grill ou a própria fábrica, diante de um card vazio ou raso. */
-  origin: "grill" | "card-raso";
+  origin: "grill" | "card-raso" | "tecnica";
+  /** Decisão estruturada que esta pergunta técnica aguarda. */
+  purpose?: "repositorio";
   /** Pessoa do projeto a quem foi feita. */
   to: string;
   text: string;
@@ -56,6 +59,11 @@ export type Question = {
   reminded: boolean;
   notified: boolean;
   answer: string | null;
+  /** Resposta não resolutiva do usuário, preservada para encaminhar ao tech lead. */
+  userResponse?: string;
+  needsForwarding?: boolean;
+  /** Reserva e resultado do envio ao tech lead, compartilhados pelos dois gatilhos. */
+  forwarding?: EncaminhamentoTecnico;
   /** Rascunho de ensaio; `sending` indica resultado potencialmente incerto após uma interrupção. */
   publication?: "draft" | "sending" | "sent";
   /** Lembrete em revisão: rascunho aguardando aprovação, em envio (incerto se interrompido) ou enviado. */
@@ -188,6 +196,8 @@ export type QueuedTask = {
   retroHeld?: RetroStage[];
   /** Progresso da etapa de implementação, gravado a cada passo para a retomada não refazer nem duplicar nada. */
   implementation?: ImplementationProgress | null;
+  /** Repositório escolhido explicitamente para esta Tarefa, ainda sujeito à configuração atual. */
+  repositoryPath?: string;
   /**
    * Identificador opaco e estável da Tarefa, sem relação com o projeto nem com o card: é a única referência a ela que
    * sai para o repositório público da fábrica.
@@ -657,7 +667,12 @@ export function createTarefaTask(steps: TarefaSteps) {
       const queued = findTask(await tx.doc(StateDoc), task.input.id);
       // A resposta chegou e é a vez desta Tarefa: volta à etapa que esperava (triagem ou SPEC).
       if (queued.status === "ativa" && !awaitsHuman(queued))
-        return { status: "running", checkpoint: { phase: queued.stage === "triagem" ? "triar" : "spec" } };
+        return {
+          status: "running",
+          checkpoint: {
+            phase: queued.stage === "triagem" ? "triar" : queued.stage === "implementacao" ? "implementar" : "spec",
+          },
+        };
       if (queued.status === "ativa") queued.status = "aguardando-humano";
       const until = pendingQuestion(queued) && wakeAt !== null ? wakeAt : runtime.now() + TEN_YEARS_MS;
       const gate = await tx.createTask(DeadlineGateTask, { until }, { ownership: { kind: "task", taskId: task.id } });

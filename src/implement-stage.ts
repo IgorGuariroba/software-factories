@@ -209,6 +209,8 @@ export async function runImplementation(opts: {
   /** Id da Tarefa na fila (`<projeto>/<card>`). */
   taskId: string;
   config: ProjectConfig;
+  /** Escolha humana por Tarefa. O caminho precisa continuar na allowlist do projeto. */
+  repositoryPath?: string;
   codeHost: CodeHost;
   writer: EffectWriter;
   card: Card;
@@ -336,7 +338,10 @@ export async function runImplementation(opts: {
 
   /** Primeira vez: resolve o repositório, clona, cria a branch e a conversa, e registra tudo num commit só. */
   async function start(): Promise<ImplementationProgress> {
-    const mapping = resolveRepository(config.repositories, card);
+    const mapping =
+      opts.repositoryPath !== undefined
+        ? config.repositories?.find((candidate) => candidate.path === opts.repositoryPath)
+        : resolveRepository(config.repositories, card);
     if (!mapping) {
       const reason = `nenhum repositório mapeado para o card ${card.key} ("${card.title}")`;
       await deps.events.append({

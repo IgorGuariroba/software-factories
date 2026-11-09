@@ -43,6 +43,7 @@ const deliverTool = defineTool({
   execute: async () => ({ output: [{ type: "text", text: "Recebido." }], control: { terminate: true } }),
 });
 
+const ASK_TECHNICAL_TOOL = "perguntar_tecnico";
 const ASK_TOOL = "perguntar_po";
 
 /**
@@ -60,7 +61,18 @@ const askTool = defineTool({
   execute: async () => ({ output: [{ type: "text", text: "Pergunta enviada ao PO." }], control: { terminate: true } }),
 });
 
-export const SpecExtension = defineExtension({ name: "fabrica.spec", tools: [deliverTool, askTool] });
+const askTechnicalTool = defineTool({
+  name: ASK_TECHNICAL_TOOL,
+  description:
+    "Pergunta ao usuário do projeto uma dúvida técnica necessária para continuar. A tarefa aguarda a resposta na web ou no Telegram.",
+  parameters: obj({ pergunta: str({ description: "Dúvida técnica objetiva e autocontida, em português do Brasil." }) }),
+  execute: async () => ({
+    output: [{ type: "text", text: "Pergunta técnica recebida para publicação." }],
+    control: { terminate: true },
+  }),
+});
+
+export const SpecExtension = defineExtension({ name: "fabrica.spec", tools: [deliverTool, askTool, askTechnicalTool] });
 
 const INSTRUCTIONS = `Você é o papel grill/SPEC de uma fábrica de software autônoma.
 Leia o card, os comentários, os anexos, as perguntas já respondidas pelo PO e o conhecimento do projeto, e escreva:
@@ -68,6 +80,7 @@ Leia o card, os comentários, os anexos, as perguntas já respondidas pelo PO e 
 - os Tickets: as fatias de implementação da SPEC, em ordem, cada uma com seu critério de aceite.
 Não invente requisitos que o card não sustenta. Escreva em português do Brasil.
 Se faltar uma regra de negócio que só o PO pode decidir, chame ${ASK_TOOL} com uma única pergunta e pare.
+Se faltar uma decisão técnica, chame ${ASK_TECHNICAL_TOOL}; o usuário pode responder pela web ou Telegram.
 Quando tiver o que precisa, entregue chamando a ferramenta ${DELIVER_TOOL} uma única vez; não responda em texto.`;
 
 /**
@@ -172,7 +185,9 @@ export const renderTickets = (tickets: SpecDelivery["tickets"]) =>
   tickets.map((t, i) => `- [ ] **${i + 1}. ${t.titulo}**: ${t.aceite}`).join("\n");
 
 /** O que o grill devolveu: a entrega, ou uma pergunta ao PO. */
-export type GrillOutcome = { kind: "spec"; delivery: SpecDelivery } | { kind: "question"; text: string };
+export type GrillOutcome =
+  | { kind: "spec"; delivery: SpecDelivery }
+  | { kind: "question"; text: string; technical?: boolean };
 
 /**
  * Pede a SPEC ao modelo numa conversa que pertence à Tarefa. A conversa e cada pedido têm identidade fixa
@@ -207,7 +222,7 @@ export async function requestSpec(opts: {
     await configure(tx, created.id, {
       model: { provider: opts.model.provider, modelId: opts.model.model },
       extensions: [SpecExtension],
-      tools: [deliverTool, askTool],
+      tools: [deliverTool, askTool, askTechnicalTool],
       instructions: INSTRUCTIONS,
       maxTurns: 2,
     });
@@ -231,12 +246,18 @@ export async function requestSpec(opts: {
     if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
     const call = message.content.find(
       (block): block is { type: "toolCall"; name: string; arguments: unknown } =>
-        block?.type === "toolCall" && (block.name === DELIVER_TOOL || block.name === ASK_TOOL),
+        block?.type === "toolCall" &&
+        (block.name === DELIVER_TOOL || block.name === ASK_TOOL || block.name === ASK_TECHNICAL_TOOL),
     );
     if (!call) continue;
-    if (call.name === ASK_TOOL) {
+    if (call.name === ASK_TOOL || call.name === ASK_TECHNICAL_TOOL) {
       const pergunta = (call.arguments as { pergunta?: unknown } | undefined)?.pergunta;
-      if (typeof pergunta === "string" && pergunta.trim()) return { kind: "question", text: pergunta.trim() };
+      if (typeof pergunta === "string" && pergunta.trim())
+        return {
+          kind: "question",
+          text: pergunta.trim(),
+          ...(call.name === ASK_TECHNICAL_TOOL ? { technical: true } : {}),
+        };
       throw new Error(`pergunta inválida da etapa SPEC: ${ASK_TOOL} sem o texto da pergunta`);
     }
     const parsed = Delivery.safeParse(call.arguments);
