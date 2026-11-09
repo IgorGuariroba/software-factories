@@ -22,8 +22,16 @@ echo "PR #$PR ($STATE): $URL"
 
 # 1) Espera todos os checks. `gh pr checks --watch` sai com erro se algum check falhar.
 echo "Aguardando checks do CI…"
+# Logo após abrir o PR, o GitHub ainda não registrou os checks; espera aparecerem (até ~5 min).
+for _ in $(seq 1 30); do
+  COUNT="$(gh pr view "$PR" --json statusCheckRollup --jq '.statusCheckRollup | length')"
+  [ "$COUNT" -gt 0 ] && break
+  sleep 10
+done
+[ "$COUNT" -gt 0 ] || die "nenhum check apareceu no PR #$PR"
+# `gh pr checks --watch` sai com erro se algum check falhar.
 if ! gh pr checks "$PR" --watch --interval 15; then
-  die "há check reprovado no PR #$PR; veja: gh pr checks $PR"
+  die "há check reprovado ou cancelado no PR #$PR; veja: gh pr checks $PR"
 fi
 echo "Todos os checks estão verdes."
 
