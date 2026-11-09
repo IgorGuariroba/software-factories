@@ -226,3 +226,7 @@ Para testar a fábrica lendo a fila e cards do Jira de verdade sem aplicar nenhu
 Cada achado do PR-Agent traz severidade (Critical, Major, Minor ou Trivial) e categoria. O check `review-gate` falha
 enquanto houver achado **Critical** ou **Major** em thread não resolvida; Minor e Trivial não bloqueiam. Depois de
 tratar e resolver as threads, rode o job `review-gate` de novo (Re-run) para liberar o merge.
+
+## Fechar um PR
+
+Depois de abrir o PR, `npm run pr:finish -- <número>` (sem número, usa o PR da branch atual) espera todos os checks do CI. Se algum falhar, para e mostra como ver o check. Depois do merge, volta para a `main`, atualiza com `git pull --ff-only` e apaga a branch local do PR. Não faz merge e não apaga a branch remota. Exige árvore de trabalho limpa.
