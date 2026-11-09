@@ -15,8 +15,8 @@
         <span id="conexao" class="selo" role="status">conectando…</span>
         <span id="daemon" class="selo">daemon: …</span>
         <button type="button" id="alternar-daemon" disabled>Pausar daemon</button>
-        <button type="button" id="buscar">Buscar na Fonte</button>
-        <details class="menu-config"><summary class="disclosure">Configurações<svg class="chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg></summary><div class="menu-conteudo"><button type="button" id="configurar-retros">Configurar publicações</button></div></details>
+
+        
       </div>
     </header>
 
@@ -37,6 +37,14 @@
     <p id="aviso" class="aviso" role="alert" hidden></p>
 
     <div class="layout">
+      <nav class="navegacao-principal" aria-label="Navegação principal">
+        <span class="nav-legenda">ESPAÇO DE TRABALHO</span>
+        <a href="#/inicio" data-pagina="inicio">Visão geral</a>
+        <a href="#/tarefas" data-pagina="tarefas">Tarefas</a>
+        <a href="#/fonte" data-pagina="fonte">Fonte de demandas</a>
+        <span class="nav-legenda">ADMINISTRAÇÃO</span>
+        <a href="#/configuracoes" data-pagina="configuracoes">Configurações</a>
+      </nav>
       <main class="quadro-area" aria-label="Quadro de tarefas">
         <section class="visao-geral" aria-labelledby="titulo-visao">
           <h2 id="titulo-visao">Central de trabalho</h2>
@@ -48,13 +56,19 @@
             <button type="button" class="metrica" data-filtro="bloqueadas" aria-pressed="false"><span>Bloqueadas</span><strong id="total-bloqueadas">0</strong><small>Exigem ação</small></button>
           </div>
         </section>
+        <section class="atalhos-inicio" data-tela="inicio" aria-labelledby="proximos-passos">
+          <h2 id="proximos-passos">Seu espaço de trabalho</h2>
+          <p>Escolha uma área para acompanhar a operação da fábrica.</p>
+          <div class="atalhos-grade">
+            <a href="#/tarefas"><strong>Acompanhar tarefas <span aria-hidden="true">→</span></strong><small>Consulte o andamento, revise pendências e acesse o histórico.</small></a>
+            <a href="#/fonte"><strong>Consultar a fonte <span aria-hidden="true">→</span></strong><small>Veja os cards elegíveis e busque novas demandas.</small></a>
+            <a href="#/configuracoes"><strong>Configurar publicações <span aria-hidden="true">→</span></strong><small>Gerencie o destino das sugestões de retrô.</small></a>
+          </div>
+        </section>
+        <section data-tela="tarefas" hidden aria-labelledby="titulo-fila">
         <div class="barra">
           <h2 id="titulo-fila">Tarefas <span id="fila-contagem" class="contagem"></span></h2>
-          <details class="elegiveis">
-            <summary class="disclosure">Cards elegíveis na Fonte<svg class="chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg></summary>
-            <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
-            <ul id="elegiveis" class="lista"></ul>
-          </details>
+
         </div>
         <div class="ferramentas">
           <label class="busca" for="busca-tarefas"><span class="sr-only">Buscar tarefas</span><input id="busca-tarefas" type="search" placeholder="Buscar por título, chave ou projeto" autocomplete="off" /></label>
@@ -63,6 +77,20 @@
         </div>
         <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa encontrada. Experimente outro filtro ou busca.</p>
         <div id="quadro" class="quadro"></div>
+        </section>
+        <section class="pagina-simples" data-tela="fonte" hidden aria-labelledby="titulo-fonte">
+          <h2 id="titulo-fonte">Fonte de demandas</h2>
+          <p>Consulte os cards elegíveis ou solicite uma busca por novas demandas.</p>
+          <div class="painel-area"><h3>Cards elegíveis</h3><p>A consulta mostra os cards disponíveis na fonte, sem iniciar o processamento.</p>
+            <div class="acoes"><button type="button" id="atualizar-elegiveis">Consultar a Fonte</button><button type="button" id="buscar">Buscar na Fonte</button></div>
+            <ul id="elegiveis" class="lista"></ul>
+          </div>
+        </section>
+        <section class="pagina-simples" data-tela="configuracoes" hidden aria-labelledby="titulo-configuracoes">
+          <h2 id="titulo-configuracoes">Configurações</h2>
+          <p>Gerencie as configurações compartilhadas pela fábrica.</p>
+          <div class="painel-area"><h3>Publicações de retrô</h3><p>Escolha o repositório de destino das sugestões aprovadas.</p><button type="button" id="configurar-retros">Configurar publicações</button></div>
+        </section>
       </main>
 
       <dialog class="gaveta" id="gaveta" aria-label="Detalhe da tarefa">
