@@ -20,7 +20,7 @@
         <a href="#/fonte" data-pagina="fonte"><span class="icone-nav" data-icone="inbox" aria-hidden="true"></span>Fonte de demandas</a>
         <span class="nav-legenda">ADMINISTRAÇÃO</span>
         <a href="#/configuracoes" data-pagina="configuracoes"><span class="icone-nav" data-icone="settings" aria-hidden="true"></span>Configurações</a>
-        <div class="controles"><span id="conexao" class="selo" role="status">conectando…</span><span id="daemon" class="selo">daemon: …</span><button type="button" id="alternar-daemon" disabled>Pausar daemon</button></div>
+        <div class="controles"><span id="daemon" class="selo">daemon: …</span><span id="conexao" class="selo" role="status">conectando…</span><button type="button" id="alternar-daemon" disabled>Pausar daemon</button></div>
       </nav>
       <main class="quadro-area" aria-label="Quadro de tarefas">
         <section class="visao-geral" aria-labelledby="titulo-visao">
@@ -67,6 +67,10 @@
             </div>
             <ul id="elegiveis" class="lista-demandas" aria-label="Demandas elegíveis"></ul>
             <div id="elegiveis-vazio" class="estado-vazio">
+              <div id="elegiveis-carregando" class="estado-carregando" role="status" hidden>
+                <span class="girador" aria-hidden="true"></span>
+                <p>Consultando demandas na fonte...</p>
+              </div>
               <span class="icone-vazio" data-icone="inbox" aria-hidden="true"></span>
               <p><strong>Nenhuma demanda carregada no momento</strong></p>
               <p>Use “Pré-visualizar elegíveis” para listar os cards disponíveis na fonte.</p>
@@ -87,9 +91,11 @@
               <label for="repositorio-retros">Repositório público (dono/nome)</label>
               <input id="repositorio-retros" name="repo" required maxlength="200" placeholder="usuario/software-factories" aria-describedby="retros-impacto" />
             </div>
-            <p id="retros-impacto" class="ajuda">Vale sem reinício e substitui o valor inicial de <code>FACTORY_RETRO_REPO</code>.</p>
             <div class="cartao-rodape">
-              <p id="retros-config-status" role="status"></p>
+              <div>
+                <p id="retros-impacto" class="ajuda">Vale sem reinício e substitui o valor inicial de <code>FACTORY_RETRO_REPO</code>.</p>
+                <p id="retros-config-status" role="status"></p>
+              </div>
               <button type="submit" id="salvar-retros" class="primario">Salvar</button>
             </div>
           </form>
