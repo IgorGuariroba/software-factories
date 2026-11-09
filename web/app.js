@@ -800,11 +800,23 @@ document.querySelector(".abas").addEventListener("keydown", (event) => {
 });
 showTab(currentTab);
 
+function showPage(page) {
+  const current = ["inicio", "tarefas", "fonte", "configuracoes"].includes(page) ? page : "inicio";
+  document.querySelector(".visao-geral").hidden = current !== "inicio";
+  for (const section of document.querySelectorAll("[data-tela]")) section.hidden = section.dataset.tela !== current;
+  for (const link of document.querySelectorAll("[data-pagina]")) {
+    if (link.dataset.pagina === current) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+}
+
 function readSelection() {
   const retro = location.hash.match(/^#\/retro\/([0-9a-f]+)$/);
   pendingRef = retro ? retro[1] : null;
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
+  const page = location.hash.match(/^#\/(inicio|tarefas|fonte|configuracoes)$/)?.[1];
+  showPage(selected || pendingRef ? "tarefas" : page);
   syncSheet();
 }
 
@@ -826,7 +838,7 @@ function syncSheet() {
   }
 }
 $("gaveta").addEventListener("close", () => {
-  if (selected) location.hash = "";
+  if (selected) location.hash = "#/tarefas";
   sheetOrigin?.focus?.({ preventScroll: true });
   sheetOrigin = null;
 });
@@ -947,6 +959,7 @@ $("busca-tarefas").addEventListener("input", renderTasks);
 for (const button of document.querySelectorAll("[data-filtro]"))
   button.addEventListener("click", () => {
     taskFilter = button.dataset.filtro;
+    location.hash = "#/tarefas";
     renderTasks();
   });
 for (const button of document.querySelectorAll("[data-modo]"))
@@ -959,7 +972,7 @@ $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDa
 $("buscar").addEventListener("click", () => run(pollSource));
 $("atualizar-elegiveis").addEventListener("click", refreshQueue);
 $("fechar-detalhe").addEventListener("click", () => {
-  location.hash = "";
+  location.hash = "#/tarefas";
 });
 window.addEventListener("hashchange", () => {
   readSelection();
