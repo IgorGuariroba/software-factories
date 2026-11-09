@@ -11,6 +11,7 @@ import {
   eventStream,
   getDaemon,
   getGithubApp,
+  getGithubRepos,
   getQuestionPreview,
   getQueue,
   getReminderPreview,
@@ -21,6 +22,7 @@ import {
   getTask,
   getTasks,
   getTriagePreview,
+  importarRepoGithub,
   pauseDaemon,
   pauseTask,
   plugRepo,
@@ -36,6 +38,14 @@ import { alertaGithubApp, etapasGithubApp, linhasGithubApp, progressoGithubApp }
 import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
 import { linhasRepositorios, mensagemTarefasAtivas } from "./repositorios.js";
+import {
+  estadoImportacao,
+  filtrarCatalogo,
+  mensagemCatalogo,
+  temImportacaoEmAndamento,
+  textoImportacao,
+  visibilidade,
+} from "./repositorios-github.js";
 import {
   actionsFor,
   actionTab,
@@ -864,7 +874,7 @@ document.querySelector(".abas").addEventListener("keydown", (event) => {
 showTab(currentTab);
 
 function showPage(page) {
-  const current = ["inicio", "tarefas", "fonte", "configuracoes"].includes(page) ? page : "inicio";
+  const current = ["inicio", "tarefas", "fonte", "repositorios", "configuracoes"].includes(page) ? page : "inicio";
   const previous = document.querySelector("[data-tela]:not([hidden])")?.dataset.tela;
   document.querySelector(".visao-geral").hidden = current !== "inicio";
   for (const section of document.querySelectorAll("[data-tela]")) section.hidden = section.dataset.tela !== current;
@@ -873,6 +883,8 @@ function showPage(page) {
     loadGithubApp();
     loadRepos();
   }
+  if (current === "repositorios" && previous !== "repositorios") loadCatalogoGithub();
+  if (current !== "repositorios") pararAtualizacaoCatalogo();
   for (const link of document.querySelectorAll("[data-pagina]")) {
     if (link.dataset.pagina === current) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -884,7 +896,7 @@ function readSelection() {
   pendingRef = retro ? retro[1] : null;
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
-  const page = location.hash.match(/^#\/(inicio|tarefas|fonte|configuracoes)$/)?.[1];
+  const page = location.hash.match(/^#\/(inicio|tarefas|fonte|repositorios|configuracoes)$/)?.[1];
   if (page) detailReturn = page === "inicio" ? "inicio" : "tarefas";
   showPage(selected ? detailReturn : pendingRef ? "tarefas" : page);
   syncSheet();
@@ -1055,6 +1067,92 @@ async function loadGithubApp() {
     $("github-app-alerta").textContent = alerta ?? "";
     $("github-app-alerta").hidden = alerta === undefined;
     status.textContent = "";
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Catálogo da página Repositórios: o último retorno da API, para a busca filtrar sem nova consulta. */
+let catalogoGithub = { configurado: true, repos: [] };
+let atualizacaoCatalogo = null;
+
+/** Consulta o catálogo do App e redesenha a lista. Enquanto houver importação, consulta de novo. */
+async function loadCatalogoGithub() {
+  const status = $("repos-gh-status");
+  try {
+    catalogoGithub = await getGithubRepos();
+    status.textContent = "";
+    $("repos-gh-consulta").textContent = catalogoGithub.consultadoEm
+      ? new Date(catalogoGithub.consultadoEm).toLocaleString("pt-BR")
+      : "—";
+    const mensagem = mensagemCatalogo(catalogoGithub);
+    $("repos-gh-mensagem").textContent = mensagem;
+    $("repos-gh-mensagem").hidden = mensagem === "";
+    renderCatalogoGithub();
+    if (temImportacaoEmAndamento(catalogoGithub.repos)) {
+      pararAtualizacaoCatalogo();
+      atualizacaoCatalogo = setTimeout(loadCatalogoGithub, 2000);
+    }
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+function pararAtualizacaoCatalogo() {
+  clearTimeout(atualizacaoCatalogo);
+  atualizacaoCatalogo = null;
+}
+
+function renderCatalogoGithub() {
+  const termo = $("repos-gh-busca").value;
+  const repos = filtrarCatalogo(catalogoGithub.repos, termo);
+  const lista = $("repos-gh-lista");
+  lista.replaceChildren(...repos.map((repo) => linhaCatalogoGithub(repo)));
+  $("repos-gh-vazio").hidden = repos.length > 0 || !catalogoGithub.configurado || catalogoGithub.erro !== undefined;
+}
+
+function linhaCatalogoGithub(repo) {
+  const estado = estadoImportacao(repo);
+  const botao = estado.rotuloBotao
+    ? el("button", {
+        type: "button",
+        className: "primario",
+        text: estado.rotuloBotao,
+        attrs: {
+          "aria-label": `${estado.rotuloBotao} de ${repo.nome}`,
+          ...(estado.podeImportar ? {} : { disabled: "" }),
+        },
+        onClick: () => importarGithub(repo),
+      })
+    : "";
+  return el(
+    "li",
+    { className: `repo-gh linha-${estado.tom}`, attrs: { "data-estado": estado.rotulo } },
+    el(
+      "div",
+      { className: "repo-gh-cabeca" },
+      el("strong", { text: repo.nome }),
+      el("span", { className: "selo", text: visibilidade(repo) }),
+      el("span", { className: "selo", text: estado.rotulo }),
+    ),
+    el("p", {
+      className: "ajuda",
+      text: `${repo.plugado ? `Projeto ${repo.plugado.projeto}` : "Nenhum projeto no YAML"} · ${textoImportacao(repo.importacao)}`,
+    }),
+    estado.ajuda ? el("p", { className: "ajuda", text: estado.ajuda }) : "",
+    botao,
+  );
+}
+
+$("repos-gh-busca").addEventListener("input", renderCatalogoGithub);
+
+/** Pede a importação; a fila roda em segundo plano, e o redesenho acompanha pelo polling. */
+async function importarGithub(repo) {
+  const status = $("repos-gh-status");
+  try {
+    await importarRepoGithub(repo.id);
+    status.textContent = `Importação de ${repo.nome} na fila.`;
+    await loadCatalogoGithub();
   } catch (err) {
     status.textContent = err instanceof Error ? err.message : String(err);
   }
