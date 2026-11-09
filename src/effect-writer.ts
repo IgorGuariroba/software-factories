@@ -136,6 +136,18 @@ export function createEffectWriter(opts: {
           e.content === w.content,
       );
 
+  /** Autoriza inclusive operações idempotentes antes de procurar uma escrita anterior. */
+  async function authorize(
+    w: { target: string; action: string; content: string },
+    check: () => Promise<string | undefined>,
+  ): Promise<void> {
+    const reason = await check();
+    if (reason) {
+      await events.append({ type: "blocked", project: config.name, ...w, reason });
+      throw new GuardrailViolation(`Guardrail: ${w.action} em ${w.target} bloqueado: ${reason}`);
+    }
+  }
+
   /**
    * Aplica os guardrails, registra e executa (ou só registra, no dry-run). Com `once` (escritas idempotentes: todas
    * menos `comment`), o dry-run não registra de novo uma escrita que já registrou.
@@ -147,11 +159,7 @@ export function createEffectWriter(opts: {
     dry: () => T,
     once = true,
   ): Promise<T> {
-    const reason = await check();
-    if (reason) {
-      await events.append({ type: "blocked", project: config.name, ...w, reason });
-      throw new GuardrailViolation(`Guardrail: ${w.action} em ${w.target} bloqueado: ${reason}`);
-    }
+    await authorize(w, check);
     if (config.dryRun && once && dryRunRegistered(w)) return dry();
     await events.append({ type: "write", project: config.name, ...w, dryRun: config.dryRun });
     return config.dryRun ? dry() : run();
@@ -234,22 +242,23 @@ export function createEffectWriter(opts: {
     async mention(cardKey, personId, body) {
       // Sem o token de menção: o acli grava texto puro e o Jira o mostraria literalmente. O aviso vai pelo Teams.
       const content = outgoing(body);
+      const effect = { target: cardKey, action: "mention", content };
+      const check = async () => {
+        if (!config.people.some((p) => p.id === personId))
+          return `${personId} não está entre as pessoas do projeto ${config.name}`;
+        return cardNotOwned(cardKey);
+      };
+      // Deduplicação não é autorização: uma pessoa pode ter sido revogada,
+      // ou o mesmo conteúdo pode agora ser dirigido a outra pessoa.
+      await authorize(effect, check);
       if (!config.dryRun) {
         const existing = (await source.listComments(cardKey)).find(
           (c) => c.author === user && withAutomationMark(stripAutomationMark(c.body)) === content,
         );
         if (existing) return { id: existing.id };
       }
-      return write(
-        { target: cardKey, action: "mention", content },
-        async () => {
-          if (!config.people.some((p) => p.id === personId))
-            return `${personId} não está entre as pessoas do projeto ${config.name}`;
-          return cardNotOwned(cardKey);
-        },
-        () => source.addComment(cardKey, content),
-        dryRunComment,
-      );
+      // Revalida também após a leitura assíncrona, antes do envio efetivo.
+      return write(effect, check, () => source.addComment(cardKey, content), dryRunComment);
     },
 
     async upsertComment(cardKey, title, body) {

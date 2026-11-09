@@ -4,9 +4,14 @@ import { baselineBlockedReason, baselineWorkspaceBlockedReason } from "./impleme
 /** A mesma elegibilidade serve ao comando e à interface; outros guardrails não são retomáveis. */
 export function blockedResumeKind(
   task: Pick<QueuedTask, "status" | "stage" | "implementation" | "reason">,
-): "baseline" | "tdd" | null {
+): "baseline" | "tdd" | "base-sync" | null {
   const progress = task.implementation;
   if (task.status !== "bloqueada" || !progress) return null;
+  if (
+    task.reason?.startsWith("Sincronização da base recusada:") ||
+    (task.stage === "entrega" && /^PR\/MR .* tem conflitos;/.test(task.reason ?? ""))
+  )
+    return "base-sync";
   if ((task.stage === "implementacao" || task.stage === "review") && task.reason?.startsWith("TDD recusado "))
     return "tdd";
   if (

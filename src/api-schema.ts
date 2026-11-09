@@ -236,6 +236,39 @@ export const API_SCHEMA = {
         },
       },
     },
+    "/tasks/{project}/{key}/questions/{n}/answer": {
+      post: {
+        summary:
+          "Registra resposta local: não sei sinaliza encaminhamento ao tech lead; " +
+          "resposta resolutiva acorda a Tarefa. Não publica a resposta na Fonte.",
+        parameters: [
+          { name: "project", in: "path", required: true, schema: { type: "string" } },
+          { name: "key", in: "path", required: true, schema: { type: "string" } },
+          { name: "n", in: "path", required: true, schema: { type: "integer", minimum: 1 } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["answer"],
+                properties: {
+                  answer: { type: "string", minLength: 1, maxLength: 20000 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Resposta registrada e classificada pela mesma operação usada pelo Telegram" },
+          "400": { description: "Resposta vazia, inválida ou acima de 20000 caracteres" },
+          "404": { description: "Pergunta inexistente" },
+          "409": { description: "Pergunta indisponível ou resposta não resolve a decisão de repositório" },
+          "415": { description: "Content-Type diferente de application/json" },
+        },
+      },
+    },
     "/tasks/{project}/{key}/questions/{n}": {
       get: {
         summary: "Prévia exata da pergunta e do aviso ao PO",
@@ -290,35 +323,6 @@ export const API_SCHEMA = {
           ...ok,
           "404": { description: "Pergunta inexistente" },
           "409": { description: "Prévia mudou, indisponível ou dry-run" },
-          "415": { description: "Content-Type inválido" },
-        },
-      },
-    },
-    "/tasks/{project}/{key}/questions/{n}/answer": {
-      post: {
-        summary: "Registra a sua resposta a uma pergunta pendente e retoma a Tarefa",
-        parameters: [
-          { name: "project", in: "path", required: true, schema: { type: "string" } },
-          { name: "key", in: "path", required: true, schema: { type: "string" } },
-          { name: "n", in: "path", required: true, schema: { type: "integer" } },
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                required: ["answer"],
-                properties: { answer: { type: "string", minLength: 1, maxLength: 20000 } },
-              },
-            },
-          },
-        },
-        responses: {
-          ...ok,
-          "400": { description: "Resposta vazia ou longa demais" },
-          "404": { description: "Pergunta inexistente" },
-          "409": { description: "Pergunta já respondida ou indisponível" },
           "415": { description: "Content-Type inválido" },
         },
       },
@@ -526,6 +530,10 @@ export const API_SCHEMA = {
             description: "Etapa atual (ou a última em que esteve); null se ainda não começou",
             enum: ["triagem", "assumir", "veto", "spec", "implementacao", "review", "entrega", null],
           },
+          resumeAllowed: {
+            type: "boolean",
+            description: "Retomada disponível conforme o mesmo guardrail do comando; herdado pelo detalhe",
+          },
           attempts: { type: "integer" },
           reason: { type: ["string", "null"] },
           specReview: { enum: ["draft", "approved", null], description: "Revisão da SPEC antes de publicar" },
@@ -598,6 +606,19 @@ export const API_SCHEMA = {
                     text: { type: "string" },
                     askedAt: { type: "string" },
                     answer: { type: ["string", "null"], description: "null enquanto pendente" },
+                    origin: {
+                      type: "string",
+                      enum: ["grill", "card-raso", "tecnica"],
+                      description: "Origem da pergunta: negócio, card raso ou dúvida técnica",
+                    },
+                    userResponse: {
+                      type: ["string", "null"],
+                      description: "Resposta não resolutiva preservada para encaminhamento, como não sei",
+                    },
+                    needsForwarding: {
+                      type: "boolean",
+                      description: "Indica que a pergunta ainda precisa ser encaminhada ao tech lead",
+                    },
                     reminder: {
                       enum: ["draft", "sending", "sent", null],
                       description: "Lembrete em revisão; sending indica resultado incerto",
@@ -626,6 +647,8 @@ export const API_SCHEMA = {
               },
               tickets: {
                 type: "array",
+                description:
+                  "Tickets originais aprovados, seguidos dos tickets de correção de review, na ordem durável",
                 items: { type: "object", properties: { titulo: { type: "string" }, aceite: { type: "string" } } },
               },
               implementation: {
@@ -638,6 +661,24 @@ export const API_SCHEMA = {
                     description: "criada pela fábrica (aceita force-push) ou adotada do remoto (só push normal)",
                   },
                   commits: { type: "array", items: { type: "object" } },
+                  synchronization: {
+                    type: ["object", "null"],
+                    description:
+                      "Integração da base na branch da fábrica, com recibo, HEAD e diagnóstico; exige novo review antes de publicar",
+                  },
+                  verifiedTickets: {
+                    type: "array",
+                    description:
+                      "Correções já atendidas, comprovadas por suíte GREEN no HEAD limpo e review independente; não são commits TDD",
+                    items: {
+                      type: "object",
+                      properties: {
+                        ticket: { type: "integer" },
+                        sha: { type: "string" },
+                        diagnostic: { type: "string" },
+                      },
+                    },
+                  },
                   pushed: { type: "boolean" },
                 },
               },

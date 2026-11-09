@@ -16,7 +16,7 @@
         <span id="daemon" class="selo">daemon: …</span>
         <button type="button" id="alternar-daemon" disabled>Pausar daemon</button>
         <button type="button" id="buscar">Buscar na Fonte</button>
-        <details class="menu-config"><summary>Configurações</summary><div class="menu-conteudo"><button type="button" id="configurar-retros">Configurar publicações</button></div></details>
+        <details class="menu-config"><summary class="disclosure">Configurações<svg class="chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg></summary><div class="menu-conteudo"><button type="button" id="configurar-retros">Configurar publicações</button></div></details>
       </div>
     </header>
 
@@ -39,40 +39,39 @@
     <div class="layout">
       <main class="quadro-area" aria-label="Quadro de tarefas">
         <section class="visao-geral" aria-labelledby="titulo-visao">
-          <p class="sobretitulo">CENTRAL DE TRABALHO</p>
-          <h2 id="titulo-visao">Tudo no seu ritmo.</h2>
-          <p class="introducao">Acompanhe o progresso. Decida onde sua atenção faz diferença.</p>
+          <h2 id="titulo-visao">Central de trabalho</h2>
+          <p class="introducao">Veja o que a fábrica está fazendo e o que precisa de você.</p>
           <div class="resumo" aria-label="Filtrar tarefas por situação">
-            <button type="button" class="metrica" data-filtro="todas" aria-pressed="true"><span>Todas as tarefas</span><strong id="total-todas">0</strong><small>Visão completa do trabalho</small></button>
-            <button type="button" class="metrica" data-filtro="atencao" aria-pressed="false"><span>Aguardando você</span><strong id="total-atencao">0</strong><small>Decisões e respostas pendentes</small></button>
-            <button type="button" class="metrica" data-filtro="execucao" aria-pressed="false"><span>Em execução</span><strong id="total-execucao">0</strong><small>A fábrica está trabalhando</small></button>
-            <button type="button" class="metrica" data-filtro="bloqueadas" aria-pressed="false"><span>Bloqueadas</span><strong id="total-bloqueadas">0</strong><small>Precisam de uma intervenção</small></button>
+            <button type="button" class="metrica" data-filtro="todas" aria-pressed="true"><span>Todas as tarefas</span><strong id="total-todas">0</strong><small>Todo o trabalho</small></button>
+            <button type="button" class="metrica" data-filtro="atencao" aria-pressed="false"><span>Aguardando você</span><strong id="total-atencao">0</strong><small>Decisões pendentes</small></button>
+            <button type="button" class="metrica" data-filtro="execucao" aria-pressed="false"><span>Em execução</span><strong id="total-execucao">0</strong><small>Em andamento</small></button>
+            <button type="button" class="metrica" data-filtro="bloqueadas" aria-pressed="false"><span>Bloqueadas</span><strong id="total-bloqueadas">0</strong><small>Exigem ação</small></button>
           </div>
         </section>
         <div class="barra">
           <h2 id="titulo-fila">Tarefas <span id="fila-contagem" class="contagem"></span></h2>
           <details class="elegiveis">
-            <summary>Cards elegíveis na Fonte</summary>
+            <summary class="disclosure">Cards elegíveis na Fonte<svg class="chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg></summary>
             <button type="button" id="atualizar-elegiveis">Consultar a Fonte</button>
             <ul id="elegiveis" class="lista"></ul>
           </details>
         </div>
         <div class="ferramentas">
-          <label class="busca" for="busca-tarefas"><span>Buscar tarefas</span><input id="busca-tarefas" type="search" placeholder="Título, chave ou projeto…" autocomplete="off" /></label>
+          <label class="busca" for="busca-tarefas"><span class="sr-only">Buscar tarefas</span><input id="busca-tarefas" type="search" placeholder="Buscar por título, chave ou projeto" autocomplete="off" /></label>
+          <p id="resultado-contagem" class="resultado" role="status"></p>
           <div class="modos" role="group" aria-label="Visualização das tarefas"><button type="button" data-modo="lista" aria-pressed="true">Lista</button><button type="button" data-modo="quadro" aria-pressed="false">Quadro</button></div>
         </div>
-        <p id="resultado-contagem" class="resultado" role="status"></p>
         <p id="fila-vazia" class="vazio" hidden>Nenhuma tarefa encontrada. Experimente outro filtro ou busca.</p>
         <div id="quadro" class="quadro"></div>
       </main>
 
-      <aside class="gaveta" aria-label="Detalhe da tarefa">
+      <dialog class="gaveta" id="gaveta" aria-label="Detalhe da tarefa">
         <p id="detalhe-vazio" hidden></p>
 
         <article id="detalhe" aria-labelledby="titulo-detalhe" hidden>
           <nav class="detalhe-navegacao" aria-label="Navegação da tarefa">
             <button type="button" id="fechar-detalhe" aria-label="Fechar detalhe">← Voltar às tarefas</button>
-            <details class="menu-config" id="menu-acoes-tarefa"><summary>Ações da tarefa</summary><div id="detalhe-acoes" class="menu-conteudo acoes"></div></details>
+            <details class="menu-config" id="menu-acoes-tarefa"><summary class="disclosure">Ações da tarefa<svg class="chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg></summary><div id="detalhe-acoes" class="menu-conteudo acoes"></div></details>
           </nav>
           <header class="cabecalho">
             <div>
@@ -84,10 +83,13 @@
 
           <p id="detalhe-proximo" class="proximo" role="status" hidden></p>
 
-          <details class="fluxo-compacto" id="fluxo-tarefa">
-            <summary><span><small>PROGRESSO DA TAREFA</small><strong id="etapa-atual">Carregando etapa…</strong></span><span class="fluxo-expandir">Ver etapas</span></summary>
+          <section class="fluxo" aria-labelledby="etapa-atual-titulo">
+            <div class="fluxo-cabeca">
+              <h3 id="etapa-atual-titulo">Fluxo da tarefa</h3>
+              <p id="etapa-atual" class="fluxo-atual">Carregando etapa…</p>
+            </div>
             <ol id="detalhe-pipeline" class="pipeline" aria-label="Etapas do fluxo"></ol>
-          </details>
+          </section>
 
           <div class="abas" role="tablist" aria-label="Seções da Tarefa">
             <button type="button" role="tab" data-aba="atividade">Atividade</button>
@@ -140,7 +142,7 @@
             </table>
           </section>
         </article>
-      </aside>
+      </dialog>
     </div>
   </body>
 </html>

@@ -40,7 +40,7 @@ export type FactoryEvent =
       /** Pessoa do projeto a quem a pergunta foi feita. */
       to: string;
       text: string;
-      status: "enviada" | "lembrete" | "respondida";
+      status: "enviada" | "lembrete" | "respondida" | "encaminhar";
     }
   | {
       /**
