@@ -77,6 +77,10 @@ export async function synchronizeBase(opts: {
       pending.previousHead !== progress.head ||
       (await git(cwd, ["log", "-1", "--format=%s"])).trim() !== message(pending.previousHead, pending.base) ||
       (await git(cwd, ["show", "-s", "--format=%P", "HEAD"])).trim() !== `${pending.previousHead} ${pending.base}` ||
+      (await git(cwd, ["diff", "--name-only", "-z", pending.previousHead, "HEAD"]))
+        .split("\0")
+        .filter(Boolean)
+        .some((path) => !pending.paths.includes(path)) ||
       (await changedPaths(cwd)).length
     )
       return refuse("HEAD divergiu; alterações humanas não são sobrescritas");

@@ -199,6 +199,7 @@ body {
 .gaveta {
   /* Folha modal: nasce do cartão clicado (--origem-x/y, definidos em app.js) e fecha mais rápido do que abre. */
   width: min(820px, calc(100vw - 48px));
+  max-width: min(820px, calc(100vw - 48px));
   max-height: calc(100dvh - 48px);
   margin: auto;
   padding: var(--sp-6);
@@ -288,11 +289,11 @@ body {
   transform: scale(0.99);
 }
 
-
-
 .cartao.selecionada {
   border-color: var(--texto);
-  box-shadow: var(--sombra), inset 2px 0 0 var(--texto);
+  box-shadow:
+    var(--sombra),
+    inset 2px 0 0 var(--texto);
 }
 
 .resposta {
@@ -372,8 +373,6 @@ body {
   font-size: 0.8125rem;
   color: var(--suave);
 }
-
-
 
 .cartao .tentativas {
   margin-left: auto;
@@ -882,6 +881,9 @@ summary:focus-visible {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     row-gap: var(--sp-4);
   }
+  .pipeline li::after {
+    display: none;
+  }
   .linha-do-tempo li {
     grid-template-columns: 1fr;
   }
@@ -1287,7 +1289,9 @@ summary:focus-visible {
 }
 
 .metrica[aria-pressed="true"] {
-  box-shadow: var(--sombra), inset 0 2px 0 var(--texto);
+  box-shadow:
+    var(--sombra),
+    inset 0 2px 0 var(--texto);
 }
 
 .metrica[data-filtro="atencao"] strong,
@@ -1381,7 +1385,6 @@ summary:focus-visible {
   justify-content: flex-end;
   max-width: 250px;
 }
-
 
 @media (max-width: 1200px) {
   .resumo {
@@ -1620,7 +1623,6 @@ button.perigo:hover:not(:disabled) {
   min-height: 0;
   height: 100%;
   padding: var(--sp-2) var(--sp-2) 0;
-  min-height: 0;
   overflow: hidden;
 }
 
@@ -1851,7 +1853,9 @@ summary.disclosure {
   color: var(--suave);
   font-size: 0.8125rem;
   cursor: pointer;
-  transition: color 0.15s ease-out, background-color 0.15s ease-out;
+  transition:
+    color 0.15s ease-out,
+    background-color 0.15s ease-out;
 }
 
 summary.disclosure::-webkit-details-marker {
