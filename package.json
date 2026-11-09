@@ -13,6 +13,7 @@
     "prepare": "git config core.hooksPath .githooks",
     "lint": "biome check .",
     "format": "biome check --write .",
+    "pr:finish": "bash scripts/pr-finish.sh",
     "test": "vitest run"
   },
   "dependencies": {
