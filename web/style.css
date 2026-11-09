@@ -2106,3 +2106,352 @@ details[open] > summary.disclosure .chevron {
     grid-template-columns: 1fr;
   }
 }
+
+/* Central operacional */
+:root {
+  --fundo: #09090b;
+  --superficie: #0e0e11;
+  --superficie-2: #121215;
+  --texto: #f4f4f5;
+  --suave: #a1a1aa;
+  --borda: rgba(255, 255, 255, 0.06);
+  --r-painel: 8px;
+  --r-controle: 4px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fundo: #09090b;
+    --superficie: #0e0e11;
+    --superficie-2: #121215;
+  }
+}
+body {
+  background: #09090b;
+  font-variant-numeric: tabular-nums;
+}
+.layout {
+  min-height: 100dvh;
+}
+.navegacao-principal {
+  flex: 0 0 220px;
+  padding: 16px 10px;
+  background: #0e0e11;
+  gap: 2px;
+}
+.marca {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px 18px;
+}
+.marca h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.marca-icone {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #27272a;
+  color: #fafafa;
+  font-size: 12px;
+}
+.nav-legenda {
+  margin: 15px 8px 6px;
+  color: #71717a;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+.navegacao-principal a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #a1a1aa;
+}
+.navegacao-principal a span {
+  width: 16px;
+  text-align: center;
+  font-size: 16px;
+}
+.navegacao-principal a:hover {
+  background: #18181b;
+  color: #f4f4f5;
+}
+.navegacao-principal a[aria-current="page"] {
+  background: #27272a;
+  color: #f4f4f5;
+}
+.controles {
+  margin-top: auto;
+  padding: 14px 8px 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.controles .selo {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+.controles #conexao.ok::before,
+.controles #daemon.ok::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: status-pulse 2s infinite;
+}
+.controles button {
+  width: 100%;
+  height: 28px;
+  min-height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #121215;
+  font-size: 12px;
+}
+@keyframes status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+.quadro-area {
+  max-width: none;
+  padding: 34px 40px;
+}
+.visao-geral h2 {
+  font-size: 20px;
+  margin: 0;
+}
+.introducao {
+  color: #71717a;
+  font-size: 13px;
+  margin: 6px 0 24px;
+}
+.resumo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: #121215;
+}
+.metrica {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  color: #a1a1aa;
+}
+.metrica span,
+.metrica strong {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+.metrica strong {
+  color: #a1a1aa;
+  font-variant-numeric: tabular-nums;
+}
+.metrica[aria-pressed="true"] {
+  border: 0;
+  background: #27272a;
+  box-shadow: none;
+  color: #f4f4f5;
+}
+.metrica[data-filtro="atencao"]::before,
+.metrica[data-filtro="bloqueadas"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+.metrica[data-filtro="bloqueadas"]::before {
+  background: #ef4444;
+}
+.triagem {
+  margin-top: 32px;
+}
+.triagem-cabeca {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 16px;
+}
+.triagem-cabeca h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.triagem-cabeca p {
+  margin: 4px 0 0;
+  color: #71717a;
+  font-size: 12px;
+}
+.triagem-cabeca a {
+  color: #a1a1aa;
+  font-size: 12px;
+  text-decoration: none;
+}
+.triagem-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.triagem-linha {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.triagem-linha:hover,
+.triagem-linha:focus-within {
+  background: #18181b;
+}
+.triagem-link {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  color: #f4f4f5;
+  text-decoration: none;
+  font-size: 13px;
+}
+.triagem-dot {
+  flex: 0 0 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #71717a;
+}
+.triagem-dot.atencao {
+  background: #f59e0b;
+}
+.triagem-dot.bloqueada {
+  background: #ef4444;
+}
+.triagem-chave {
+  color: #a1a1aa;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.triagem-titulo {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.triagem-estado {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+.triagem-acoes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  opacity: 0;
+}
+.triagem-linha:hover .triagem-acoes,
+.triagem-linha:focus-within .triagem-acoes {
+  opacity: 1;
+}
+.triagem-acoes a,
+.triagem-acoes button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #121215;
+  color: #e4e4e7;
+  text-decoration: none;
+  font-size: 12px;
+}
+@media (hover: none) {
+  .triagem-acoes {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .controles #conexao.ok::before,
+  .controles #daemon.ok::before {
+    animation: none;
+  }
+}
+@media (max-width: 760px) {
+  .navegacao-principal {
+    align-items: center;
+  }
+  .marca {
+    padding: 0 12px 0 0;
+  }
+  .controles {
+    margin: 0 0 0 auto;
+    padding: 0;
+    border: 0;
+    flex-wrap: nowrap;
+  }
+  .controles button {
+    width: auto;
+    white-space: nowrap;
+  }
+  .quadro-area {
+    padding: 24px 16px;
+  }
+  .triagem-estado {
+    display: none;
+  }
+}
+
+.controles > button:not(#buscar) {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #121215;
+}
+
+/* Ícones Lucide (web/icones.js) nos slots data-icone. */
+.navegacao-principal .icone-nav,
+summary.disclosure .chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+}
+
+.navegacao-principal .icone-nav svg,
+summary.disclosure .chevron svg {
+  display: block;
+}
