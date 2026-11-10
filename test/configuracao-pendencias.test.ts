@@ -8,6 +8,7 @@ async function completarConfiguracao(f: TestFactory, pessoas: Record<string, unk
     ...atual,
     source: { type: "github", project: "PROJ", repo: "dono/repo", assignee: "dono" },
     repositories: [{ path: process.cwd(), prefix: "EX", test: { command: ["npm", "test"] } }],
+    allowedProviders: ["anthropic"],
     people: pessoas,
   });
 }
@@ -110,6 +111,59 @@ describe("pendências de configuração (ADR-0022)", () => {
 
     expect(situacao.estado).toBe("incompleto");
     expect(situacao.pendencias.length).toBeGreaterThan(0);
+  });
+
+  it("avisa quando o repositório não tem comando de teste", async () => {
+    f = await startTestFactory({ config: { name: "exemplo", people: [PO, TECH_LEAD] } });
+    await completarConfiguracao(f, [PO, TECH_LEAD]);
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      repositories: [{ path: process.cwd(), prefix: "EX", test: { command: [] } }],
+    });
+
+    expect(await api<string[]>(f, "GET", "/projetos/exemplo/pendencias")).toEqual(["falta o comando de teste"]);
+  });
+
+  it("avisa quando não há provedor permitido, e o projeto só fica ativo depois de autorizar um", async () => {
+    f = await startTestFactory({ config: { name: "exemplo", people: [] } });
+    await completarConfiguracao(f, [PO, TECH_LEAD]);
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", { ...atual, allowedProviders: [] });
+
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
+      estado: "incompleto",
+      pendencias: ["falta um provedor permitido"],
+    });
+
+    await api(f, "PUT", "/projetos/exemplo/configuracao", { ...atual, allowedProviders: ["anthropic"] });
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({ estado: "ativo", pendencias: [] });
+  });
+
+  it("comando de formatação é opcional e não vira pendência", async () => {
+    f = await startTestFactory({ config: { name: "exemplo", people: [] } });
+    await completarConfiguracao(f, [PO, TECH_LEAD]);
+    const atual = await api<{ repositories: Record<string, unknown>[] }>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      repositories: atual.repositories.map((r) => ({ ...r, format: undefined })),
+    });
+
+    expect(await api<string[]>(f, "GET", "/projetos/exemplo/pendencias")).toEqual([]);
+  });
+
+  it("remover o último PO de um projeto ativo o torna incompleto, com a pendência", async () => {
+    f = await startTestFactory({ config: { name: "exemplo", people: [] } });
+    await completarConfiguracao(f, [PO, TECH_LEAD]);
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({ estado: "ativo", pendencias: [] });
+
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", { ...atual, people: [TECH_LEAD] });
+
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
+      estado: "incompleto",
+      pendencias: ["falta uma pessoa no perfil PO"],
+    });
   });
 
   it("estado de projeto inexistente responde 404", async () => {

@@ -253,6 +253,7 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
     await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
       ...atual,
+      allowedProviders: ["anthropic"],
       people: [
         { id: "po-x", role: "po" },
         { id: "tl-x", role: "tech_lead" },
@@ -260,6 +261,48 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     });
     await poll(factory);
     expect((await api<{ id: string }[]>(factory, "GET", "/tasks")).map((t) => t.id)).toContain("novo-repo/NR-1");
+  });
+
+  it("projeto que perde o PO não executa: a Tarefa já enfileirada espera o projeto voltar a ficar pronto", async () => {
+    const card = {
+      key: "NR-1",
+      title: "Primeira",
+      description: "Descrição",
+      status: "aberta",
+      assignee: "IgorGuariroba",
+    };
+    factory = await subirFabrica({ createSource: () => new MemoryDemandSource([card]) });
+    await chamada(factory, "POST", "/projetos/github", corpo());
+    const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
+    const completo = {
+      ...atual,
+      allowedProviders: ["anthropic"],
+      people: [
+        { id: "po-x", role: "po" },
+        { id: "tl-x", role: "tech_lead" },
+      ],
+    };
+    await api(factory, "PUT", "/projetos/novo-repo/configuracao", completo);
+    // Com o daemon pausado, a Tarefa fica enfileirada até a retomada.
+    await api(factory, "POST", "/daemon/pause");
+    await poll(factory);
+    const daFactory = factory;
+    const status = async () =>
+      (await api<{ id: string; status: string }[]>(daFactory, "GET", "/tasks")).find((t) => t.id === "novo-repo/NR-1")
+        ?.status;
+    expect(await status()).toBe("enfileirada");
+
+    await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
+      ...completo,
+      people: [{ id: "tl-x", role: "tech_lead" }],
+    });
+    await api(factory, "POST", "/daemon/resume");
+    await poll(factory);
+    expect(await status()).toBe("enfileirada");
+
+    await api(factory, "PUT", "/projetos/novo-repo/configuracao", completo);
+    await poll(factory);
+    expect(await status()).toBe("ativa");
   });
 
   it("importar um projeto incompleto é recusado, com o que falta", async () => {
@@ -276,6 +319,7 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
     await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
       ...atual,
+      allowedProviders: ["anthropic"],
       people: [
         { id: "po-x", role: "po" },
         { id: "tl-x", role: "tech_lead" },
@@ -294,6 +338,7 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
     await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
       ...atual,
+      allowedProviders: ["anthropic"],
       people: [
         { id: "po-x", role: "po" },
         { id: "tl-x", role: "tech_lead" },
@@ -314,11 +359,18 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     expect((await chamada(factory, "POST", "/projetos/github", corpo({ repoId: 999, nome: "novo" }))).status).toBe(404);
   });
 
-  it("corpo sem os campos, sem Fonte ou sem comando de teste responde 400", async () => {
+  it("corpo sem os campos ou sem Fonte responde 400", async () => {
     factory = await subirFabrica();
     expect((await chamada(factory, "POST", "/projetos/github", { repoId: 77 })).status).toBe(400);
     expect((await chamada(factory, "POST", "/projetos/github", corpo({ fonte: undefined }))).status).toBe(400);
-    expect((await chamada(factory, "POST", "/projetos/github", corpo({ comandoTeste: [] }))).status).toBe(400);
+  });
+
+  it("sem comando de teste, o projeto nasce incompleto com a pendência do comando", async () => {
+    factory = await subirFabrica();
+    const criado = await chamada(factory, "POST", "/projetos/github", corpo({ comandoTeste: [] }));
+    expect(criado.status).toBe(201);
+    expect(criado.body).toMatchObject({ estado: "incompleto" });
+    expect(criado.body?.pendencias).toContain("falta o comando de teste");
   });
 
   it("sem App configurado, não cria nada e diz por quê", async () => {
@@ -342,7 +394,7 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
       corpo({ pessoas: { po: "IgorGuariroba", techLead: "colega" } }),
     );
     expect(criado.status).toBe(201);
-    expect(criado.body).toMatchObject({ estado: "ativo", pendencias: [] });
+    expect(criado.body).toMatchObject({ estado: "incompleto", pendencias: ["falta um provedor permitido"] });
     const configuracao = await api<{ people: { id: string; perfis: string[]; name?: string }[] }>(
       factory,
       "GET",

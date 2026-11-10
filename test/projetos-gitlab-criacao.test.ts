@@ -249,7 +249,7 @@ describe("POST /projetos/gitlab: criar projeto por caminho completo, com o token
       corpo({ pessoas: { po: "ana", techLead: "bruno" } }),
     );
     expect(criado.status).toBe(201);
-    expect(criado.body).toMatchObject({ estado: "ativo", pendencias: [] });
+    expect(criado.body).toMatchObject({ estado: "incompleto", pendencias: ["falta um provedor permitido"] });
     const configuracao = await api<{
       people: { id: string; perfis: string[]; identidades: Record<string, string>; name?: string }[];
     }>(factory, "GET", "/projetos/app-gitlab/configuracao");
@@ -265,7 +265,11 @@ describe("POST /projetos/gitlab: criar projeto por caminho completo, com o token
     const criado = await chamada(factory, "POST", "/projetos/gitlab", corpo());
     expect(criado.status).toBe(201);
     expect(criado.body).toMatchObject({ estado: "incompleto" });
-    expect(criado.body?.pendencias).toEqual(["falta uma pessoa no perfil PO", "falta uma pessoa no perfil tech lead"]);
+    expect(criado.body?.pendencias).toEqual([
+      "falta uma pessoa no perfil PO",
+      "falta uma pessoa no perfil tech lead",
+      "falta um provedor permitido",
+    ]);
   });
 
   it("pessoa escolhida que a Fonte não conhece é recusada com 400, e nada é gravado", async () => {

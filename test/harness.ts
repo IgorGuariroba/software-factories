@@ -36,6 +36,7 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
     people: [{ id: PO, role: "po" }],
     profiles: [],
     vetoMinutes: 30,
+    allowedProviders: [FakeModel.PROVIDER],
     calendar: {
       timezone: "UTC",
       workdays: ["mon", "tue", "wed", "thu", "fri"],

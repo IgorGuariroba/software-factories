@@ -1352,7 +1352,7 @@ function formularioProjetoGithub(repo) {
       "label",
       { className: "campo" },
       el("span", { text: "Comando de teste (ex.: npm test)" }),
-      el("input", { attrs: { name: "comandoTeste", required: "", autocomplete: "off" } }),
+      el("input", { attrs: { name: "comandoTeste", autocomplete: "off" } }),
     ),
     el(
       "label",

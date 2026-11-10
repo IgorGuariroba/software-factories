@@ -1630,6 +1630,8 @@ export async function startFactory(opts: {
       if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
       // Repositório desativado: a Tarefa espera o replugue ou o desplugue (ADR-0015).
       if (repoDesativado(state, task.project)) continue;
+      // Projeto criado pela UI e incompleto não executa nenhuma ação (ADR-0022): a Tarefa espera o projeto ficar pronto.
+      if (pendenciasBloqueantes(task.project).length > 0) continue;
       const project = projects.get(task.project);
       if (!project) {
         if (!missingProjectReported.has(task.id)) {
@@ -3297,8 +3299,9 @@ export async function startFactory(opts: {
         const comando = Array.isArray(body.comandoTeste)
           ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
           : [];
-        if (comando.length === 0 || comando.some((item) => item === ""))
-          return json(res, 400, { error: "informe o comando de teste do projeto, como lista de argumentos" });
+        // Sem comando nenhum o projeto nasce incompleto (ticket 08); um item vazio no meio do argv é erro de digitação.
+        if (comando.some((item) => item === ""))
+          return json(res, 400, { error: "comando de teste: cada argumento precisa ter texto" });
         const result = await criarProjetoGithub({
           repoId: body.repoId as number,
           nome: body.nome.trim(),
@@ -3339,8 +3342,9 @@ export async function startFactory(opts: {
         const comando = Array.isArray(body.comandoTeste)
           ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
           : [];
-        if (comando.length === 0 || comando.some((item) => item === ""))
-          return json(res, 400, { error: "informe o comando de teste do projeto, como lista de argumentos" });
+        // Sem comando nenhum o projeto nasce incompleto (ticket 08); um item vazio no meio do argv é erro de digitação.
+        if (comando.some((item) => item === ""))
+          return json(res, 400, { error: "comando de teste: cada argumento precisa ter texto" });
         const result = await criarProjetoGitlab({
           nome: body.nome.trim(),
           caminho: body.caminho,

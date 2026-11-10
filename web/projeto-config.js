@@ -77,15 +77,25 @@ export function pessoasDoFormulario(linhas) {
  * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[] }} opcoes
  */
 /**
+ * Provedores permitidos a partir do campo de texto: separados por vírgula, sem vazios nem repetidos (ticket 08).
+ * @param {string} texto
+ * @returns {string[]}
+ */
+export function provedoresDoFormulario(texto) {
+  return [...new Set(deTexto(texto))];
+}
+
+/**
  * Configuração inteira a partir do formulário, sobre a atual (o que a página não edita fica como está).
  * @param {Record<string, any>} atual
- * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[], telegram?: "full" | "minimal" }} campos
+ * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[], telegram?: "full" | "minimal", provedores?: string[] }} campos
  * @returns {Record<string, any>}
  */
 export function configDoFormulario(atual, opcoes) {
-  const { fonte, perfis, pessoas, dryRun, repositorios, telegram, etapas, skills, mcpServers } = opcoes;
+  const { fonte, perfis, pessoas, dryRun, repositorios, telegram, etapas, skills, mcpServers, provedores } = opcoes;
   const nova = { ...atual, source: fonte, profiles: perfis, people: pessoas, dryRun };
   if (repositorios !== undefined) nova.repositories = repositorios;
+  if (provedores !== undefined) nova.allowedProviders = provedores;
   // Nível de conteúdo no Telegram (fatia 09): o bloco guarda o que a página não edita, como outros campos dele.
   if (telegram !== undefined) nova.telegram = { ...(atual.telegram ?? {}), content: telegram };
   // Agentes das etapas: a chave presente com `undefined` remove o que estava gravado; ausente, mantém.

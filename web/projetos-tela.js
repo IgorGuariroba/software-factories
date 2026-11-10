@@ -11,6 +11,7 @@ import {
   opcoesDeCredenciais,
   perfisDoFormulario,
   pessoasDoFormulario,
+  provedoresDoFormulario,
   repositoriosDoFormulario,
   resumoHistorico,
 } from "./projeto-config.js";
@@ -236,6 +237,12 @@ export async function iniciarProjetos(raiz) {
     const adicionarPessoa = el("button", { type: "button", texto: "Adicionar pessoa" });
     adicionarPessoa.addEventListener("click", () => addPessoa());
 
+    // Provedores de modelos permitidos ao projeto (ticket 08): sem nenhum, o projeto fica incompleto.
+    const provedores = el("input", {
+      valor: (atual.allowedProviders ?? []).join(", "),
+      "aria-label": "Provedores permitidos (vírgula)",
+    });
+
     const ensaio = el("input", { type: "checkbox", id: "projeto-config-ensaio", marcado: atual.dryRun === true });
     // Conteúdo das mensagens deste projeto no Telegram (fatia 09): completo ou mínimo.
     const conteudoTelegram = el("select", { "aria-label": "Conteúdo no Telegram" }, [
@@ -272,13 +279,19 @@ export async function iniciarProjetos(raiz) {
           pessoas,
           dryRun: ensaio.checked,
           telegram: conteudoTelegram.value,
+          provedores: provedoresDoFormulario(provedores.value),
           repositorios: atual.repositories || repositorios.length > 0 ? repositorios : undefined,
           etapas: lerEtapas(),
           skills: lerSkills(),
           mcpServers: lerServidores(),
         });
         await api("PUT", `/projetos/${encodeURIComponent(nome)}/configuracao`, nova);
-        mensagem.textContent = "Configuração salva.";
+        // Aviso visível: salvar pode deixar o projeto incompleto (ex.: removendo o último PO ou tech lead).
+        const depois = await api("GET", `/projetos/${encodeURIComponent(nome)}/estado`);
+        mensagem.textContent =
+          depois.estado === "ativo"
+            ? "Configuração salva. Projeto ativo."
+            : `Configuração salva. Projeto incompleto, não executa: ${depois.pendencias.join("; ")}.`;
         await carregar();
       } catch (erro) {
         mensagem.textContent = erro.message;
@@ -298,6 +311,10 @@ export async function iniciarProjetos(raiz) {
       el("section", { class: "bloco" }, [el("h3", { texto: "Perfis" }), modelosBox, adicionarPerfil, perfisBox]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Pessoas do projeto" }), adicionarPessoa, pessoasBox]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Repositórios locais" }), adicionarRepo, repoBox]),
+      el("section", { class: "bloco" }, [
+        el("h3", { texto: "Provedores" }),
+        el("label", { class: "campo" }, [el("span", { texto: "Provedores permitidos (vírgula)" }), provedores]),
+      ]),
       el("section", { class: "bloco" }, [
         el("label", {}, [ensaio, el("span", { texto: " Ensaio (dry-run): registra as escritas sem aplicá-las" })]),
         el("label", { class: "campo" }, [el("span", { texto: "Conteúdo no Telegram" }), conteudoTelegram]),

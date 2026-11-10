@@ -108,7 +108,7 @@ export function mensagemCatalogo(catalogo) {
 export const temImportacaoEmAndamento = (repos) => repos.some((r) => r.importacao?.status === "importando");
 
 /**
- * Comando de teste digitado (ex.: `npm test`) como lista de argumentos, sem vazios. O servidor exige ao menos um.
+ * Comando de teste digitado (ex.: `npm test`) como lista de argumentos, sem vazios. Vazio deixa o projeto incompleto.
  * @param {string} texto
  */
 export const comandoDoTexto = (texto) =>

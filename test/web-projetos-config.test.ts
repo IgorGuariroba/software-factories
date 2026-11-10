@@ -8,6 +8,7 @@ import {
   opcoesDeCredenciais,
   perfisDoFormulario,
   pessoasDoFormulario,
+  provedoresDoFormulario,
   repositoriosDoFormulario,
   resumoHistorico,
 } from "../web/projeto-config.js";
@@ -202,5 +203,19 @@ describe("cofre de credenciais na página de projeto (ticket 03)", () => {
     const linha = linhaDaCredencial(cofre[0] as { nome: string; atualizadoEm: string });
     expect(linha).toMatch(/^jira-token · atualizada em /);
     expect(linha).not.toMatch(/TOKEN/);
+  });
+});
+
+describe("provedores permitidos na página de projeto (ticket 08)", () => {
+  it("texto separado por vírgula vira lista sem vazios nem repetidos", () => {
+    expect(provedoresDoFormulario(" anthropic, , openai ,anthropic ")).toEqual(["anthropic", "openai"]);
+    expect(provedoresDoFormulario("")).toEqual([]);
+  });
+
+  it("a configuração gravada leva a lista de provedores; sem o campo, mantém a atual", () => {
+    const atual = { name: "exemplo", allowedProviders: ["anthropic"] };
+    const base = { fonte: { type: "jira" }, perfis: [], pessoas: [], dryRun: false };
+    expect(configDoFormulario(atual, { ...base, provedores: ["openai"] }).allowedProviders).toEqual(["openai"]);
+    expect(configDoFormulario(atual, base).allowedProviders).toEqual(["anthropic"]);
   });
 });

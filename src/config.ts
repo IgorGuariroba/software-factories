@@ -35,8 +35,11 @@ export const DEFAULT_TEST_FILES = [
 
 /** Como a fábrica roda os testes de um repositório: argv fixo, sem shell e sem argumentos do modelo. */
 export const TestCommand = z.object({
-  /** Programa e argumentos (ex.: `[npm, test]`). Nunca passa por um shell. */
-  command: z.array(z.string().min(1)).min(1),
+  /**
+   * Programa e argumentos (ex.: `[npm, test]`). Nunca passa por um shell. Vazio quer dizer "ainda não informado": o
+   * projeto fica incompleto até ter um comando (ticket 08, ADR-0022).
+   */
+  command: z.array(z.string().min(1)),
   /** Tempo máximo de uma execução, em segundos. */
   timeoutSeconds: z.number().int().positive().default(300),
   /** Padrões (glob, relativos à raiz do repositório) dos arquivos de teste. */
@@ -320,6 +323,10 @@ const ProjectConfigBase = z.object({
   statuses: z.record(z.string(), CardState),
   /** Prefixo de título/chave → repositório. Sem nenhum, a Tarefa termina depois dos Tickets. */
   repositories: z.array(RepoMapping).optional(),
+  /**
+   * Provedores de modelos que o projeto pode usar (ex.: `anthropic`). Sem nenhum, o projeto fica incompleto (ticket 08).
+   */
+  allowedProviders: z.array(z.string().min(1)).default([]),
   /** Sobrescritas de convenção de branch e commit. */
   conventions: ConventionsConfig.optional(),
   /** Mensagens deste projeto no Telegram. Sem o bloco, `content: full`. */

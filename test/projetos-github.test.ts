@@ -74,8 +74,8 @@ describe("montarProjetoGithub: o projeto novo a partir do padrão e do que o usu
     );
   });
 
-  it("comando de teste vazio é recusado, porque o repositório precisa de um", () => {
-    expect(() => novo({ comandoTeste: [] })).toThrow(/command/);
+  it("comando de teste vazio não recusa a criação: o projeto nasce sem comando, com a pendência", () => {
+    expect(novo({ comandoTeste: [] }).repositories?.[0]?.test.command).toEqual([]);
   });
 });
 
