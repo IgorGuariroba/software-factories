@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   pr-agent:
-    # Ignora bots (inclusive a fábrica e o CodeRabbit). Comandos por comentário só de quem tem acesso de escrita
+    # Ignora bots (inclusive a fábrica). Comandos por comentário só de quem tem acesso de escrita
     # ao repositório e só /review ou /improve: evita gasto de tokens e uso do token por terceiros.
     # PRs de fork não têm review automático (pull_request_target exporia secrets); um mantenedor pode pedir
     # /review ou /improve neles conscientemente: o agente só lê o diff, sem executar código do PR. Rascunhos esperam.
@@ -46,7 +46,7 @@ jobs:
           CONFIG.RESPONSE_LANGUAGE: "pt-BR"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "true"
-          # Walkthrough como comentário (não reescreve a descrição do PR), no estilo do CodeRabbit.
+          # Walkthrough como comentário (não reescreve a descrição do PR).
           GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
           PR_DESCRIPTION.PUBLISH_DESCRIPTION_AS_COMMENT: "true"
           PR_DESCRIPTION.ENABLE_PR_DIAGRAM: "true"

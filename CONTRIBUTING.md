@@ -238,9 +238,9 @@ Para testar a fábrica lendo a fila e cards do Jira de verdade sem aplicar nenhu
 
 ## Review automático (PR-Agent)
 
-Cada achado do PR-Agent traz severidade (Critical, Major, Minor ou Trivial) e categoria. O check `review-gate` falha
-enquanto houver achado **Critical** ou **Major** em thread não resolvida; Minor e Trivial não bloqueiam. Depois de
-tratar e resolver as threads, rode o job `review-gate` de novo (Re-run) para liberar o merge.
+Cada achado do PR-Agent traz severidade (Critical ou Major) e categoria; o PR-Agent não publica achados Minor nem
+Trivial, para não gastar tokens com eles. O check `review-gate` falha enquanto houver achado **Critical** ou **Major**
+em thread não resolvida. Depois de tratar e resolver as threads, rode o job `review-gate` de novo (Re-run) para liberar o merge.
 
 ## Fechar um PR
 
