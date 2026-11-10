@@ -1,6 +1,7 @@
 import { createSign } from "node:crypto";
 import { readFile as readFileFromDisk } from "node:fs/promises";
 import type { RawIssue } from "./github-demand-source.js";
+import { falhaDeRede, falhaDeResposta } from "./github-falhas.js";
 
 /**
  * Painel do GitHub App (ADR-0015): consulta as instalações do App com o JWT dele e diz quais repositórios plugados
@@ -161,12 +162,30 @@ export function createGitHubAppChecker(opts: {
 
   /** Chamada autenticada à API. Só o status HTTP vai para a mensagem: nunca o token nem a resposta crua. */
   async function chamar(path: string, token: string, init: RequestInit = {}): Promise<unknown> {
-    const res = await fetchFn(`https://api.github.com${path}`, {
-      ...init,
-      signal: AbortSignal.timeout(TIMEOUT_CHAMADA_MS),
-      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, ...init.headers },
-    });
-    if (!res.ok) throw new Error(`GitHub respondeu ${res.status} em ${path.split("?")[0]}`);
+    let res: Response;
+    try {
+      res = await fetchFn(`https://api.github.com${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(TIMEOUT_CHAMADA_MS),
+        headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, ...init.headers },
+      });
+    } catch (err) {
+      throw new Error(falhaDeRede(err));
+    }
+    if (!res.ok) {
+      throw new Error(
+        falhaDeResposta({
+          status: res.status,
+          caminho: path.split("?")[0] ?? path,
+          agora: now(),
+          cabecalhos: {
+            remaining: res.headers.get("x-ratelimit-remaining"),
+            reset: res.headers.get("x-ratelimit-reset"),
+            retryAfter: res.headers.get("retry-after"),
+          },
+        }),
+      );
+    }
     return res.json() as Promise<unknown>;
   }
 

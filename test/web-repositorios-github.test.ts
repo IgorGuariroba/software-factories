@@ -105,6 +105,15 @@ describe("textoImportacao: data, resultado e erro", () => {
     expect(texto).toContain("2 criadas · 1 vinculadas · 0 atualizadas · 3 ignoradas");
   });
 
+  it("repositório sem issues abertas diz isso, em vez de mostrar contagem zerada", () => {
+    const texto = textoImportacao({
+      status: "ok",
+      ultimaImportacaoEm: "2026-11-09T12:00:00.000Z",
+      ultimoResultado: { criadas: 0, vinculadas: 0, atualizadas: 0, ignoradas: 0 },
+    });
+    expect(texto).toContain("Nenhuma issue aberta neste repositório.");
+  });
+
   it("erro mostra a mensagem, sem inventar causa", () => {
     expect(textoImportacao({ status: "erro", ultimoErro: "GitHub respondeu 403 em /repos/x/issues" })).toContain(
       "Falhou: GitHub respondeu 403 em /repos/x/issues",

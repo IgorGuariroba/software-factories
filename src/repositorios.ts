@@ -46,6 +46,8 @@ export function desativarProjeto(opts: {
       status: "desativado",
       motivo,
       ...(previous?.installationId !== undefined ? { installationId: previous.installationId } : {}),
+      // O id do repositório sobrevive ao desplugue: replugar não perde a identidade (ADR-0015, Fase 4).
+      ...(previous?.repoId !== undefined ? { repoId: previous.repoId } : {}),
     },
   };
   return { effects, ativas };
@@ -61,6 +63,11 @@ export function ativarProjeto(opts: {
   const { state, project, repo, installationId } = opts;
   const previous = state.repos?.[project];
   const id = installationId ?? previous?.installationId;
-  const binding: RepoBinding = { repo, status: "ativo", ...(id !== undefined ? { installationId: id } : {}) };
+  const binding: RepoBinding = {
+    repo,
+    status: "ativo",
+    ...(id !== undefined ? { installationId: id } : {}),
+    ...(previous?.repoId !== undefined ? { repoId: previous.repoId } : {}),
+  };
   state.repos = { ...state.repos, [project]: binding };
 }

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectConfig } from "../src/config.js";
 import type { FactoryState, QueuedTask } from "../src/durable.js";
-import { applyIssueDelivery, parseGitHubDelivery, type WebhookProject } from "../src/github-webhook.js";
+import {
+  applyInstallationDelivery,
+  applyIssueDelivery,
+  parseGitHubDelivery,
+  type WebhookProject,
+} from "../src/github-webhook.js";
 
 const config = {
   name: "SF",
@@ -153,5 +158,39 @@ describe("Tarefa legada e identidade diferente", () => {
     expect(state.tasks[0]?.status).toBe("cancelada");
     aplicar(state, entrega("reopened", 1, { repoId: REPO_ID }));
     expect(state.tasks[0]?.status).toBe("enfileirada");
+  });
+});
+
+describe("instalação do App: o id do repositório acompanha o plugue (Fase 7)", () => {
+  const instalar = (state: FactoryState, repoIds: Record<string, number>) =>
+    applyInstallationDelivery({
+      state,
+      projects: projetos,
+      delivery: {
+        deliveryId: `inst-${Math.random()}`,
+        action: "added",
+        installationId: 77,
+        repos: ["dono/repo"],
+        repoIds,
+      },
+    });
+
+  it("repositories_added com id grava o id no vínculo do projeto", () => {
+    const state = estado();
+    instalar(state, { "dono/repo": REPO_ID });
+    expect(state.repos?.SF).toMatchObject({ repoId: REPO_ID, status: "ativo" });
+  });
+
+  it("desplugar e replugar não perde o id do repositório", () => {
+    const state = estado();
+    instalar(state, { "dono/repo": REPO_ID });
+    applyInstallationDelivery({
+      state,
+      projects: projetos,
+      delivery: { deliveryId: "rem", action: "removed", installationId: 77, repos: ["dono/repo"] },
+    });
+    expect(state.repos?.SF).toMatchObject({ status: "desativado", repoId: REPO_ID });
+    instalar(state, { "dono/repo": REPO_ID });
+    expect(state.repos?.SF).toMatchObject({ status: "ativo", repoId: REPO_ID });
   });
 });

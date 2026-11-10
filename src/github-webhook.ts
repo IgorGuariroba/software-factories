@@ -53,6 +53,8 @@ export type InstallationDelivery = {
   installationId: number;
   /** Repositórios "dono/nome" que a ação afeta (vazio quando o payload não os traz). */
   repos: string[];
+  /** Id numérico de cada repositório afetado, pela chave em minúsculas (Fase 7: grava a identidade ao plugar). */
+  repoIds?: Record<string, number>;
 };
 
 export type ParsedDelivery =
@@ -65,9 +67,15 @@ const InstallationPayload = z
   .object({
     action: z.string(),
     installation: z.object({ id: z.number().int().positive() }).passthrough(),
-    repositories: z.array(z.object({ full_name: z.string() }).passthrough()).optional(),
-    repositories_added: z.array(z.object({ full_name: z.string() }).passthrough()).optional(),
-    repositories_removed: z.array(z.object({ full_name: z.string() }).passthrough()).optional(),
+    repositories: z
+      .array(z.object({ full_name: z.string(), id: z.number().int().positive().optional() }).passthrough())
+      .optional(),
+    repositories_added: z
+      .array(z.object({ full_name: z.string(), id: z.number().int().positive().optional() }).passthrough())
+      .optional(),
+    repositories_removed: z
+      .array(z.object({ full_name: z.string(), id: z.number().int().positive().optional() }).passthrough())
+      .optional(),
   })
   .passthrough();
 
@@ -143,6 +151,9 @@ function parseInstallation(event: string, opts: { deliveryId: string | undefined
       action: action as InstallationAction,
       installationId: installation.id,
       repos: repos.map((r) => r.full_name),
+      repoIds: Object.fromEntries(
+        repos.flatMap((r) => (r.id !== undefined ? [[r.full_name.toLowerCase(), r.id] as const] : [])),
+      ),
     },
   };
 }
@@ -424,6 +435,8 @@ export function applyInstallationDelivery(opts: {
           continue;
         }
         ativarProjeto({ state, project: project.name, repo, installationId: delivery.installationId });
+        const repoId = delivery.repoIds?.[repo.toLowerCase()];
+        if (repoId !== undefined) gravarRepoId(state, project.name, repo, repoId);
       }
       return effects;
     case "removed":
