@@ -215,6 +215,37 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
     expect(requests).toEqual([{ url: "https://exemplo.invalid/a/1", auth: `Basic ${basic}` }]);
   });
 
+  it("usa as credenciais do cofre quando informadas, e não o ambiente", async () => {
+    const acli = new FakeAcli(me);
+    acli.issues = [
+      {
+        key: "PROJ-1",
+        summary: "x",
+        status: "A Fazer",
+        assignee: me,
+        attachments: [
+          { id: "1", filename: "a.md", mimeType: "text/markdown", size: 1, content: "https://exemplo.invalid/a/1" },
+        ],
+      },
+    ];
+    const auths: (string | null)[] = [];
+    const source = createJiraDemandSource({
+      project: "PROJ",
+      assignee: me.accountId,
+      runner: acli.runner,
+      env: {},
+      credentials: async () => ({ email: "cofre@exemplo.invalid", token: "token-do-cofre" }),
+      fetch: async (_url, init) => {
+        auths.push(new Headers(init?.headers).get("authorization"));
+        return new Response("ok");
+      },
+    });
+
+    await source.listTextAttachments("PROJ-1");
+
+    expect(auths).toEqual([`Basic ${Buffer.from("cofre@exemplo.invalid:token-do-cofre").toString("base64")}`]);
+  });
+
   it("com baseUrl, baixa pelo site do Jira, não pelo host interno que o acli devolve", async () => {
     const urls: string[] = [];
     const source = withAttachments(

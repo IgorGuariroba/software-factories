@@ -75,7 +75,7 @@ async function iniciar(inicio = "2025-06-10T10:00:00-03:00") {
   const detalhe = await api<{ questions: { n: number; askedAt: string }[] }>(f, "GET", BASE);
   expect(detalhe.questions[0]).toMatchObject({ n: 1, askedAt: new Date(inicio).toISOString() });
   const escrever = vi.spyOn(f.source, "addComment");
-  return { f, clock, telegram, model, people, escrever };
+  return { f, clock, telegram, model, escrever };
 }
 
 async function responder(f: TestFactory, telegram: FakeTelegram, canal: string, texto: string) {
@@ -195,9 +195,13 @@ describe("encaminhamento de pergunta técnica ao tech lead", () => {
   it.each(["não sei", "prazo"])(
     "sem tech lead nas pessoas do projeto, bloqueia %s com aviso e não envia a outro destinatário",
     async (motivo) => {
-      const { f, clock, telegram, people, escrever } = await iniciar();
+      const { f, clock, telegram, escrever } = await iniciar();
       // Revoga a pessoa depois da disponibilização, antes de surgir a necessidade de envio.
-      people.splice(1, 1);
+      const atual = await api<{ people: { id: string; role: string }[] }>(f, "GET", "/projetos/exemplo/configuracao");
+      await api(f, "PUT", "/projetos/exemplo/configuracao", {
+        ...atual,
+        people: atual.people.filter((p) => p.role !== "tech_lead"),
+      });
       if (motivo === "não sei") await responder(f, telegram, "web", "não sei");
       else clock.advanceTo("2025-06-10T12:00:00-03:00");
 

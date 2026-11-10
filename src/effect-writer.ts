@@ -240,8 +240,8 @@ export function createEffectWriter(opts: {
     },
 
     async mention(cardKey, personId, body) {
-      // Sem o token de menção: o acli grava texto puro e o Jira o mostraria literalmente. O aviso vai pelo Teams.
-      const content = outgoing(body);
+      // A menção vai no comentário, no formato da própria Fonte (ADR-0020). O Teams segue como aviso à parte.
+      const content = outgoing(`${source.formatMention(personId)} ${body}`);
       const effect = { target: cardKey, action: "mention", content };
       const check = async () => {
         if (!config.people.some((p) => p.id === personId))

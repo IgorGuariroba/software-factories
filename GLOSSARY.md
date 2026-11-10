@@ -5,12 +5,12 @@ Agente autônomo e auto-hospedado que pega demandas atribuídas ao usuário e as
 ## Demanda e trabalho
 
 **Projeto**:
-Unidade de configuração da fábrica, que reúne as fontes, os canais, as pessoas, os repositórios, os provedores permitidos e as evidências disponíveis de um contexto de trabalho.
+Unidade de configuração da fábrica, que reúne a fonte, os canais, os perfis e as pessoas do projeto, os repositórios, os provedores permitidos e as evidências disponíveis de um contexto de trabalho. Sua configuração é editada pelo usuário.
 _Avoid_: workspace, cliente
 
 **Fonte**:
-Sistema de onde a fábrica obtém demandas (Jira, GitLab Issues, GitHub Issues).
-_Avoid_: origem, provider de tarefas
+Sistema de onde a fábrica obtém demandas (Jira, GitHub Issues, GitLab Issues). Cada projeto tem uma única Fonte.
+_Avoid_: origem, provider de tarefas, source
 
 **Card**:
 Uma demanda individual na fonte, com status, responsável e comentários.
@@ -70,15 +70,20 @@ Ação que a fábrica está proibida de executar, qualquer que seja a instruçã
 A pessoa dona da fábrica, em nome de quem ela age e com cujas credenciais ela opera.
 _Avoid_: operador, dono
 
-**Pessoas do projeto**:
-As únicas pessoas com quem a fábrica pode conversar num projeto, cada uma com um papel (PO, tech lead).
+**Pessoa do projeto**:
+Pessoa com quem a fábrica pode conversar num projeto. Tem um identificador por integração (ex.: accountId no Jira, login no GitHub, id no Teams) e pode ocupar um ou mais perfis.
+_Avoid_: usuário (usado só para o dono da fábrica), membro, contato
+
+**Perfil**:
+Função de uma pessoa do projeto (PO, tech lead, ou outra que o projeto definir). Um perfil pode ter várias pessoas, e uma pessoa pode ter vários perfis. Define para quem a fábrica encaminha perguntas e lembretes, na ordem cadastrada. Não concede autoridade: vetos e aprovações continuam com o usuário.
+_Avoid_: papel (usado para modelos), cargo, role
 
 **Canal**:
-Meio de conversa da fábrica com as pessoas do projeto (Teams, Slack, comentário no Jira).
-_Avoid_: interface (são conceitos distintos)
+Meio de conversa da fábrica com as pessoas do projeto (Teams, comentário no card). Cada pessoa usa o canal que lhe cabe.
+_Avoid_: interface (são conceitos distintos), Telegram (é interface de gestão)
 
 **Interface de gestão**:
-Meio pelo qual só o usuário acompanha e comanda a fábrica (web local, Telegram).
+Meio pelo qual só o usuário acompanha e comanda a fábrica (web local, Telegram). Não fala com as pessoas do projeto.
 _Avoid_: canal, painel, dashboard
 
 **Pergunta de negócio**:

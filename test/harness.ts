@@ -34,6 +34,7 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
     announceAssume: true,
     source: { type: "jira", project: "PROJ", assignee: USER },
     people: [{ id: PO, role: "po" }],
+    profiles: [],
     vetoMinutes: 30,
     calendar: {
       timezone: "UTC",
@@ -71,6 +72,11 @@ export interface TestFactory extends RunningFactory {
   /** Fecha a fábrica e sobe outra sobre o mesmo estado durável e a mesma Fonte: um reinício do daemon. */
   /** `overrides` muda as opções do novo daemon (ex.: a config do projeto), mantendo estado, Fonte e modelo. */
   restart(overrides?: Partial<TestFactoryOptions>): Promise<TestFactory>;
+  /**
+   * Reinício com o YAML alterado sobre o mesmo estado, sem gravar a configuração pela API: é o caso em que a semente
+   * não deve ter efeito (ADR-0017).
+   */
+  restartComYaml(config: Partial<ProjectConfig>): Promise<TestFactory>;
 }
 
 interface TestFactoryOptions {
@@ -89,6 +95,8 @@ interface TestFactoryOptions {
   /** Telegram fake como interface de gestão, com o chat e o usuário autorizados de `fake-telegram.ts`. */
   telegram?: FakeTelegram;
   teams?: TeamsNotifier;
+  /** Conversa 1:1 das pessoas no Teams (canal `teams`): fake em memória com as respostas que a pessoa der. */
+  teamsConversation?: import("../src/teams-conversa.js").TeamsConversation;
   retroSink?: MemoryRetroSink;
   /** Repositório da fábrica para as issues de retrô; `null` desliga (como sem `FACTORY_RETRO_REPO`). */
   retroRepo?: string | null;
@@ -100,6 +108,10 @@ interface TestFactoryOptions {
   avisoJanelaMs?: number;
   /** Fonte dos projetos criados pela interface. Padrão: uma Fonte em memória vazia (sem cards). */
   createSource?: (config: ProjectConfig) => import("../src/demand-source.js").DemandSource;
+  /** `fetch` falso para a checagem de conexão com a Fonte (ex.: Jira) antes de salvar a configuração. */
+  fetchFonte?: typeof fetch;
+  /** Fábrica da interface de gestão salva pela API (Telegram), usada quando não há interface pelo ambiente. */
+  criarInterfaceTelegram?: (token: string, chat: string) => import("../src/management.js").ManagementInterface;
 }
 
 /** A fábrica inteira, com todas as portas trocadas por fakes em memória e estado durável num diretório temporário. */
@@ -124,10 +136,13 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     clock: opts.clock,
     management: opts.telegram && { port: opts.telegram, chat: TELEGRAM_CHAT, user: TELEGRAM_USER },
     teams: opts.teams,
+    teamsConversation: opts.teamsConversation,
     retro: { sink: retroSink, repo: retroRepo ?? undefined },
     webhook: opts.webhookSecret ? { port: 0, secret: opts.webhookSecret } : undefined,
     avisos: { janelaMs: opts.avisoJanelaMs ?? 0 },
     githubApp: opts.githubApp,
+    fetchFonte: opts.fetchFonte,
+    criarInterfaceTelegram: opts.criarInterfaceTelegram,
     createSource: opts.createSource ?? (() => new MemoryDemandSource([])),
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
@@ -145,8 +160,21 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
       await rm(dir, { recursive: true, force: true });
     },
     restart: async (overrides = {}) => {
+      const proxima = { ...opts, source, model, codeHost, retroSink, knowledge: undefined, ...overrides };
+      // ADR-0017: depois da semente, a configuração que vale é a guardada. Uma configuração nova entra pela API antes do
+      // reinício, como faria a interface.
+      if (overrides.config !== undefined || overrides.dryRun !== undefined) {
+        const config = testProjectConfig({ dryRun: proxima.dryRun ?? false, ...proxima.config });
+        // Um projeto novo entra pela semente no startup; só um já guardado é alterado pela API.
+        const guardado = await fetch(`${factory.url}/projetos/${config.name}/configuracao`);
+        if (guardado.ok) await api(factory, "PUT", `/projetos/${config.name}/configuracao`, config);
+      }
       await factory.close();
-      return startTestFactory({ ...opts, source, model, codeHost, retroSink, knowledge: undefined, ...overrides }, dir);
+      return startTestFactory(proxima, dir);
+    },
+    restartComYaml: async (config) => {
+      await factory.close();
+      return startTestFactory({ ...opts, source, model, codeHost, retroSink, knowledge: undefined, config }, dir);
     },
   };
 }

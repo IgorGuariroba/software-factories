@@ -117,7 +117,7 @@ async function iniciar(opcoes: { unico?: boolean; semUsuario?: boolean; inicio?:
   });
   const f = factory;
   await poll(f);
-  return { f, clock, telegram, model, web, mobile, people };
+  return { f, clock, telegram, model, web, mobile };
 }
 
 async function pendente(opcoes: Parameters<typeof iniciar>[0] = {}) {
@@ -280,8 +280,12 @@ describe("card sem repositório identificável usa o fluxo de pergunta técnica"
   });
 
   it.each(["não sei", "prazo"])("revalida o guardrail do tech lead ao encaminhar por %s", async (motivo) => {
-    const { f, clock, telegram, people, pergunta } = await pendente();
-    people.splice(1, 1);
+    const { f, clock, telegram, pergunta } = await pendente();
+    const atual = await api<{ people: { id: string; role: string }[] }>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      people: atual.people.filter((p) => p.role !== "tech_lead"),
+    });
     if (motivo === "não sei") await responder(f, telegram, "web", "não sei");
     else clock.advanceTo("2025-06-10T12:00:00-03:00");
 

@@ -15,20 +15,25 @@ export interface GhExecResult {
 }
 
 /** Runner injetável para o `gh`. Permite testes sem o binário real. */
-export type GhRunner = (args: string[], input?: string) => Promise<GhExecResult>;
+export type GhRunner = (args: string[], input?: string, env?: Record<string, string>) => Promise<GhExecResult>;
 
-export const defaultGhRunner: GhRunner = (args, input) =>
+export const defaultGhRunner: GhRunner = (args, input, env) =>
   new Promise((resolve) => {
     // Um `gh` travado não pode segurar o polling: depois do limite o processo é morto e a chamada falha.
-    const child = execFile("gh", args, { maxBuffer: 64 * 1024 * 1024, timeout: 60_000 }, (error, stdout, stderr) => {
-      const code =
-        error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 0;
-      resolve({
-        stdout: String(stdout),
-        stderr: String(stderr || (error && !code ? error.message : "")),
-        exitCode: error ? code || 1 : 0,
-      });
-    });
+    const child = execFile(
+      "gh",
+      args,
+      { maxBuffer: 64 * 1024 * 1024, timeout: 60_000, env: { ...process.env, ...env } },
+      (error, stdout, stderr) => {
+        const code =
+          error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 0;
+        resolve({
+          stdout: String(stdout),
+          stderr: String(stderr || (error && !code ? error.message : "")),
+          exitCode: error ? code || 1 : 0,
+        });
+      },
+    );
     if (input !== undefined) child.stdin?.end(input);
   });
 
@@ -42,6 +47,8 @@ export interface GitHubDemandSourceOptions {
   /** Issues com algum destes labels ficam fora da fila (padrão: `epic`). */
   ignoreLabels?: string[];
   runner?: GhRunner;
+  /** Token do GitHub vindo do cofre (ADR-0018); vai ao `gh` pela variável `GH_TOKEN`. */
+  token?: () => Promise<string | undefined>;
 }
 
 /** Prefixo dos labels de status da fábrica. */
@@ -105,7 +112,14 @@ export class GitHubDemandSource implements DemandSource {
   private readonly run: GhRunner;
 
   constructor(private readonly opts: GitHubDemandSourceOptions) {
-    this.run = opts.runner ?? defaultGhRunner;
+    const base = opts.runner ?? defaultGhRunner;
+    const { token } = opts;
+    this.run = token
+      ? async (args, input) => {
+          const valor = await token();
+          return base(args, input, valor ? { GH_TOKEN: valor } : undefined);
+        }
+      : base;
   }
 
   private numberOf(key: string): number | undefined {
@@ -291,3 +305,16 @@ export class GitHubDemandSource implements DemandSource {
 export function createGitHubDemandSource(opts: GitHubDemandSourceOptions): DemandSource {
   return new GitHubDemandSource(opts);
 }
+
+/** Schema de configuração desta Fonte: a interface gera o formulário a partir dele (fatia 04). */
+export const ESQUEMA_FONTE = {
+  tipo: "github",
+  rotulo: "GitHub Issues",
+  campos: [
+    { campo: "project", rotulo: "Prefixo das chaves", tipo: "texto", obrigatorio: true },
+    { campo: "repo", rotulo: "Repositório (dono/nome)", tipo: "texto", obrigatorio: true },
+    { campo: "assignee", rotulo: "Dono das issues", tipo: "texto", obrigatorio: true },
+    { campo: "credential", rotulo: "Credencial (nome no cofre)", tipo: "segredo", obrigatorio: false },
+    { campo: "ignoreLabels", rotulo: "Labels ignoradas", tipo: "lista", obrigatorio: false },
+  ],
+};

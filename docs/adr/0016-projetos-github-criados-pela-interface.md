@@ -1,5 +1,9 @@
 # Projetos de repositório GitHub criados pela interface
 
+> **Atualização (ADR-0017):** a prioridade do YAML sobre projetos criados pela interface e a limitação de configuração
+> avançada (repositórios, caminho local, comando de teste) foram substituídas. A configuração passa a ser editada pela
+> interface, e o YAML só semeia projetos novos na primeira execução.
+
 Substitui parcialmente o ADR-0010 (projetos vêm do YAML), só no ponto de criar projeto de repositório GitHub. Os demais
 pontos do 0010 seguem valendo: a configuração e o conhecimento ficam fora do repositório da fábrica, e o YAML continua
 aceito.

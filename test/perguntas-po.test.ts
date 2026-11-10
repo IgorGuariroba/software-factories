@@ -134,8 +134,7 @@ describe("perguntas de negócio ao PO", () => {
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "aguardando-humano");
     const dry = await api<{ revision: string }>(factory, "GET", "/tasks/exemplo/PROJ-1/questions/1");
-    config.dryRun = false;
-    factory = await factory.restart();
+    factory = await factory.restart({ config: { ...config, dryRun: false } });
     const live = await api<{ revision: string; comment: string }>(factory, "GET", "/tasks/exemplo/PROJ-1/questions/1");
     expect(live.revision).not.toBe(dry.revision);
     await api(factory, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: live.revision });
@@ -294,7 +293,7 @@ describe("perguntas de negócio ao PO", () => {
     const [question] = questionComments(factory, "PROJ-1");
     expect(questionComments(factory, "PROJ-1")).toHaveLength(1);
     expect(question?.body.endsWith(MARK)).toBe(true);
-    expect(question?.body).not.toContain(MENTION);
+    expect(question?.body).toContain(MENTION);
     expect(question?.body).toContain("O CSV usa vírgula ou ponto e vírgula?");
     expect(specComments(factory, "PROJ-1")).toEqual([]);
     expect(await events(factory)).toContainEqual(
@@ -527,7 +526,7 @@ describe("escalonamento em horas úteis", () => {
 
     clock.advanceTo("2026-11-09T11:00:00-03:00");
     await eventually(() => expect(reminders(f, "PROJ-1")).toHaveLength(1));
-    expect(reminders(f, "PROJ-1")[0]?.body).not.toContain(MENTION);
+    expect(reminders(f, "PROJ-1")[0]?.body).toContain(MENTION);
     expect(await notices(f)).toEqual([]);
 
     clock.advanceTo("2026-11-09T15:59:00-03:00");
@@ -685,7 +684,7 @@ describe("guardrails e dry-run das perguntas", () => {
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
     const [question, reminder] = await mentions();
     expect(question).toMatchObject({ target: "PROJ-1", dryRun: true });
-    expect(String(question?.content)).not.toContain(MENTION);
+    expect(String(question?.content)).toContain(MENTION);
     expect(String(question?.content)).toContain("Qual o separador do CSV?");
     expect(String(reminder?.content)).toContain("Lembrete da pergunta 1");
 

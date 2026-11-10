@@ -36,6 +36,11 @@ export interface JiraDemandSourceOptions {
    * Ambiente de onde vêm as credenciais dos anexos (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`). Padrão: `process.env`.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Credenciais dos anexos vindas do cofre da fábrica (ADR-0018). Quando informado, tem prioridade sobre `env`; é
+   * consultado a cada download, então uma credencial trocada vale na próxima leitura.
+   */
+  credentials?: () => Promise<{ email: string; token: string } | undefined>;
   /** `fetch` usado para baixar o conteúdo dos anexos de texto. Padrão: o global. */
   fetch?: typeof fetch;
   /** Prazo de download de anexos em milissegundos. Padrão: 60 segundos. */
@@ -87,12 +92,19 @@ const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_E
  * erro (a Tarefa é tentada de novo). O token nunca aparece na mensagem de erro.
  */
 function createHttpAttachmentReader(
-  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch; timeoutMs?: number; baseUrl?: string } = {},
+  opts: {
+    env?: Record<string, string | undefined>;
+    credentials?: () => Promise<{ email: string; token: string } | undefined>;
+    fetch?: typeof fetch;
+    timeoutMs?: number;
+    baseUrl?: string;
+  } = {},
 ): AttachmentReader {
   return async (attachment) => {
     const env = opts.env ?? process.env;
-    const email = env.ATLASSIAN_EMAIL;
-    const token = env.ATLASSIAN_API_TOKEN;
+    const doCofre = opts.credentials ? await opts.credentials() : undefined;
+    const email = doCofre ? doCofre.email : env.ATLASSIAN_EMAIL;
+    const token = doCofre ? doCofre.token : env.ATLASSIAN_API_TOKEN;
     if (!email || !token) return MISSING_ATTACHMENT_CREDENTIALS;
     const what = `anexo ${attachment.filename} (id ${attachment.id})`;
     const url =
@@ -239,6 +251,7 @@ export class JiraDemandSource implements DemandSource {
     this.runner = opts.runner ?? defaultAcliRunner;
     this.readAttachment = createHttpAttachmentReader({
       env: opts.env,
+      credentials: opts.credentials,
       fetch: opts.fetch,
       timeoutMs: opts.timeoutMs,
       baseUrl: opts.baseUrl,
@@ -440,3 +453,17 @@ export class JiraDemandSource implements DemandSource {
 export function createJiraDemandSource(opts: JiraDemandSourceOptions): JiraDemandSource {
   return new JiraDemandSource(opts);
 }
+
+/** Schema de configuração desta Fonte: a interface gera o formulário a partir dele (fatia 04). */
+export const ESQUEMA_FONTE = {
+  tipo: "jira",
+  rotulo: "Jira",
+  campos: [
+    { campo: "project", rotulo: "Chave do projeto", tipo: "texto", obrigatorio: true },
+    { campo: "assignee", rotulo: "Responsável (accountId)", tipo: "texto", obrigatorio: true },
+    { campo: "baseUrl", rotulo: "URL do Jira (https)", tipo: "url", obrigatorio: false },
+    { campo: "email", rotulo: "E-mail da conta", tipo: "email", obrigatorio: false },
+    { campo: "credential", rotulo: "Credencial (nome no cofre)", tipo: "segredo", obrigatorio: false },
+    { campo: "keys", rotulo: "Restringir a cards", tipo: "lista", obrigatorio: false },
+  ],
+};

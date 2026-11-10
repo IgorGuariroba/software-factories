@@ -74,7 +74,7 @@ describe("escritor de efeitos", () => {
       "comment: Assumindo este card.\n\n*mensagem automatizada*",
       "transition: Em Andamento",
       "comment: SPEC\n\nEntregar o CSV.\n\n*mensagem automatizada*",
-      "mention: Pergunta 1: qual o separador?\n\n*mensagem automatizada*",
+      `mention: ${new MemoryDemandSource([]).formatMention(PO)} Pergunta 1: qual o separador?\n\n*mensagem automatizada*`,
       "comment: SPEC\n\nEntregar o CSV com cabeçalho.\n\n*mensagem automatizada*",
       "comment: Oi.\n\n*mensagem automatizada*",
       "comment: Oi.\n\n*mensagem automatizada*",
@@ -319,7 +319,7 @@ describe("menção a uma pessoa do projeto (mention)", () => {
     await writer.mention("PROJ-1", PO, "Pergunta 1: qual o separador?");
 
     expect(source.commentsOf("PROJ-1").map((c) => c.body)).toEqual([
-      `Pergunta 1: qual o separador?\n\n*mensagem automatizada*`,
+      `${source.formatMention(PO)} Pergunta 1: qual o separador?\n\n*mensagem automatizada*`,
     ]);
   });
 
