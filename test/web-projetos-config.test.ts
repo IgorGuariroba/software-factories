@@ -129,6 +129,8 @@ describe("página de configuração de projeto: conversão do formulário", () =
 
     expect(linhas).toHaveLength(1);
     expect(linhas[0]).toContain("dryRun, source");
+    // Quem alterou aparece, em português: "usuario" é o único autor que a fábrica registra hoje.
+    expect(linhas[0]).toContain("(usuário)");
   });
 
   it("pessoa da forma antiga (role, sem perfis) não perde o papel ao salvar pelo formulário", () => {

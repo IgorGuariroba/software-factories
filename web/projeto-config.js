@@ -205,7 +205,10 @@ export function estadoDoFormulario(editando) {
  * @param {{ quando: string, autor?: string, campos: string[] }[]} alteracoes
  */
 export function resumoHistorico(alteracoes) {
-  return alteracoes.map((a) => `${new Date(a.quando).toLocaleString("pt-BR")}: ${a.campos.join(", ")}`);
+  const quem = (autor) => (autor === "usuario" ? "usuário" : autor);
+  return alteracoes.map(
+    (a) => `${new Date(a.quando).toLocaleString("pt-BR")} (${quem(a.autor)}): ${a.campos.join(", ")}`,
+  );
 }
 
 /**

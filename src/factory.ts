@@ -2207,6 +2207,10 @@ export async function startFactory(opts: {
       }
       state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
       state.projetos = { ...state.projetos, [config.name]: JSON.stringify(config) };
+      state.historicoConfig = {
+        ...state.historicoConfig,
+        [config.name]: [{ quando: new Date(clock.now()).toISOString(), autor: "usuario", campos: ["projeto criado"] }],
+      };
       projeto.ajustarEstado?.(state);
       registrar = true;
       const pendencias = pendenciasDeConfiguracao(config);
@@ -3250,9 +3254,17 @@ export async function startFactory(opts: {
           state.sincronizadoEm = semProjeto(state.sincronizadoEm, nome);
           state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
           state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
+          const quando = new Date(clock.now()).toISOString();
           state.projetosRemovidos = {
             ...state.projetosRemovidos,
-            [nome]: { prefixo: guardada?.source.project ?? "", quando: new Date(clock.now()).toISOString() },
+            [nome]: { prefixo: guardada?.source.project ?? "", quando },
+          };
+          state.historicoConfig = {
+            ...state.historicoConfig,
+            [nome]: [
+              ...(state.historicoConfig?.[nome] ?? []),
+              { quando, autor: "usuario", campos: ["projeto removido"] },
+            ],
           };
           // Dentro do commit: nenhuma Tarefa nova entra no projeto entre a gravação e a saída da memória.
           projects.delete(nome);
@@ -3299,7 +3311,9 @@ export async function startFactory(opts: {
       if (historicoMatch && req.method === "GET") {
         const nome = decodeURIComponent(historicoMatch[1] ?? "");
         const state = await readState();
-        if (!lerConfiguracao(state.projetos?.[nome])) return json(res, 404, { error: `projeto ${nome} não existe` });
+        // Depois da remoção o histórico continua consultável: o registro da remoção é a última alteração.
+        const existe = lerConfiguracao(state.projetos?.[nome]) !== undefined || nome in (state.projetosRemovidos ?? {});
+        if (!existe) return json(res, 404, { error: `projeto ${nome} não existe` });
         return json(res, 200, state.historicoConfig?.[nome] ?? []);
       }
       const segredoMatch = url.pathname.match(/^\/segredos\/([^/]+)$/);
