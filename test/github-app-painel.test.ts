@@ -266,7 +266,9 @@ describe("POST /github/importar: importação de issues abertas pela fila", () =
     await chamada(factory, "POST", "/github/importar", { repoId: 42 });
     const registro = await esperarImportacao(factory, 42);
     expect(registro).toMatchObject({ status: "erro" });
-    expect(String(registro.ultimoErro)).toContain("GitHub respondeu 403");
+    expect(String(registro.ultimoErro)).toContain(
+      "não tem permissão para /repos/IgorGuariroba/software-factories/issues",
+    );
     expect((await api<unknown[]>(factory, "GET", "/tasks")).length).toBe(0);
   });
 });

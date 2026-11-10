@@ -85,6 +85,8 @@ export function textoImportacao(importacao) {
   }
   if (importacao.status === "ok" && importacao.ultimoResultado) {
     const r = importacao.ultimoResultado;
+    const nada = r.criadas + r.vinculadas + r.atualizadas + r.ignoradas === 0;
+    if (nada) return `${ultima} Nenhuma issue aberta neste repositório.`.trim();
     return `${ultima} ${r.criadas} criadas · ${r.vinculadas} vinculadas · ${r.atualizadas} atualizadas · ${r.ignoradas} ignoradas.`.trim();
   }
   return ultima || "Nunca importado.";
