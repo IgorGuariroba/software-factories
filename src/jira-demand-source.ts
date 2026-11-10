@@ -128,6 +128,23 @@ function createHttpAttachmentReader(
 }
 
 /**
+ * Trechos de uma linha em ADF: `[~accountid:ID]` vira nó de menção, para o Jira avisar a pessoa (ADR-0020); o resto é
+ * texto.
+ */
+function inlineAdf(line: string): object[] {
+  const out: object[] = [];
+  let resto = line;
+  const mencao = /\[~accountid:([^\]\s]+)\]/;
+  for (let m = mencao.exec(resto); m; m = mencao.exec(resto)) {
+    if (m.index > 0) out.push({ type: "text", text: resto.slice(0, m.index) });
+    out.push({ type: "mention", attrs: { id: m[1] } });
+    resto = resto.slice(m.index + m[0].length);
+  }
+  if (resto) out.push({ type: "text", text: resto });
+  return out;
+}
+
+/**
  * Texto da fábrica em ADF: linha em branco separa parágrafos, quebra simples vira `hardBreak` e um parágrafo inteiro
  * entre asteriscos (a marca de automação) sai em itálico.
  */
@@ -141,7 +158,7 @@ export function textToAdf(text: string): object {
       if (italic) return { type: "paragraph", content: [{ type: "text", text: italic[1], marks: [{ type: "em" }] }] };
       const content = p.split("\n").flatMap((line, i) => {
         const parts: object[] = i > 0 ? [{ type: "hardBreak" }] : [];
-        return line ? [...parts, { type: "text", text: line }] : parts;
+        return line ? [...parts, ...inlineAdf(line)] : parts;
       });
       return { type: "paragraph", content };
     });

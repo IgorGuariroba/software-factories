@@ -14,6 +14,6 @@ O ADR-0012 já previa que a pergunta sai "como comentário no Jira, mencionando 
 
 ## Consequências
 
-- O formato da menção no Jira depende do acli gravar o texto `[~accountid:...]`. Isso não foi verificado contra um Jira real: a verificação exige um tenant de teste.
+- No Jira, o comentário sai pela API REST em ADF. O texto `[~accountid:ID]` vira nó de menção (`mention`) no corpo, o que faz o Jira avisar a pessoa. Isso é verificado por simulação da API (o corpo enviado). A renderização num Jira real não foi verificada: exige um tenant de teste.
 - Os testes de escritor e de perguntas passam a esperar a menção no texto.
 - Ver também o [ADR-0012](0012-teams-graph-com-fallback-at-spi.md).

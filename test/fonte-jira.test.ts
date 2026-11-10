@@ -331,6 +331,16 @@ describe("Fonte Jira: comentários da fábrica em ADF pela API REST", () => {
     ]);
   });
 
+  it("uma menção [~accountid:ID] vira nó de menção do ADF, para o Jira notificar a pessoa", async () => {
+    const { calls, source } = rest();
+    await source.addComment("PROJ-1", "[~accountid:po-1] Pergunta 1: qual o separador?");
+    const corpo = calls[0]?.body as { body: { content: { content: unknown[] }[] } };
+    expect(corpo.body.content[0]?.content).toContainEqual(
+      expect.objectContaining({ type: "mention", attrs: expect.objectContaining({ id: "po-1" }) }),
+    );
+    expect(JSON.stringify(calls[0]?.body)).not.toContain("[~accountid:po-1]");
+  });
+
   it("edita o comentário em ADF", async () => {
     const { calls, source } = rest();
     await source.editComment("PROJ-1", "55", MARKED);
