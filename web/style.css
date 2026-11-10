@@ -2999,3 +2999,114 @@ summary.disclosure .chevron svg {
   align-items: center;
   gap: var(--sp-2);
 }
+
+/* Lista de tarefas no celular (≤760px, mesmo breakpoint da navegação): sem colunas de largura fixa.
+   Linha 1: chave, projeto, contador e status; linha 2: título (até 2 linhas); linha 3: ações, sempre visíveis
+   e com alvo de toque de 44px. */
+@media (max-width: 760px) {
+  .linha-tarefa {
+    flex-wrap: wrap;
+    align-items: stretch;
+    min-height: 0;
+  }
+  .linha-link {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    padding: 10px 8px 4px;
+  }
+  .linha-id {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .linha-id .linha-projeto {
+    max-width: 50%;
+  }
+  .linha-estado {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+  }
+  .linha-contador {
+    flex: 0 0 auto;
+    min-width: 0;
+  }
+  .linha-titulo {
+    flex: 1 1 100%;
+    order: 1;
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-height: 1.35;
+  }
+  .linha-subtitulo {
+    display: none;
+  }
+  .linha-acoes {
+    flex: 0 0 100%;
+    justify-content: flex-end;
+    padding: 0 8px 8px;
+  }
+  .linha-acoes:empty {
+    display: none;
+  }
+  .linha-acoes > button,
+  .linha-acoes .mover-botao {
+    min-height: 44px;
+  }
+  .linha-acoes > button:not(.mover-botao) {
+    min-width: 44px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+  .linha-acoes .mover-botao {
+    width: 44px;
+  }
+}
+
+/* Navegação no celular (≤760px): sem altura fixa nem rolagem escondida. Marca e controles do daemon
+   ficam na primeira linha; os links quebram em linhas próprias, todos visíveis. */
+@media (max-width: 760px) {
+  .layout {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+  .navegacao-principal {
+    flex: 0 0 auto;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--borda);
+  }
+  .navegacao-principal .marca {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+  }
+  .navegacao-principal .controles {
+    margin: 0 0 0 auto;
+    padding: 0;
+    border: 0;
+    flex-wrap: nowrap;
+  }
+  .navegacao-principal > a {
+    flex: 0 0 auto;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+  .navegacao-principal .nav-legenda {
+    display: none;
+  }
+}
