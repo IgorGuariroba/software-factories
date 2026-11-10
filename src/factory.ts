@@ -107,12 +107,13 @@ import {
   pessoasDeAssignees,
 } from "./pessoas-fonte.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
+import { aguardandoConfirmacao, comConfirmacaoPendente, trocouFonteOuRepositorio } from "./projeto-fonte.js";
 import { projetoPausado } from "./projeto-pausa.js";
 import { conflitoProjeto, montarProjetoGithub, padroesDe, pessoasDoProjeto } from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
-import { ativarProjeto, desativarProjeto, repoDesativado, tarefasAtivas } from "./repositorios.js";
+import { ativarProjeto, desativarProjeto, repoDesativado, tarefasAtivas, tarefasEmAndamento } from "./repositorios.js";
 import { respostaNaoSei } from "./resposta-tecnica.js";
 import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
@@ -1358,9 +1359,13 @@ export async function startFactory(opts: {
 
   /** Projetos criados pela UI (ADR-0022). Só eles são barrados enquanto incompletos; os do YAML seguem como estão. */
   const criadosPelaInterface = new Set<string>();
-  /** Pendências que barram ações de um projeto criado pela UI: vazio para os do YAML ou quando o projeto está completo. */
-  const pendenciasBloqueantes = (nome: string): string[] =>
-    criadosPelaInterface.has(nome) ? pendenciasDeConfiguracao(projectOf(nome).config) : [];
+  /** Pendências que barram ações: as de um projeto criado pela UI, e a confirmação de uma troca de Fonte (ticket 10). */
+  const pendenciasBloqueantes = (nome: string, state: FactoryState): string[] =>
+    comConfirmacaoPendente(
+      criadosPelaInterface.has(nome) ? pendenciasDeConfiguracao(projectOf(nome).config) : [],
+      state,
+      nome,
+    );
 
   /** Registra um projeto criado pela UI no processo, com a Fonte e o conhecimento do mesmo jeito que os do YAML. */
   function registrarProjeto(config: ProjectConfig): void {
@@ -1567,7 +1572,7 @@ export async function startFactory(opts: {
       // Projeto pausado pelo usuário não busca cards novos (ticket 09).
       if (projetoPausado(state, config.name)) continue;
       // Projeto criado pela UI e incompleto não executa: a interface mostra o que falta (ADR-0022).
-      if (pendenciasBloqueantes(config.name).length > 0) continue;
+      if (pendenciasBloqueantes(config.name, state).length > 0) continue;
       const cards = await source.listAssignedCards(config.source.assignee);
       if (config.source.type === "github") cards.sort((a, b) => issueOrder(a.key) - issueOrder(b.key));
       for (const card of cards) {
@@ -1646,7 +1651,7 @@ export async function startFactory(opts: {
       // Projeto pausado: a Tarefa espera a retomada, sem começar (ticket 09).
       if (projetoPausado(state, task.project)) continue;
       // Projeto criado pela UI e incompleto não executa nenhuma ação (ADR-0022): a Tarefa espera o projeto ficar pronto.
-      if (pendenciasBloqueantes(task.project).length > 0) continue;
+      if (pendenciasBloqueantes(task.project, state).length > 0) continue;
       const project = projects.get(task.project);
       if (!project) {
         if (!missingProjectReported.has(task.id)) {
@@ -2365,7 +2370,7 @@ export async function startFactory(opts: {
       };
     }
     // Importar cria Tarefas: projeto incompleto não executa, então não importa (ADR-0022).
-    const pendencias = pendenciasBloqueantes(project);
+    const pendencias = pendenciasBloqueantes(project, await readState());
     if (pendencias.length > 0) {
       return { status: 409, body: { error: `projeto ${project} incompleto: ${pendencias.join("; ")}` } };
     }
@@ -3150,23 +3155,28 @@ export async function startFactory(opts: {
         const nome = decodeURIComponent(pendenciasMatch[1] ?? "");
         const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
         if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        return json(res, 200, pendenciasDeConfiguracao(guardada));
+        return json(res, 200, comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome));
       }
       const estadoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/estado$/);
       if (estadoMatch && req.method === "GET") {
         const nome = decodeURIComponent(estadoMatch[1] ?? "");
         const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
         if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        const pendencias = pendenciasDeConfiguracao(guardada);
-        const pausado = projetoPausado(await readState(), nome);
-        return json(res, 200, { estado: estadoDoProjeto(pendencias, pausado), pendencias });
+        const state = await readState();
+        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
+        const pausado = projetoPausado(state, nome);
+        return json(res, 200, {
+          estado: estadoDoProjeto(pendencias, pausado),
+          pendencias,
+          aguardandoConfirmacao: aguardandoConfirmacao(state, nome),
+        });
       }
       const pausaMatch = url.pathname.match(/^\/projetos\/([^/]+)\/(pausa|retomada)$/);
       if (pausaMatch && req.method === "POST") {
         const nome = decodeURIComponent(pausaMatch[1] ?? "");
         const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
         if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        const pendencias = pendenciasDeConfiguracao(guardada);
+        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome);
         if (pausaMatch[2] === "pausa") {
           // Só um projeto ativo se pausa: um incompleto já não executa (ADR-0022).
           if (pendencias.length > 0)
@@ -3180,6 +3190,24 @@ export async function startFactory(opts: {
         }
         const pausado = projetoPausado(await readState(), nome);
         return json(res, 200, { estado: estadoDoProjeto(pendencias, pausado), pendencias });
+      }
+      const confirmacaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/confirmacao$/);
+      if (confirmacaoMatch && req.method === "POST") {
+        const nome = decodeURIComponent(confirmacaoMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        // Confirmar a Fonte nova tira só a pendência da troca: o projeto vira ativo se não houver outras (e não pausado).
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
+        }, context);
+        const state = await readState();
+        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
+        return json(res, 200, {
+          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
+          pendencias,
+          aguardandoConfirmacao: false,
+        });
       }
       if (route === "GET /telegram/configuracao") {
         const salvo = (await readState()).telegramConfig;
@@ -3288,11 +3316,19 @@ export async function startFactory(opts: {
         const erroFonte = await erroDaFonte(lida.data.source);
         if (erroFonte) return json(res, 400, { error: erroFonte });
         let existe = false;
+        let emAndamento: string[] = [];
         await harness.commit(async (tx) => {
           const state = await tx.doc(StateDoc);
           const anterior = lerConfiguracao(state.projetos?.[nome]);
           if (!anterior) return;
           existe = true;
+          // Trocar a Fonte ou o repositório só sem tarefas em andamento (ticket 10): nada é gravado se houver.
+          const troca = trocouFonteOuRepositorio(anterior, lida.data);
+          if (troca) {
+            emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
+            if (emAndamento.length > 0) return;
+            state.projetosAguardandoConfirmacao = [...new Set([...(state.projetosAguardandoConfirmacao ?? []), nome])];
+          }
           state.projetos = { ...state.projetos, [nome]: JSON.stringify(lida.data) };
           const campos = camposAlterados(anterior, lida.data);
           if (campos.length > 0)
@@ -3304,8 +3340,14 @@ export async function startFactory(opts: {
               ],
             };
         }, context);
-        if (existe) aplicarConfiguracao(lida.data);
-        return existe ? json(res, 200, lida.data) : json(res, 404, { error: `projeto ${nome} não existe` });
+        if (!existe) return json(res, 404, { error: `projeto ${nome} não existe` });
+        if (emAndamento.length > 0)
+          return json(res, 409, {
+            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para trocar a Fonte ou o repositório`,
+            tarefasEmAndamento: emAndamento,
+          });
+        aplicarConfiguracao(lida.data);
+        return json(res, 200, lida.data);
       }
       if (route === "GET /projetos")
         return json(

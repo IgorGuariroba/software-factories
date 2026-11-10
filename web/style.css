@@ -1980,6 +1980,10 @@ details[open] > summary.disclosure .chevron {
 [data-tela][hidden] {
   display: none;
 }
+/* O display próprio do botão vencia o atributo hidden: pausar, retomar e confirmar apareciam fora de hora. */
+button[hidden] {
+  display: none;
+}
 .quadro-area:has(#quadro:not(.modo-lista)) {
   display: block;
   height: auto;

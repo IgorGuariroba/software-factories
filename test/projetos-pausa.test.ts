@@ -34,6 +34,8 @@ async function subirAtivo(): Promise<TestFactory> {
     // O responsável na Fonte também é pessoa do projeto: perguntas técnicas vão para ele (ADR-0022).
     people: [PO, TECH_LEAD, { id: USER }],
   });
+  // Trocar a Fonte deixa o projeto incompleto até a confirmação (ticket 10).
+  await api(f, "POST", "/projetos/exemplo/confirmacao");
   return f;
 }
 

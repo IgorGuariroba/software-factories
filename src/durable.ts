@@ -320,6 +320,8 @@ export type FactoryState = {
   repos?: Record<string, RepoBinding>;
   /** Projetos pausados pelo usuário (ticket 09): nada novo começa neles e as Tarefas param no próximo passo. */
   projetosPausados?: string[];
+  /** Projetos que trocaram a Fonte ou o repositório e aguardam a confirmação da configuração nova (ticket 10). */
+  projetosAguardandoConfirmacao?: string[];
   /** Última sincronização com o GitHub por projeto (ISO 8601): a próxima consulta de alterações parte daqui. */
   sincronizadoEm?: Record<string, string>;
   /** Quando a fábrica recebeu a última entrega do webhook (ISO 8601). Ausente = nenhuma ainda. Só para o painel do App. */

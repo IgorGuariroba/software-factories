@@ -347,7 +347,11 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     factory = await factory.restart();
     const repos = await api<{ project: string }[]>(factory, "GET", "/repos");
     expect(repos.map((r) => r.project)).toContain("novo-repo");
-    expect(await api(factory, "GET", "/projetos/novo-repo/estado")).toEqual({ estado: "ativo", pendencias: [] });
+    expect(await api(factory, "GET", "/projetos/novo-repo/estado")).toEqual({
+      estado: "ativo",
+      pendencias: [],
+      aguardandoConfirmacao: false,
+    });
     expect((await chamada(factory, "POST", "/github/importar", { repoId: 77 })).status).toBe(202);
   });
 

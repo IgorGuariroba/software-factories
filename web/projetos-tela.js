@@ -257,6 +257,19 @@ export async function iniciarProjetos(raiz) {
     const retomar = el("button", { type: "button", texto: "Retomar projeto" });
     pausar.hidden = !acoes.pausar;
     retomar.hidden = !acoes.retomar;
+    // Troca de Fonte ou repositório (ticket 10): o projeto fica incompleto até o usuário confirmar a configuração nova.
+    const confirmar = el("button", { type: "button", texto: "Confirmar nova Fonte ou repositório" });
+    confirmar.hidden = situacao.aguardandoConfirmacao !== true;
+    confirmar.addEventListener("click", async () => {
+      try {
+        const resposta = await api("POST", `/projetos/${encodeURIComponent(nome)}/confirmacao`);
+        const fim = resposta.pendencias.length === 0 ? "" : `: ${resposta.pendencias.join("; ")}`;
+        mensagem.textContent = `Nova Fonte ou repositório confirmado. Projeto ${resposta.estado}${fim}.`;
+        await carregar();
+      } catch (erro) {
+        mensagem.textContent = erro.message;
+      }
+    });
     const aplicarPausa = async (chamar, sucesso) => {
       try {
         const resposta = await chamar();
@@ -363,7 +376,7 @@ export async function iniciarProjetos(raiz) {
     const situacaoBox = el("section", { class: "bloco" }, [
       el("h3", { texto: "Estado" }),
       el("p", { texto: acoesDoEstado(situacao.estado).texto }),
-      el("div", { class: "linha" }, [pausar, retomar]),
+      el("div", { class: "linha" }, [pausar, retomar, confirmar]),
       el("h3", { texto: "Pendências" }),
       el(
         "ul",

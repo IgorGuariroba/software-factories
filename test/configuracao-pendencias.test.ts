@@ -11,6 +11,8 @@ async function completarConfiguracao(f: TestFactory, pessoas: Record<string, unk
     allowedProviders: ["anthropic"],
     people: pessoas,
   });
+  // Trocar a Fonte deixa o projeto incompleto até a confirmação (ticket 10).
+  await api(f, "POST", "/projetos/exemplo/confirmacao");
 }
 
 const PO = { id: "po-x", role: "po" as const };
@@ -101,7 +103,11 @@ describe("pendências de configuração (ADR-0022)", () => {
     f = await startTestFactory({ config: { name: "exemplo", people: [] } });
     await completarConfiguracao(f, [PO, TECH_LEAD]);
 
-    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({ estado: "ativo", pendencias: [] });
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
+      estado: "ativo",
+      pendencias: [],
+      aguardandoConfirmacao: false,
+    });
   });
 
   it("estado: projeto com pendências é incompleto e lista o que falta", async () => {
@@ -121,6 +127,7 @@ describe("pendências de configuração (ADR-0022)", () => {
       ...atual,
       repositories: [{ path: process.cwd(), prefix: "EX", test: { command: [] } }],
     });
+    await api(f, "POST", "/projetos/exemplo/confirmacao");
 
     expect(await api<string[]>(f, "GET", "/projetos/exemplo/pendencias")).toEqual(["falta o comando de teste"]);
   });
@@ -134,10 +141,15 @@ describe("pendências de configuração (ADR-0022)", () => {
     expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
       estado: "incompleto",
       pendencias: ["falta um provedor permitido"],
+      aguardandoConfirmacao: false,
     });
 
     await api(f, "PUT", "/projetos/exemplo/configuracao", { ...atual, allowedProviders: ["anthropic"] });
-    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({ estado: "ativo", pendencias: [] });
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
+      estado: "ativo",
+      pendencias: [],
+      aguardandoConfirmacao: false,
+    });
   });
 
   it("comando de formatação é opcional e não vira pendência", async () => {
@@ -155,7 +167,11 @@ describe("pendências de configuração (ADR-0022)", () => {
   it("remover o último PO de um projeto ativo o torna incompleto, com a pendência", async () => {
     f = await startTestFactory({ config: { name: "exemplo", people: [] } });
     await completarConfiguracao(f, [PO, TECH_LEAD]);
-    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({ estado: "ativo", pendencias: [] });
+    expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
+      estado: "ativo",
+      pendencias: [],
+      aguardandoConfirmacao: false,
+    });
 
     const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
     await api(f, "PUT", "/projetos/exemplo/configuracao", { ...atual, people: [TECH_LEAD] });
@@ -163,6 +179,7 @@ describe("pendências de configuração (ADR-0022)", () => {
     expect(await api(f, "GET", "/projetos/exemplo/estado")).toEqual({
       estado: "incompleto",
       pendencias: ["falta uma pessoa no perfil PO"],
+      aguardandoConfirmacao: false,
     });
   });
 

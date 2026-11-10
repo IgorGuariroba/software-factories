@@ -542,7 +542,7 @@ export const API_SCHEMA = {
       get: { summary: "Configuração guardada do projeto (ADR-0017)", responses: ok },
       put: {
         summary:
-          "Grava a configuração do projeto, validada pelo schema, pelos perfis, pelos caminhos de repositório e pela conexão da Fonte Jira com credencial; aplica na hora",
+          "Grava a configuração do projeto, validada pelo schema, pelos perfis, pelos caminhos de repositório e pela conexão da Fonte Jira com credencial; aplica na hora. Trocar a Fonte ou o repositório só sem tarefas em andamento (409) e deixa o projeto incompleto até a confirmação",
         responses: ok,
       },
     },
@@ -552,7 +552,8 @@ export const API_SCHEMA = {
     "/projetos/{nome}/pendencias": { get: { summary: "O que falta na configuração (lista de avisos)", responses: ok } },
     "/projetos/{nome}/estado": {
       get: {
-        summary: "Estado do projeto (incompleto, ativo ou pausado) com a lista do que falta (ADR-0022)",
+        summary:
+          "Estado do projeto (incompleto, ativo ou pausado) com a lista do que falta (ADR-0022) e se aguarda confirmação de troca de Fonte",
         responses: ok,
       },
     },
@@ -560,6 +561,13 @@ export const API_SCHEMA = {
       post: {
         summary:
           "Pausa um projeto ativo: nada novo começa nele, e a Tarefa em andamento para no próximo passo. Incompleto: 409",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/confirmacao": {
+      post: {
+        summary:
+          "Confirma a Fonte ou o repositório trocados: tira essa pendência, e o projeto fica ativo se não houver outras",
         responses: ok,
       },
     },

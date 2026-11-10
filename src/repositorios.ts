@@ -4,6 +4,10 @@ import type { WebhookEffect } from "./github-webhook.js";
 /** Estados terminais: a Tarefa já não mexe no card nem no repositório. */
 const TERMINAL: ReadonlySet<string> = new Set(["concluida", "cancelada", "bloqueada", "vetada", "recusada"]);
 
+/** Tarefas do projeto ainda não terminadas (enfileiradas, em execução ou paradas): bloqueiam a troca de Fonte. */
+export const tarefasEmAndamento = (state: Pick<FactoryState, "tasks">, project: string): QueuedTask[] =>
+  state.tasks.filter((t) => t.project === project && !TERMINAL.has(t.status));
+
 /** O repositório do projeto está desativado: nada novo entra na fila dele (ADR-0015). */
 export const repoDesativado = (state: Pick<FactoryState, "repos">, project: string): boolean =>
   state.repos?.[project]?.status === "desativado";

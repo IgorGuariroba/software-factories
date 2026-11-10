@@ -364,6 +364,7 @@ describe("schema da API", () => {
         "/projetos/gitlab",
         "/projetos/pessoas-da-fonte",
         "/projetos/{nome}/configuracao",
+        "/projetos/{nome}/confirmacao",
         "/projetos/{nome}/estado",
         "/projetos/{nome}/historico",
         "/projetos/{nome}/pausa",
