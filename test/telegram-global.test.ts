@@ -84,9 +84,24 @@ describe("Telegram salvo pela interface é ligado no startup, com o token do cof
     });
     await api(f, "PUT", "/segredos/telegram-bot", { valor: "123456:TOKEN-DO-COFRE" });
     await api(f, "PUT", "/telegram/configuracao", { chat: "987654", credential: "telegram-bot", usuario: "111" });
-    expect(criados).toEqual([]);
+    criados.length = 0;
 
     f = await f.restartComYaml({});
+
+    expect(criados).toEqual([{ token: "123456:TOKEN-DO-COFRE", chat: "987654" }]);
+  });
+
+  it("salvar a configuração liga a interface na hora, sem reiniciar o daemon", async () => {
+    const criados: { token: string; chat: string }[] = [];
+    f = await startTestFactory({
+      criarInterfaceTelegram: (token, chat) => {
+        criados.push({ token, chat });
+        return new FakeTelegram();
+      },
+    });
+    await api(f, "PUT", "/segredos/telegram-bot", { valor: "123456:TOKEN-DO-COFRE" });
+
+    await api(f, "PUT", "/telegram/configuracao", { chat: "987654", credential: "telegram-bot", usuario: "111" });
 
     expect(criados).toEqual([{ token: "123456:TOKEN-DO-COFRE", chat: "987654" }]);
   });

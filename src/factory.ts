@@ -2702,6 +2702,7 @@ export async function startFactory(opts: {
         await harness.commit(async (tx) => {
           (await tx.doc(StateDoc)).telegramConfig = configTelegram;
         }, context);
+        await reiniciarBridge();
         return json(res, 200, configTelegram);
       }
       const historicoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/historico$/);
@@ -2721,7 +2722,41 @@ export async function startFactory(opts: {
         const corpo = (await readBody(req)) as { valor?: unknown } | undefined;
         if (typeof corpo?.valor !== "string" || corpo.valor.length === 0)
           return json(res, 400, { error: "informe valor, o conteúdo da credencial" });
-        return json(res, 200, await segredos.put(nomeSegredo, corpo.valor));
+        // Credencial em uso por projetos: a troca passa pelo mesmo teste de conexão do PUT da Fonte Jira
+        // (um valor inválido não deve degradar as tarefas em silêncio) e fica registrada no histórico.
+        const usadoPor: { nome: string; fonte: { type: string; baseUrl?: string; email?: string } }[] = [];
+        for (const [nome, bruto] of Object.entries((await readState()).projetos ?? {})) {
+          const config = lerConfiguracao(bruto);
+          if (config?.source.credential === nomeSegredo) usadoPor.push({ nome, fonte: config.source });
+        }
+        for (const { fonte } of usadoPor) {
+          if (fonte.type !== "jira" || !fonte.baseUrl || !fonte.email) continue;
+          const conexao = await testarConexaoJira({
+            baseUrl: fonte.baseUrl,
+            email: fonte.email,
+            token: corpo.valor,
+            fetch: opts.fetchFonte ?? fetch,
+          });
+          if (!conexao.ok)
+            return json(res, 400, {
+              error: `conexão com o Jira falhou (${conexao.motivo}); a credencial ${nomeSegredo} não foi trocada`,
+            });
+        }
+        const gravado = await segredos.put(nomeSegredo, corpo.valor);
+        if (usadoPor.length > 0) {
+          await harness.commit(async (tx) => {
+            const state = await tx.doc(StateDoc);
+            const quando = new Date(clock.now()).toISOString();
+            const historico = { ...state.historicoConfig };
+            for (const { nome } of usadoPor)
+              historico[nome] = [
+                ...(historico[nome] ?? []),
+                { quando, autor: "usuario", campos: [`credencial ${nomeSegredo} trocada`] },
+              ];
+            state.historicoConfig = historico;
+          }, context);
+        }
+        return json(res, 200, gravado);
       }
       const configuracaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/configuracao$/);
       if (configuracaoMatch && req.method === "GET") {
@@ -2924,34 +2959,45 @@ export async function startFactory(opts: {
     return { port: opts.criarInterfaceTelegram(token, salvo.chat), chat: salvo.chat, user: salvo.usuario };
   }
   // Variáveis de ambiente, quando definidas, têm prioridade sobre a configuração salva.
-  const management = opts.management ?? (await interfaceDeGestaoSalva());
-  const bridge =
-    management &&
-    (await startManagementBridge({
-      ...management,
-      events,
-      initialEventCount,
-      progress: {
-        load: async () => {
-          const stored = (await harness.snapshot(ManagementDoc, context))?.[management.port.name];
-          return stored && { ...stored };
+  async function montarBridge(management: { port: ManagementInterface; chat: string; user?: string } | undefined) {
+    return (
+      management &&
+      (await startManagementBridge({
+        ...management,
+        events,
+        initialEventCount,
+        progress: {
+          load: async () => {
+            const stored = (await harness.snapshot(ManagementDoc, context))?.[management.port.name];
+            return stored && { ...stored };
+          },
+          save: (progress) =>
+            harness.commit(async (tx) => {
+              (await tx.doc(ManagementDoc))[management.port.name] = progress;
+            }, context),
         },
-        save: (progress) =>
-          harness.commit(async (tx) => {
-            (await tx.doc(ManagementDoc))[management.port.name] = progress;
-          }, context),
-      },
-      tasks: async () => (await readState()).tasks,
-      commands,
-      content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
-      contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
-      availableAt: (name) => {
-        const config = projects.get(name)?.config;
-        return config ? nextProjectActivity(config, clock.now()) : clock.now();
-      },
-      now: clock.now,
-      armTimer,
-    }));
+        tasks: async () => (await readState()).tasks,
+        commands,
+        content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
+        contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
+        availableAt: (name) => {
+          const config = projects.get(name)?.config;
+          return config ? nextProjectActivity(config, clock.now()) : clock.now();
+        },
+        now: clock.now,
+        armTimer,
+      }))
+    );
+  }
+  let bridge = await montarBridge(opts.management ?? (await interfaceDeGestaoSalva()));
+  /** Telegram salvo pela API vale sem reiniciar; a variável de ambiente (opts.management) continua prioritária. */
+  async function reiniciarBridge(): Promise<void> {
+    if (opts.management) return;
+    const anterior = bridge;
+    bridge = undefined;
+    await anterior?.stop();
+    bridge = await montarBridge(await interfaceDeGestaoSalva());
+  }
 
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;

@@ -83,6 +83,46 @@ describe("fonte Jira editável pela interface, com credencial no cofre (fatia 03
     expect(depois.source.baseUrl).toBeUndefined();
   });
 
+  it("trocar a credencial em uso recusa um valor que não conecta, sem gravá-lo nem registrar a troca", async () => {
+    const { fetchFake } = jiraFake(true);
+    f = await startTestFactory({ fetchFonte: fetchFake });
+    await api(f, "PUT", "/segredos/jira-token", { valor: TOKEN });
+    const atual = await api<Config>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      source: { ...atual.source, baseUrl: BASE, email: EMAIL, credential: "jira-token" },
+    });
+
+    const res = await fetch(`${f.url}/segredos/jira-token`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ valor: "valor-que-nao-conecta" }),
+    });
+    const corpo = await res.text();
+
+    expect(res.status).toBe(400);
+    expect(corpo).toContain("a credencial jira-token não foi trocada");
+    expect(corpo).not.toContain("valor-que-nao-conecta");
+    const historico = await api<{ campos: string[] }[]>(f, "GET", "/projetos/exemplo/historico");
+    expect(historico.some((h) => h.campos.includes("credencial jira-token trocada"))).toBe(false);
+  });
+
+  it("trocar a credencial em uso com um valor válido grava e registra a troca no histórico do projeto", async () => {
+    const { fetchFake } = jiraFake(true);
+    f = await startTestFactory({ fetchFonte: fetchFake });
+    await api(f, "PUT", "/segredos/jira-token", { valor: TOKEN });
+    const atual = await api<Config>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      source: { ...atual.source, baseUrl: BASE, email: EMAIL, credential: "jira-token" },
+    });
+
+    await api(f, "PUT", "/segredos/jira-token", { valor: TOKEN });
+
+    const historico = await api<{ campos: string[] }[]>(f, "GET", "/projetos/exemplo/historico");
+    expect(historico.some((h) => h.campos.includes("credencial jira-token trocada"))).toBe(true);
+  });
+
   it("com credencial válida, testa a conexão e salva a Fonte; a API devolve a configuração nova", async () => {
     const { fetchFake, chamadas } = jiraFake(true);
     f = await startTestFactory({ fetchFonte: fetchFake });
