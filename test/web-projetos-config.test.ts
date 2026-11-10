@@ -87,6 +87,20 @@ describe("página de configuração de projeto: conversão do formulário", () =
     ]);
   });
 
+  it("o nível de conteúdo do Telegram do projeto vai para a configuração, sem perder outros campos do bloco", () => {
+    const atual = { name: "exemplo", telegram: { content: "full", outroCampo: 1 } };
+
+    const nova = configDoFormulario(atual, {
+      fonte: { type: "github", project: "SF", repo: "dono/repo", assignee: "dono" },
+      perfis: [],
+      pessoas: [],
+      dryRun: true,
+      telegram: "minimal",
+    });
+
+    expect(nova.telegram).toEqual({ content: "minimal", outroCampo: 1 });
+  });
+
   it("monta a configuração inteira sobre a atual, sem perder campos que a página não edita", () => {
     const atual = { name: "exemplo", dryRun: true, roles: { spec: { provider: "p", model: "m" } }, people: [] };
 

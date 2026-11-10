@@ -34,6 +34,30 @@ describe("Telegram global ao usuário (fatia 09)", () => {
     expect(((await res.json()) as { error: string }).error).toContain("credencial telegram-bot não cadastrada");
   });
 
+  it("o nível de conteúdo do Telegram é gravado por projeto e a API devolve o valor salvo", async () => {
+    f = await startTestFactory({});
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+
+    await api(f, "PUT", "/projetos/exemplo/configuracao", { ...atual, telegram: { content: "minimal" } });
+
+    expect(
+      (await api<{ telegram?: { content: string } }>(f, "GET", "/projetos/exemplo/configuracao")).telegram?.content,
+    ).toBe("minimal");
+  });
+
+  it("um nível de conteúdo desconhecido do Telegram é recusado", async () => {
+    f = await startTestFactory({});
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+
+    const res = await fetch(`${f.url}/projetos/exemplo/configuracao`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...atual, telegram: { content: "tudo" } }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it("sem configuração, a leitura responde 404", async () => {
     f = await startTestFactory({});
 

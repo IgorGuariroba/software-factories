@@ -16,6 +16,38 @@ describe("pendências de configuração (fatia 11)", () => {
     expect(pendencias.some((p) => /PO/.test(p))).toBe(true);
   });
 
+  it("uma pessoa no perfil PO, por perfil e não por papel antigo, não gera pendência", async () => {
+    f = await startTestFactory({
+      config: {
+        name: "exemplo",
+        profiles: [{ nome: "Edgar", papel: "po" }],
+        people: [{ id: "edgar", perfis: ["Edgar"] }],
+      },
+    });
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      source: { type: "github", project: "PROJ", repo: "dono/repo", assignee: "dono" },
+    });
+
+    expect(await api<string[]>(f, "GET", "/projetos/exemplo/pendencias")).toEqual([]);
+  });
+
+  it("um perfil PO sem nenhuma pessoa atribuída gera pendência", async () => {
+    f = await startTestFactory({
+      config: { name: "exemplo", profiles: [{ nome: "Edgar", papel: "po" }], people: [] },
+    });
+    const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+    await api(f, "PUT", "/projetos/exemplo/configuracao", {
+      ...atual,
+      source: { type: "github", project: "PROJ", repo: "dono/repo", assignee: "dono" },
+    });
+
+    const pendencias = await api<string[]>(f, "GET", "/projetos/exemplo/pendencias");
+
+    expect(pendencias.some((p) => /PO/.test(p))).toBe(true);
+  });
+
   it("avisa quando a Fonte Jira não tem credencial no cofre", async () => {
     f = await startTestFactory({ config: { name: "exemplo" } });
 

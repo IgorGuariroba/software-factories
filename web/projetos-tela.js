@@ -179,6 +179,12 @@ export async function iniciarProjetos(raiz) {
     adicionarPessoa.addEventListener("click", () => addPessoa());
 
     const ensaio = el("input", { type: "checkbox", id: "projeto-config-ensaio", marcado: atual.dryRun === true });
+    // Conteúdo das mensagens deste projeto no Telegram (fatia 09): completo ou mínimo.
+    const conteudoTelegram = el("select", { "aria-label": "Conteúdo no Telegram" }, [
+      el("option", { valor: "full", texto: "completo" }),
+      el("option", { valor: "minimal", texto: "mínimo" }),
+    ]);
+    conteudoTelegram.value = atual.telegram?.content ?? "full";
     const salvar = el("button", { type: "button", texto: "Salvar configuração" });
     salvar.addEventListener("click", async () => {
       try {
@@ -207,6 +213,7 @@ export async function iniciarProjetos(raiz) {
           perfis,
           pessoas,
           dryRun: ensaio.checked,
+          telegram: conteudoTelegram.value,
           repositorios: atual.repositories || repositorios.length > 0 ? repositorios : undefined,
         });
         await api("PUT", `/projetos/${encodeURIComponent(nome)}/configuracao`, nova);
@@ -217,7 +224,7 @@ export async function iniciarProjetos(raiz) {
       }
     });
 
-    corpo.replaceChildren(
+    const secoes = [
       el("section", { class: "bloco" }, [
         el("h3", { texto: "Fonte de demandas" }),
         el("label", { class: "campo" }, [el("span", { texto: "Tipo" }), tipoSel]),
@@ -230,6 +237,7 @@ export async function iniciarProjetos(raiz) {
       el("section", { class: "bloco" }, [el("h3", { texto: "Repositórios locais" }), adicionarRepo, repoBox]),
       el("section", { class: "bloco" }, [
         el("label", {}, [ensaio, el("span", { texto: " Ensaio (dry-run): registra as escritas sem aplicá-las" })]),
+        el("label", { class: "campo" }, [el("span", { texto: "Conteúdo no Telegram" }), conteudoTelegram]),
         salvar,
       ]),
       el("section", { class: "bloco" }, [
@@ -252,7 +260,19 @@ export async function iniciarProjetos(raiz) {
             : resumoHistorico(historico).map((linha) => el("li", { texto: linha })),
         ),
       ]),
-    );
+    ];
+    // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
+    const formulario = el("fieldset", { class: "projeto-config-form", disabled: "" }, secoes);
+    const editar = el("button", { type: "button", texto: "Editar configuração" });
+    const cancelar = el("button", { type: "button", texto: "Cancelar edição" });
+    cancelar.hidden = true;
+    editar.addEventListener("click", () => {
+      formulario.disabled = false;
+      editar.hidden = true;
+      cancelar.hidden = false;
+    });
+    cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
+    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario);
   }
 
   seletor.addEventListener("change", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));

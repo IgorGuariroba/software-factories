@@ -76,9 +76,17 @@ export function pessoasDoFormulario(linhas) {
  * @param {Record<string, unknown>} atual
  * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[] }} opcoes
  */
-export function configDoFormulario(atual, { fonte, perfis, pessoas, dryRun, repositorios }) {
+/**
+ * Configuração inteira a partir do formulário, sobre a atual (o que a página não edita fica como está).
+ * @param {Record<string, any>} atual
+ * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[], telegram?: "full" | "minimal" }} campos
+ * @returns {Record<string, any>}
+ */
+export function configDoFormulario(atual, { fonte, perfis, pessoas, dryRun, repositorios, telegram }) {
   const nova = { ...atual, source: fonte, profiles: perfis, people: pessoas, dryRun };
   if (repositorios !== undefined) nova.repositories = repositorios;
+  // Nível de conteúdo no Telegram (fatia 09): o bloco guarda o que a página não edita, como outros campos dele.
+  if (telegram !== undefined) nova.telegram = { ...(atual.telegram ?? {}), content: telegram };
   return nova;
 }
 

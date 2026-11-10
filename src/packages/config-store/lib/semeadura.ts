@@ -1,4 +1,5 @@
 import { ProjectConfig } from "../../../config.js";
+import { pessoasDoPapel } from "../../profiles/index.js";
 
 /**
  * Configurações de projeto guardadas no estado durável, por nome, como JSON (o estado precisa ser compatível com JSON).
@@ -45,7 +46,7 @@ export function camposAlterados(antes: object, depois: object): string[] {
  */
 export function pendenciasDeConfiguracao(config: ProjectConfig): string[] {
   const pendencias: string[] = [];
-  if (!config.people.some((p) => p.role === "po")) pendencias.push("falta uma pessoa no perfil PO");
+  if (pessoasDoPapel(config, "po").length === 0) pendencias.push("falta uma pessoa no perfil PO");
   if (config.source.type === "jira" && !config.source.credential) pendencias.push("Fonte Jira sem credencial no cofre");
   return pendencias;
 }
