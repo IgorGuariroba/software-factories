@@ -30,6 +30,11 @@ const seg = encodeURIComponent;
 
 export const getTasks = () => api("GET", "/tasks");
 export const getTask = (project, key) => api("GET", `/tasks/${seg(project)}/${seg(key)}`);
+export const getTrace = (project, key) => api("GET", `/tasks/${seg(project)}/${seg(key)}/trace`);
+export const esquecerMemoriaEtapa = (project, key, etapa) =>
+  api("POST", `/tasks/${seg(project)}/${seg(key)}/etapas/${seg(etapa)}/memoria/esquecer`);
+export const enviarMensagemEtapa = (project, key, etapa, texto) =>
+  api("POST", `/tasks/${seg(project)}/${seg(key)}/etapas/${seg(etapa)}/mensagem`, { texto });
 export const getQueue = () => api("GET", "/queue");
 export const getDaemon = () => api("GET", "/daemon");
 export const getRetroSettings = () => api("GET", "/settings/retro");

@@ -82,6 +82,22 @@ _Avoid_: papel (usado para modelos), cargo, role
 Meio de conversa da fábrica com as pessoas do projeto (Teams, comentário no card). Cada pessoa usa o canal que lhe cabe.
 _Avoid_: interface (são conceitos distintos), Telegram (é interface de gestão)
 
+**Agente da etapa**:
+Configuração de uma etapa (modelo, prompt de sistema, tools, MCPs, skills e memória) que roda como agente independente, editável pela interface de gestão.
+_Avoid_: agente (sozinho), worker
+
+**Skill**:
+Bloco de instruções versionado no conhecimento do projeto, ativado por Agente da etapa e incluído no prompt dele.
+_Avoid_: skill do Claude Code, plugin
+
+**Memória da etapa**:
+Contexto persistido da conversa de um Agente da etapa, segmentado por tarefa e etapa e isolado por projeto.
+_Avoid_: conhecimento do projeto (que é compartilhado entre tarefas)
+
+**Trace**:
+Registro das chamadas de tool, mensagens e resultados de uma execução de Agente da etapa, visível ao vivo e no histórico da tarefa.
+_Avoid_: log
+
 **Interface de gestão**:
 Meio pelo qual só o usuário acompanha e comanda a fábrica (web local, Telegram). Não fala com as pessoas do projeto.
 _Avoid_: canal, painel, dashboard

@@ -6,11 +6,17 @@ import {
   defineTool,
   type Harness,
   type TaskId,
+  type ToolRegistration,
   type Tx,
 } from "@earendil-works/pi-durable";
 import { arr, obj, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
-import type { ModelRef } from "./config.js";
+import {
+  type AgenteDaEtapa,
+  comPromptAdicional,
+  ferramentasParaEtapa,
+  textoAdicionalDoAgente,
+} from "./agente-etapa-config.js";
 import type { Card, CardComment, TextAttachment } from "./demand-source.js";
 import { isAutomationText } from "./effect-writer.js";
 
@@ -199,15 +205,32 @@ export async function requestSpec(opts: {
   /** Commit da Tarefa durável. */
   commit: (change: (tx: Tx) => Promise<void>) => Promise<void>;
   taskId: TaskId;
-  model: ModelRef;
+  /** Configuração efetiva da etapa (Agente da etapa): modelo, ferramentas e prompt adicional. */
+  agente: AgenteDaEtapa;
   input: string;
   followUp?: string;
   requestId: string;
   context: Context;
   /** Conversas da Tarefa que não são da SPEC (ex.: a da triagem). */
   exclude?: readonly string[];
+  /** Grava na Tarefa qual é a conversa da SPEC, para o trace da etapa. */
+  registrarConversa?: (conversa: ConversationId) => Promise<void>;
+  /** Ferramentas MCP liberadas para a etapa, já carregadas da configuração (fatia 09). */
+  ferramentasExtras?: readonly ToolRegistration[];
+  /** Instala a extensão das ferramentas MCP no registro do harness, antes da execução. */
+  instalarExtensao?: (extensao: ReturnType<typeof defineExtension>) => void;
 }): Promise<GrillOutcome> {
-  const { harness, context } = opts;
+  const { harness, context, agente } = opts;
+  const model = agente.modelo;
+  if (!model) throw new Error("a etapa SPEC não tem modelo configurado");
+  const ferramentas = ferramentasParaEtapa([deliverTool, askTool, askTechnicalTool], agente.ferramentas, "spec");
+  if (!ferramentas.includes(deliverTool)) throw new Error(`a etapa SPEC exige a ferramenta ${DELIVER_TOOL}`);
+  // As tools MCP da etapa vivem numa extensão por tarefa, instalada antes de cada execução (fatia 09). Se a
+  // extensão não estiver instalada, o modelo não consegue chamar a ferramenta.
+  const extensaoMcp = opts.ferramentasExtras?.length
+    ? defineExtension({ name: `fabrica.spec.mcp.${String(opts.taskId)}`, tools: [...opts.ferramentasExtras] })
+    : undefined;
+  if (extensaoMcp) opts.instalarExtensao?.(extensaoMcp);
   let conversationId: ConversationId | undefined;
   await opts.commit(async (tx) => {
     const exclude = new Set<string>(opts.exclude ?? []);
@@ -220,14 +243,15 @@ export async function requestSpec(opts: {
     }
     const created = await tx.createConversation({ ownership: { kind: "task", taskId: opts.taskId } });
     await configure(tx, created.id, {
-      model: { provider: opts.model.provider, modelId: opts.model.model },
-      extensions: [SpecExtension],
-      tools: [deliverTool, askTool, askTechnicalTool],
-      instructions: INSTRUCTIONS,
+      model: { provider: model.provider, modelId: model.model },
+      extensions: extensaoMcp ? [SpecExtension, extensaoMcp] : [SpecExtension],
+      tools: [...ferramentas, ...(opts.ferramentasExtras ?? [])],
+      instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(agente)),
       maxTurns: 2,
     });
     conversationId = created.id;
   });
+  if (conversationId && opts.registrarConversa) await opts.registrarConversa(conversationId);
   const conversation = conversationId && (await harness.conversation(conversationId, context));
   if (!conversation) throw new Error("conversa da etapa SPEC não encontrada");
 

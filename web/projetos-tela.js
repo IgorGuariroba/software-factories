@@ -1,6 +1,7 @@
 // Tela de configuração de projeto: monta o formulário a partir da API e grava pela API (ADR-0017). Não há regra de
 // negócio aqui: a API valida tudo; esta tela só converte valores (ver projeto-config.js, testado em Node).
 import { api } from "./api.js";
+import { desenharEtapasAgente } from "./etapas-agente-tela.js";
 import {
   camposDaFonte,
   configDoFormulario,
@@ -22,6 +23,7 @@ function el(tag, props = {}, filhos = []) {
     else if (chave === "classe") node.className = valor;
     else if (chave === "valor") node.value = valor;
     else if (chave === "marcado") node.checked = valor;
+    else if (chave.startsWith("on")) node.addEventListener(chave.slice(2), valor);
     else node.setAttribute(chave, valor);
   }
   for (const f of filhos) node.append(f);
@@ -60,15 +62,16 @@ export async function iniciarProjetos(raiz) {
   async function carregar() {
     const nome = seletor.value;
     if (!nome) return;
-    const [atual, pendencias, historico] = await Promise.all([
+    const [atual, pendencias, historico, catalogo] = await Promise.all([
       api("GET", `/projetos/${encodeURIComponent(nome)}/configuracao`),
       api("GET", `/projetos/${encodeURIComponent(nome)}/pendencias`),
       api("GET", `/projetos/${encodeURIComponent(nome)}/historico`),
+      api("GET", "/ferramentas"),
     ]);
-    desenhar(nome, atual, pendencias, historico);
+    desenhar(nome, atual, pendencias, historico, catalogo);
   }
 
-  function desenhar(nome, atual, pendencias, historico) {
+  function desenhar(nome, atual, pendencias, historico, catalogo) {
     const tipoSel = el(
       "select",
       { "aria-label": "Tipo da Fonte" },
@@ -216,6 +219,9 @@ export async function iniciarProjetos(raiz) {
           dryRun: ensaio.checked,
           telegram: conteudoTelegram.value,
           repositorios: atual.repositories || repositorios.length > 0 ? repositorios : undefined,
+          etapas: lerEtapas(),
+          skills: lerSkills(),
+          mcpServers: lerServidores(),
         });
         await api("PUT", `/projetos/${encodeURIComponent(nome)}/configuracao`, nova);
         mensagem.textContent = "Configuração salva.";
@@ -225,7 +231,11 @@ export async function iniciarProjetos(raiz) {
       }
     });
 
+    const etapasBox = el("section", { class: "bloco" });
+    const { lerEtapas, lerSkills, lerServidores } = desenharEtapasAgente(etapasBox, atual, catalogo, el);
+
     const secoes = [
+      etapasBox,
       el("section", { class: "bloco" }, [
         el("h3", { texto: "Fonte de demandas" }),
         el("label", { class: "campo" }, [el("span", { texto: "Tipo" }), tipoSel]),

@@ -9,8 +9,14 @@ import {
   type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
+import {
+  type AgenteDaEtapa,
+  comPromptAdicional,
+  ferramentasParaEtapa,
+  textoAdicionalDoAgente,
+} from "./agente-etapa-config.js";
 import type { CodeHost } from "./code-host.js";
-import type { ModelRef, ProjectConfig } from "./config.js";
+import type { ProjectConfig } from "./config.js";
 import { formatBranchName, formatCommitMessage, resolveConventions } from "./conventions.js";
 import type { Card } from "./demand-source.js";
 import {
@@ -26,6 +32,7 @@ import type { EventRecorder } from "./events.js";
 import { git } from "./git.js";
 import { recoverRepair } from "./repair.js";
 import { resolveRepository } from "./repo-resolver.js";
+import { executarNoSandbox, sandboxDisponivel } from "./sandbox.js";
 import { redactSecrets } from "./secrets.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import { testDiagnostic } from "./test-diagnostic.js";
@@ -172,7 +179,27 @@ export function createImplementationExtension(deps: ImplementationDeps) {
     },
   });
 
-  const tools = [readTool, writeTool, testTool];
+  // Bash do modelo: roda só dentro do sandbox (ADR-0006). Sem o bwrap, a chamada é recusada, nunca executada direto.
+  const shellTool = defineTool({
+    name: "executar_comando",
+    description:
+      "Roda um comando de shell no clone da Tarefa, dentro de sandbox: sem rede, com o clone como único lugar gravável.",
+    parameters: obj({ comando: str({ description: "Comando de shell, executado na raiz do repositório." }) }),
+    execute: async (args, api, context) => {
+      const { progress, worktree } = await workspaceOf(api, context);
+      if (!sandboxDisponivel()) throw new Error("recusado: o sandbox bubblewrap não está disponível neste host");
+      const run = await executarNoSandbox({
+        cwd: worktree,
+        comando: args.comando,
+        timeoutMs: progress.test.timeoutSeconds * 1000,
+        signal: context.abortSignal,
+      });
+      if (run.timedOut) return text(`tempo esgotado\n${run.output}`);
+      return text(`código ${run.exitCode}\n${run.output}`);
+    },
+  });
+
+  const tools = [readTool, writeTool, testTool, shellTool];
   return { extension: defineExtension({ name: "fabrica.implementacao", tools }), tools };
 }
 
@@ -215,7 +242,8 @@ export async function runImplementation(opts: {
   writer: EffectWriter;
   card: Card;
   delivery: SpecDelivery;
-  model: ModelRef;
+  /** Configuração efetiva da implementação (Agente da etapa): modelo, ferramentas e prompt adicional. */
+  agente: AgenteDaEtapa;
   deps: ImplementationDeps;
   tools: ImplementationExtension;
   /** Correções podem ficar satisfeitas por outro reparo; os tickets originais nunca usam esta saída. */
@@ -366,11 +394,13 @@ export async function runImplementation(opts: {
     let created: ImplementationProgress | undefined;
     await runtime.commit(async (tx) => {
       const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
+      const modelo = opts.agente.modelo;
+      if (!modelo) throw new Error("a implementação não tem modelo configurado");
       await configure(tx, conversation.id, {
-        model: { provider: opts.model.provider, modelId: opts.model.model },
+        model: { provider: modelo.provider, modelId: modelo.model },
         extensions: [opts.tools.extension],
-        tools: opts.tools.tools,
-        instructions: INSTRUCTIONS,
+        tools: ferramentasParaEtapa(opts.tools.tools, opts.agente.ferramentas, "implementacao"),
+        instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(opts.agente)),
         maxTurns: MAX_TURNS,
       });
       created = {

@@ -82,12 +82,81 @@ export function pessoasDoFormulario(linhas) {
  * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[], telegram?: "full" | "minimal" }} campos
  * @returns {Record<string, any>}
  */
-export function configDoFormulario(atual, { fonte, perfis, pessoas, dryRun, repositorios, telegram }) {
+export function configDoFormulario(atual, opcoes) {
+  const { fonte, perfis, pessoas, dryRun, repositorios, telegram, etapas, skills, mcpServers } = opcoes;
   const nova = { ...atual, source: fonte, profiles: perfis, people: pessoas, dryRun };
   if (repositorios !== undefined) nova.repositories = repositorios;
   // Nível de conteúdo no Telegram (fatia 09): o bloco guarda o que a página não edita, como outros campos dele.
   if (telegram !== undefined) nova.telegram = { ...(atual.telegram ?? {}), content: telegram };
+  // Agentes das etapas: a chave presente com `undefined` remove o que estava gravado; ausente, mantém.
+  if ("etapas" in opcoes) {
+    if (etapas === undefined) delete nova.etapas;
+    else nova.etapas = etapas;
+  }
+  // Skills do projeto (fatia 10): a mesma regra das etapas, lidas do editor de skills.
+  if ("skills" in opcoes) {
+    if (skills === undefined) delete nova.skills;
+    else nova.skills = skills;
+  }
+  // Servidores MCP do projeto (fatia 09): mesma regra das skills.
+  if ("mcpServers" in opcoes) {
+    if (mcpServers === undefined) delete nova.mcpServers;
+    else nova.mcpServers = mcpServers;
+  }
   return nova;
+}
+
+const mesmasFerramentas = (a, b) => a.length === b.length && a.every((nome, i) => nome === b[i]);
+
+/**
+ * Lê o editor de skills do projeto. Linhas sem nome ou sem conteúdo são descartadas; o nome perde os espaços das pontas.
+ * @param {{ nome: string, descricao?: string, conteudo: string }[]} linhas
+ */
+export function skillsDoFormulario(linhas) {
+  return linhas
+    .map((l) => ({ nome: l.nome.trim(), descricao: l.descricao?.trim() ?? "", conteudo: l.conteudo }))
+    .filter((skill) => skill.nome !== "" && skill.conteudo.trim() !== "")
+    .map((skill) => (skill.descricao ? skill : { nome: skill.nome, conteudo: skill.conteudo }));
+}
+
+/**
+ * Lê o editor de servidores MCP do projeto. Os argumentos vêm um por linha, para que um argumento possa ter espaço.
+ * Linhas sem nome ou sem comando são descartadas.
+ * @param {{ nome: string, comando: string, argumentos: string }[]} linhas
+ */
+export function servidoresMcpDoFormulario(linhas) {
+  return linhas
+    .map((l) => ({
+      nome: l.nome.trim(),
+      comando: l.comando.trim(),
+      argumentos: l.argumentos
+        .split("\n")
+        .map((a) => a.trim())
+        .filter((a) => a !== ""),
+    }))
+    .filter((servidor) => servidor.nome !== "" && servidor.comando !== "");
+}
+
+/**
+ * Converte o formulário de cada etapa no bloco `etapas` da configuração. Só grava o que foi preenchido ou mudou: uma
+ * etapa intocada não ganha bloco, e assim continua usando o padrão embutido. Devolve `undefined` se nenhuma etapa muda.
+ * @param {Record<string, { modelo: {provider: string, model: string} | null, promptAdicional: string, ferramentas: string[], padrao: string[], skills?: string[], mcp?: { servidor: string, ferramentas: string[] }[] }>} linhas
+ */
+export function etapasDoFormulario(linhas) {
+  const saida = {};
+  for (const [etapa, linha] of Object.entries(linhas)) {
+    const bloco = {};
+    const provedor = linha.modelo?.provider?.trim();
+    const modelo = linha.modelo?.model?.trim();
+    if (provedor && modelo) bloco.modelo = { provider: provedor, model: modelo };
+    if (linha.promptAdicional?.trim()) bloco.promptAdicional = linha.promptAdicional;
+    if (linha.ferramentas && !mesmasFerramentas(linha.ferramentas, linha.padrao ?? []))
+      bloco.ferramentas = linha.ferramentas;
+    if (linha.skills?.length) bloco.skills = linha.skills;
+    if (linha.mcp?.length) bloco.mcp = linha.mcp;
+    if (Object.keys(bloco).length > 0) saida[etapa] = bloco;
+  }
+  return Object.keys(saida).length > 0 ? saida : undefined;
 }
 
 /**

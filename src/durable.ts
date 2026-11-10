@@ -195,7 +195,7 @@ export type QueuedTask = {
     head: string;
     status: "em-andamento" | "aprovado" | "corrigir";
     summary: string;
-    conversationId: ConversationId;
+    conversationId: ConversationId | null;
     feedbackRevision?: string;
   };
   /** Publicação remota. Ausente até o review; dry-run nunca se confunde com merge real. */
@@ -230,6 +230,10 @@ export type QueuedTask = {
   triage?: TriageRecord | null;
   /** Conversa da triagem com o modelo, criada antes do resultado; a SPEC nunca a reaproveita. */
   triageConversation?: ConversationId | null;
+  /** Conversa da SPEC (grill), gravada quando a etapa cria ou retoma a conversa; base do trace da etapa. */
+  specConversationId?: ConversationId | null;
+  /** Conversas da SPEC esquecidas pelo usuário: ficam guardadas, mas não voltam ao contexto nem ao trace. */
+  conversasEsquecidas?: ConversationId[];
 };
 
 /** Uma fase do ciclo TDD de um ticket: o teste que falha, depois o código que o faz passar. */
