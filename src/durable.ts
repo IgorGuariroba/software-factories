@@ -173,6 +173,11 @@ export type QueuedTask = {
    */
   scope?: { description: string; checkboxes: { done: number; total: number } } | null;
   /**
+   * Issue do GitHub de onde a Tarefa veio, quando foi importada pelo repositório do App. Ausente em Tarefas criadas
+   * pela configuração do YAML ou pela busca antiga: essas seguem pela chave do card.
+   */
+  origem?: OrigemGitHub;
+  /**
    * O escopo mudou no GitHub depois de a Tarefa já estar em execução. A SPEC é refeita antes de qualquer código novo,
    * ou a Tarefa para se a implementação já começou (ver `scopeGate`).
    */
@@ -312,6 +317,41 @@ export type FactoryState = {
   sincronizadoEm?: Record<string, string>;
   /** Quando a fábrica recebeu a última entrega do webhook (ISO 8601). Ausente = nenhuma ainda. Só para o painel do App. */
   ultimoWebhookEm?: string;
+  /**
+   * Importação de issues por repositório, indexada pelo id numérico do GitHub (ver `ImportacaoRepo`). Ausente em estados
+   * antigos: nenhum repositório importado ainda.
+   */
+  importacoes?: Record<string, ImportacaoRepo>;
+};
+
+/**
+ * Origem GitHub de uma Tarefa importada de issue. Os identificadores numéricos do GitHub são estáveis: renomear o
+ * repositório ou o dono não muda `repoId` nem `issueId`, por isso a unicidade da importação usa só eles (`repo` é só
+ * para exibição).
+ */
+export type OrigemGitHub = {
+  /** Id numérico do repositório no GitHub. */
+  repoId: number;
+  /** `dono/nome` no momento da importação, para exibição. */
+  repo: string;
+  /** Id numérico da issue no GitHub. */
+  issueId: number;
+  /** Número da issue no repositório (o que aparece na URL). */
+  issueNumber: number;
+  /** Instalação do GitHub App que deu acesso ao repositório, quando conhecida. */
+  installationId?: number;
+};
+
+/** Estado da importação de issues de um repositório do GitHub App. */
+export type ImportacaoRepo = {
+  repoId: number;
+  repo: string;
+  status: "nunca" | "importando" | "ok" | "erro";
+  /** Última importação ou sincronização concluída (ISO 8601). */
+  ultimaImportacaoEm?: string;
+  /** Mensagem do último erro, sem token nem chave. Limpa quando a próxima importação dá certo. */
+  ultimoErro?: string;
+  installationId?: number;
 };
 
 /** Estado do repositório de um projeto monitorado, mudado por desplugue ou por eventos da instalação do App. */
