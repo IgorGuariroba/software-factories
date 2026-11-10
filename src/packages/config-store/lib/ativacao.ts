@@ -1,5 +1,5 @@
 import type { ProjectConfig } from "../../../config.js";
-import { pessoasDoPapel } from "../../profiles/index.js";
+import { canalDaPessoa, identidadeTeams, pessoasDoPapel } from "../../profiles/index.js";
 
 /**
  * Estado do projeto como a interface mostra. `incompleto` não executa; `ativo` executa. `pausado` entra na fatia 09.
@@ -16,6 +16,11 @@ export function pendenciasDeConfiguracao(config: ProjectConfig): string[] {
   if (pessoasDoPapel(config, "po").length === 0) pendencias.push("falta uma pessoa no perfil PO");
   if (pessoasDoPapel(config, "tech_lead").length === 0) pendencias.push("falta uma pessoa no perfil tech lead");
   if (config.source.type === "jira" && !config.source.credential) pendencias.push("Fonte Jira sem credencial no cofre");
+  // Canal Teams exige o identificador da pessoa no Teams (ticket 07): sem ele, o aviso não tem para onde ir.
+  for (const pessoa of config.people) {
+    if (canalDaPessoa(pessoa) === "teams" && !identidadeTeams(pessoa))
+      pendencias.push(`falta o identificador no Teams de ${pessoa.name ?? pessoa.id}`);
+  }
   return pendencias;
 }
 

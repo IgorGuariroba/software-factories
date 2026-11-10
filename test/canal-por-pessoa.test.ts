@@ -80,7 +80,7 @@ describe("canal por pessoa do projeto", () => {
       await eventually(async () => expect(await statusOf(f as TestFactory, "PROJ-1")).not.toBe("aguardando-humano"));
     });
 
-    it("canal teams sem identidade no Teams é recusado na configuração", async () => {
+    it("canal teams sem identidade no Teams salva, mas vira pendência do projeto", async () => {
       f = await startTestFactory({});
       const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
       const res = await fetch(`${f.url}/projetos/exemplo/configuracao`, {
@@ -88,8 +88,28 @@ describe("canal por pessoa do projeto", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...atual, people: [{ id: "po-x", role: "po", canal: "teams" }] }),
       });
+      expect(res.status).toBe(200);
+      const pendencias = await api<string[]>(f, "GET", "/projetos/exemplo/pendencias");
+      expect(pendencias).toContain("falta o identificador no Teams de po-x");
+    });
+
+    it("identificador do Teams fora do formato é recusado antes de salvar", async () => {
+      f = await startTestFactory({});
+      const atual = await api<Record<string, unknown>>(f, "GET", "/projetos/exemplo/configuracao");
+      const res = await fetch(`${f.url}/projetos/exemplo/configuracao`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...atual,
+          people: [{ id: "po-x", role: "po", canal: "teams", identidades: { teams: "joao@empresa.com" } }],
+        }),
+      });
       expect(res.status).toBe(400);
-      expect(((await res.json()) as { error: string }).error).toContain("canal teams exige identidade no Teams");
+      expect(((await res.json()) as { error: string }).error).toContain(
+        "identidades.teams: use o identificador do Teams",
+      );
+      const guardada = await api<{ people: unknown[] }>(f, "GET", "/projetos/exemplo/configuracao");
+      expect(guardada.people).toEqual(atual.people);
     });
   });
 });

@@ -98,7 +98,7 @@ export const Person = z.object({
       gitlab: z.string().min(1).optional(),
       teams: z
         .string()
-        .regex(/^8:orgid:[a-zA-Z0-9-]+$/)
+        .regex(/^8:orgid:[a-zA-Z0-9-]+$/, "use o identificador do Teams no formato 8:orgid:… (não o e-mail)")
         .optional(),
     })
     .optional(),

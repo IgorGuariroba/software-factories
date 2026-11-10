@@ -3225,9 +3225,6 @@ export async function startFactory(opts: {
         if (lida.data.name !== nome) return json(res, 400, { error: "o nome do projeto no corpo não bate com a URL" });
         const errosPerfis = validarPerfis({ profiles: lida.data.profiles, people: lida.data.people });
         if (errosPerfis.length > 0) return json(res, 400, { error: errosPerfis[0] });
-        const semIdentidade = lida.data.people.find((p) => p.canal === "teams" && !identidadeTeams(p));
-        if (semIdentidade)
-          return json(res, 400, { error: `pessoa ${semIdentidade.id}: canal teams exige identidade no Teams` });
         for (const repositorio of lida.data.repositories ?? []) {
           if (!(await ehDiretorio(repositorio.path)))
             return json(res, 400, { error: `caminho do repositório não existe: ${repositorio.path}` });
