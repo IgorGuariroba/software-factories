@@ -2207,12 +2207,249 @@ details[open] > summary.disclosure .chevron {
   border-color: var(--destaque);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--destaque) 25%, transparent);
 }
+/* Opções de ferramentas, skills e servidores MCP da etapa: chips com espaço entre eles e quebra de linha. */
+.projetos-tela .ferramentas-etapa,
+.projetos-tela .skills-etapa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.projetos-tela .ferramentas-etapa > label,
+.projetos-tela .skills-etapa > label,
+.projetos-tela .mcp-etapa > label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 10px;
+  border: 1px solid var(--borda);
+  border-radius: var(--r-controle);
+  color: var(--texto);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.projetos-tela .ferramentas-etapa > label:has(input:checked),
+.projetos-tela .skills-etapa > label:has(input:checked),
+.projetos-tela .mcp-etapa > label:has(input:checked) {
+  border-color: color-mix(in srgb, var(--destaque) 55%, var(--borda));
+  background: color-mix(in srgb, var(--destaque) 10%, transparent);
+}
+.projetos-tela .ferramentas-etapa > label .aviso-ferramenta {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--alerta);
+  font-size: 0.75rem;
+}
+.projetos-tela .ferramentas-etapa .aviso-ferramenta[hidden],
+.projetos-tela .skills-etapa p,
+.projetos-tela .mcp-etapa p {
+  color: var(--suave);
+  font-size: 0.8125rem;
+}
+.projetos-tela .skills-etapa p,
+.projetos-tela .mcp-etapa p {
+  margin: 0;
+}
+.projetos-tela .ferramentas-etapa > label input[type="checkbox"],
+.projetos-tela .skills-etapa > label input[type="checkbox"],
+.projetos-tela .mcp-etapa > label input[type="checkbox"] {
+  margin: 0;
+}
+.projetos-tela .mcp-etapa {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.projetos-tela .mcp-etapa > label {
+  align-self: flex-start;
+}
 @media (max-width: 720px) {
   .projetos-tela .grade-cabecalho {
     display: none;
   }
   .projetos-tela .grade-linha {
     grid-template-columns: 1fr;
+  }
+}
+/* Página Projetos, por projeto: cabeçalho com estado, subnavegação de seções e barra de salvar fixa durante a edição.
+   Segue o padrão de telas de configuração (menu de seções à esquerda, ajustes em linhas com rótulo e controle). */
+.projetos-tela .projeto-cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-6);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  background: var(--superficie);
+}
+.projetos-tela .projeto-titulo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.projetos-tela .projeto-titulo h3 {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.projetos-tela .estado-selo {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  color: var(--suave);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.projetos-tela .estado-selo.estado-ativo {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  color: var(--ok);
+}
+.projetos-tela .estado-selo.estado-pausado {
+  border-color: color-mix(in srgb, var(--alerta) 45%, transparent);
+  color: var(--alerta);
+}
+.projetos-tela .estado-selo.estado-incompleto {
+  border-color: color-mix(in srgb, var(--perigo) 45%, transparent);
+  color: var(--perigo);
+}
+.projetos-tela .projeto-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: var(--sp-6);
+  align-items: start;
+}
+.projetos-tela .projeto-subnav {
+  position: sticky;
+  top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.projetos-tela .projeto-subnav button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-controle);
+  background: transparent;
+  color: var(--suave);
+  font: inherit;
+  font-size: 0.8125rem;
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.projetos-tela .projeto-subnav button:hover {
+  background: var(--fundo);
+  color: var(--texto);
+}
+.projetos-tela .projeto-subnav button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--destaque) 25%, transparent);
+}
+.projetos-tela .projeto-secoes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.projetos-tela .projeto-secoes [id^="projeto-secao-"] {
+  scroll-margin-top: var(--sp-4);
+}
+.projetos-tela .projeto-secoes .subtitulo {
+  margin: 0;
+  color: var(--suave);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.projetos-tela .lista-simples {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.875rem;
+}
+.projetos-tela .linha-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3) var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--borda);
+}
+.projetos-tela .linha-config-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 52ch;
+}
+.projetos-tela .linha-config-titulo {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.projetos-tela .linha-config select {
+  width: min(100%, 220px);
+}
+.projetos-tela .barra-salvar {
+  position: sticky;
+  bottom: var(--sp-4);
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  background: var(--superficie);
+  box-shadow: var(--sombra-flutuante);
+}
+.projetos-tela .barra-salvar[hidden] {
+  display: none;
+}
+.projetos-tela .barra-salvar-texto {
+  margin: 0;
+  color: var(--suave);
+  font-size: 0.8125rem;
+}
+.projetos-tela .zona-perigo {
+  border-color: color-mix(in srgb, var(--perigo) 45%, var(--borda));
+}
+.projetos-tela .zona-perigo > h3 {
+  color: var(--perigo);
+}
+@media (max-width: 760px) {
+  .projetos-tela .projeto-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-4);
+  }
+  .projetos-tela .projeto-subnav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: var(--sp-1);
+  }
+  .projetos-tela .projeto-subnav button {
+    flex: 0 0 auto;
+    width: auto;
+    border: 1px solid var(--borda);
+    white-space: nowrap;
+  }
+  .projetos-tela .projeto-cabecalho {
+    padding: var(--sp-4);
+  }
+  .projetos-tela .barra-salvar {
+    bottom: var(--sp-2);
   }
 }
 .navegacao-principal a {
