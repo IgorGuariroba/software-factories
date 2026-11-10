@@ -37,3 +37,13 @@ da Fonte. A API local continua só para clientes locais (ADR-0002); o GitHub pre
   o que ficou para trás sem depender de reenvio.
 - As escritas continuam com a conta do usuário (ADR-0003); o App só entrega eventos nesta fatia.
 - Edições em Tarefa em execução marcam o escopo como desatualizado e pausam (ver `scopeGate` em `src/durable.ts`).
+
+## Identidade estável (Fase 4)
+
+- O projeto de uma entrega é achado pelo **id numérico do repositório** (`repository.id`) quando o vínculo já o conhece.
+  Sem vínculo, casa pelo nome e grava o id. Assim, um repositório renomeado segue sendo o mesmo projeto, e a fábrica
+  avisa para atualizar `source.repo` no YAML (a configuração ainda tem o nome antigo).
+- A Tarefa de uma issue é achada pela origem (`repoId` + número). Uma Tarefa legada da busca antiga, com a mesma chave e
+  sem origem, recebe a origem no primeiro evento. Uma Tarefa com a mesma chave, mas de outra origem, nunca é alterada:
+  a identidade não se mistura.
+- Tarefas criadas por evento nascem com a origem (`repoId`, `issueId`, número e instalação).

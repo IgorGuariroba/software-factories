@@ -2,7 +2,14 @@ import type { CardState } from "./config.js";
 import type { FactoryState, OrigemGitHub, QueuedTask } from "./durable.js";
 import { cardOfIssue, type RawIssue } from "./github-demand-source.js";
 import { tarefaDaIssue } from "./github-identidade.js";
-import { applyIssueDelivery, isEligible, scopeOf, type WebhookEffect, type WebhookProject } from "./github-webhook.js";
+import {
+  applyIssueDelivery,
+  gravarRepoId,
+  isEligible,
+  scopeOf,
+  type WebhookEffect,
+  type WebhookProject,
+} from "./github-webhook.js";
 
 /**
  * Importação de issues abertas de um repositório (plano de migração, Fase 3). Função pura sobre o estado: o daemon
@@ -35,6 +42,8 @@ export function aplicarImportacao(opts: {
   const source = project.config.source;
   if (source.type !== "github") throw new Error(`projeto ${project.name} não é de repositório monitorado`);
   const resultado: ResultadoImportacao = { criadas: 0, vinculadas: 0, atualizadas: 0, ignoradas: 0 };
+  // O vínculo passa a conhecer o id: entregas futuras acham o projeto mesmo se o repositório for renomeado.
+  gravarRepoId(state, project.name, repo, repoId);
   const effects: WebhookEffect[] = [];
 
   for (const issue of opts.issues) {
@@ -68,7 +77,14 @@ export function aplicarImportacao(opts: {
       effects.push(
         ...applyIssueDelivery({
           state,
-          delivery: { deliveryId: `importacao-${repoId}-${issue.number}`, action: "edited", repo, issue },
+          delivery: {
+            deliveryId: `importacao-${repoId}-${issue.number}`,
+            action: "edited",
+            repo,
+            repoId,
+            ...(installationId !== undefined ? { installationId } : {}),
+            issue,
+          },
           projects: [project],
           newRef,
         }),
