@@ -1977,6 +1977,244 @@ details[open] > summary.disclosure .chevron {
   margin: 0 0 12px;
   color: var(--suave);
 }
+
+/* Página Projetos: escopos Global e Por projeto, cartões com rótulos visíveis e grade de 8px. Cores vêm dos tokens do
+   tema, então o modo claro e o escuro seguem o sistema. */
+.projetos-tela .estado-vazio-cartao[hidden],
+.projetos-tela .lista-cofre[hidden] {
+  display: none;
+}
+.projetos-tela .grupo-descricao {
+  max-width: 65ch;
+}
+.projetos-tela .escopo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-top: var(--sp-8);
+}
+.projetos-tela .escopo > div > .grupo-titulo {
+  margin-top: 0;
+}
+.projetos-tela .escopo > div > .grupo-descricao {
+  margin-bottom: 0;
+}
+.projetos-tela .projeto-contexto {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  background: var(--superficie);
+}
+.projetos-tela .projeto-contexto .campo {
+  width: min(100%, 280px);
+}
+.projetos-tela .bloco {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  background: var(--superficie);
+  min-width: 0;
+}
+.projetos-tela .bloco > h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.projetos-tela .cartao-cabecalho {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.projetos-tela .cartao-cabecalho h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.projetos-tela .cartao-cabecalho p,
+.projetos-tela .mensagem {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--suave);
+  font-size: 0.8125rem;
+}
+.projetos-tela .campo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.projetos-tela .campo > span {
+  color: var(--suave);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.projetos-tela input:not([type="checkbox"]),
+.projetos-tela select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--r-controle);
+  background: var(--fundo);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.875rem;
+}
+.projetos-tela input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--destaque);
+}
+.projetos-tela input:focus-visible,
+.projetos-tela select:focus-visible {
+  outline: none;
+  border-color: var(--destaque);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--destaque) 25%, transparent);
+}
+.projetos-tela .formulario-linha,
+.projetos-tela .grade-campos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-4);
+  align-items: end;
+}
+.projetos-tela .grade-cabecalho,
+.projetos-tela .grade-linha {
+  display: grid;
+  grid-template-columns: repeat(var(--colunas, 1), minmax(0, 1fr));
+  gap: var(--sp-3);
+  align-items: center;
+}
+.projetos-tela .grade-cabecalho span {
+  color: var(--suave);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.projetos-tela .acoes-cartao {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.projetos-tela .acoes-cartao button,
+.projetos-tela .formulario-linha .acoes-cartao button {
+  min-height: 38px;
+}
+.projetos-tela button.primario {
+  border-color: var(--texto);
+  background: var(--texto);
+  color: var(--superficie);
+  font-weight: 600;
+}
+.projetos-tela .lista-cofre {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.projetos-tela .lista-cofre li {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--r-controle);
+  font-size: 0.875rem;
+}
+.projetos-tela .estado-vazio-cartao {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-6) var(--sp-4);
+  border: 1px dashed var(--borda);
+  border-radius: 8px;
+  text-align: center;
+}
+.projetos-tela .estado-vazio-titulo {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.projetos-tela .estado-vazio-cartao .ajuda {
+  margin: 0;
+  color: var(--suave);
+  font-size: 0.8125rem;
+}
+.projetos-tela .projeto-config-corpo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.projetos-tela .projeto-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+/* Blocos de etapa, skill e servidor MCP: cartões no mesmo padrão, com rótulo acima do controle. */
+.projetos-tela fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+}
+.projetos-tela legend {
+  padding: 0 var(--sp-2);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.projetos-tela fieldset label:not(:has(input[type="checkbox"])) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--suave);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.projetos-tela textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--r-controle);
+  background: var(--fundo);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.875rem;
+  resize: vertical;
+}
+.projetos-tela textarea:focus-visible {
+  outline: none;
+  border-color: var(--destaque);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--destaque) 25%, transparent);
+}
+@media (max-width: 720px) {
+  .projetos-tela .grade-cabecalho {
+    display: none;
+  }
+  .projetos-tela .grade-linha {
+    grid-template-columns: 1fr;
+  }
+}
 .navegacao-principal a {
   padding: 10px 12px;
   border-radius: var(--r-controle);

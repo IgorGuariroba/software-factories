@@ -34,6 +34,36 @@ function el(tag, props = {}, filhos = []) {
   return node;
 }
 
+/** Rótulo visível acima do controle; o controle mantém o próprio aria-label. */
+const rotulado = (texto, controle) => el("label", { class: "campo" }, [el("span", { texto }), controle]);
+
+/** Cabeçalho de cartão: título e descrição com largura de leitura limitada. */
+const cabecalhoCartao = (titulo, descricao) =>
+  el("div", { class: "cartao-cabecalho" }, [el("h3", { texto: titulo }), el("p", { texto: descricao })]);
+
+/**
+ * Define o número de colunas via CSSOM: o CSP da página bloqueia `style` inline no HTML (style-src 'self'), mas aceita
+ * `style.setProperty`.
+ */
+const comColunas = (node, quantidade) => {
+  node.style.setProperty("--colunas", String(quantidade));
+  return node;
+};
+
+/** Cabeçalho de colunas acima de uma lista de linhas repetidas (perfis, pessoas, repositórios). */
+const cabecalhoGrade = (rotulos) =>
+  comColunas(
+    el(
+      "div",
+      { class: "grade-cabecalho", "aria-hidden": "true" },
+      rotulos.map((r) => el("span", { texto: r })),
+    ),
+    rotulos.length,
+  );
+
+/** Linha de controles alinhada às colunas do cabeçalho. */
+const linhaGrade = (controles) => comColunas(el("div", { class: "grade-linha" }, controles), controles.length);
+
 /**
  * Monta a tela dentro de `raiz`. Carrega a lista de projetos, o schema das Fontes e os modelos de perfis.
  * @param {HTMLElement} raiz
@@ -71,13 +101,15 @@ export async function iniciarProjetos(raiz) {
     preencherSeletor(sel, atual);
     return sel;
   };
-  const listaCredenciais = el("ul");
+  const listaCredenciais = el("ul", { class: "lista-cofre" });
+  const vazioCredenciais = el("div", { class: "estado-vazio-cartao" }, [
+    el("p", { class: "estado-vazio-titulo", texto: "Nenhuma credencial cadastrada." }),
+    el("p", { class: "ajuda", texto: "Cadastre a primeira abaixo para usá-la nas Fontes e nos Canais." }),
+  ]);
   const desenharCofre = () => {
-    listaCredenciais.replaceChildren(
-      ...(credenciais.length === 0
-        ? [el("li", { texto: "Nenhuma credencial cadastrada." })]
-        : credenciais.map((c) => el("li", { texto: linhaDaCredencial(c) }))),
-    );
+    listaCredenciais.replaceChildren(...credenciais.map((c) => el("li", { texto: linhaDaCredencial(c) })));
+    listaCredenciais.hidden = credenciais.length === 0;
+    vazioCredenciais.hidden = credenciais.length !== 0;
     for (const sel of [...seletoresDeCredencial]) {
       if (!sel.isConnected) seletoresDeCredencial.delete(sel);
       else preencherSeletor(sel, sel.value);
@@ -89,7 +121,7 @@ export async function iniciarProjetos(raiz) {
   };
   const nomeCredencial = el("input", { "aria-label": "Nome da credencial", placeholder: "ex.: jira-token" });
   const valorCredencial = el("input", { type: "password", "aria-label": "Valor da credencial", autocomplete: "off" });
-  const gravarCredencial = el("button", { type: "button", texto: "Gravar credencial" });
+  const gravarCredencial = el("button", { type: "button", class: "primario", texto: "Gravar credencial" });
   gravarCredencial.addEventListener("click", async () => {
     const nome = nomeCredencial.value.trim();
     try {
@@ -103,34 +135,44 @@ export async function iniciarProjetos(raiz) {
     }
   });
   cofreBox.replaceChildren(
-    el("h3", { texto: "Credenciais (cofre único)" }),
-    el("p", {
-      texto:
-        "Cadastre a credencial com um nome e escolha-a pelo nome nas Fontes e nos Canais. Para trocar o valor, grave de novo com o mesmo nome.",
-    }),
+    cabecalhoCartao(
+      "Credenciais (cofre único)",
+      "Cadastre a credencial com um nome e escolha-a pelo nome nas Fontes e nos Canais. Para trocar o valor, grave de novo com o mesmo nome.",
+    ),
     listaCredenciais,
-    el("div", { class: "linha" }, [nomeCredencial, valorCredencial, gravarCredencial]),
+    vazioCredenciais,
+    el("div", { class: "formulario-linha" }, [
+      rotulado("Nome da credencial", nomeCredencial),
+      rotulado("Valor", valorCredencial),
+      el("div", { class: "acoes-cartao" }, [gravarCredencial]),
+    ]),
   );
   desenharCofre();
 
-  // Duas áreas com rótulo: o que vale para o usuário inteiro, e o que é de cada projeto (o seletor fica só nela).
+  // Dois escopos separados: o que vale para o usuário inteiro, e o que é de cada projeto. O seletor de projeto fica
+  // numa barra de contexto no topo do escopo "Por projeto", porque só ele muda o que aparece abaixo.
   raiz.replaceChildren(
     mensagem,
-    el("h3", { class: "grupo-titulo", texto: "Globais ao usuário" }),
-    el("p", { class: "grupo-descricao", texto: "Valem para todos os projetos: cofre de credenciais e Telegram." }),
-    cofreBox,
-    telegramBox,
-    el("h3", { class: "grupo-titulo", texto: "Por projeto" }),
-    el("p", {
-      class: "grupo-descricao",
-      texto:
-        "Fonte, pessoas, repositórios, provedores, ensaio, conteúdo no Telegram, estado e remoção de cada projeto.",
-    }),
-    el("div", { class: "projeto-config-topo" }, [
-      el("label", { for: "projeto-config-nome", texto: "Projeto " }),
-      seletor,
+    el("section", { class: "escopo escopo-global", "aria-labelledby": "escopo-global-titulo" }, [
+      el("div", {}, [
+        el("h3", { class: "grupo-titulo", id: "escopo-global-titulo", texto: "Globais ao usuário" }),
+        el("p", { class: "grupo-descricao", texto: "Valem para todos os projetos: cofre de credenciais e Telegram." }),
+      ]),
+      cofreBox,
+      telegramBox,
     ]),
-    corpo,
+    el("section", { class: "escopo escopo-projeto", "aria-labelledby": "escopo-projeto-titulo" }, [
+      el("div", {}, [
+        el("h3", { class: "grupo-titulo", id: "escopo-projeto-titulo", texto: "Por projeto" }),
+        el("p", {
+          class: "grupo-descricao",
+          texto:
+            "Fonte, pessoas, repositórios, provedores, ensaio, conteúdo no Telegram, estado e remoção de cada projeto.",
+        }),
+      ]),
+      el("div", { class: "projeto-contexto" }, [rotulado("Projeto", seletor)]),
+      corpo,
+    ]),
   );
   desenharTelegram(telegramBox, () => mensagem, seletorDeCredencial);
 
@@ -189,7 +231,8 @@ export async function iniciarProjetos(raiz) {
       p.value = papel;
       const linha = { nome: n, papel: p };
       perfisLinhas.push(linha);
-      perfisBox.append(el("div", { class: "linha" }, [n, p]));
+      if (perfisBox.childElementCount === 0) perfisBox.append(cabecalhoGrade(["Nome do perfil", "Papel"]));
+      perfisBox.append(linhaGrade([n, p]));
     };
     const addPessoa = (pessoa = { id: "", perfis: [], identidades: {} }) => {
       const campo = (rotulo, valor) => el("input", { valor, "aria-label": rotulo, placeholder: rotulo });
@@ -210,7 +253,9 @@ export async function iniciarProjetos(raiz) {
       const campos = Object.entries(linha)
         .filter(([chave]) => chave !== "role")
         .map(([, input]) => input);
-      pessoasBox.append(el("div", { class: "linha" }, campos));
+      if (pessoasBox.childElementCount === 0)
+        pessoasBox.append(cabecalhoGrade(["Canal", "Identificador na Fonte", "Perfis (vírgula)", ...IDENTIDADES]));
+      pessoasBox.append(linhaGrade(campos));
     };
     for (const p of atual.profiles ?? []) addPerfil(p.nome, p.papel);
     for (const p of atual.people ?? []) addPessoa(p);
@@ -227,7 +272,9 @@ export async function iniciarProjetos(raiz) {
         }),
       };
       repoLinhas.push(linha);
-      repoBox.append(el("div", { class: "linha" }, [linha.path, linha.prefix, linha.comando]));
+      if (repoBox.childElementCount === 0)
+        repoBox.append(cabecalhoGrade(["Caminho do repositório local", "Prefixo dos cards", "Comando de teste"]));
+      repoBox.append(linhaGrade([linha.path, linha.prefix, linha.comando]));
     };
     for (const r of atual.repositories ?? []) addRepo(r);
     const adicionarRepo = el("button", { type: "button", texto: "Adicionar repositório" });
@@ -300,7 +347,7 @@ export async function iniciarProjetos(raiz) {
         ativo: "Projeto retomado e ativo.",
       }),
     );
-    const salvar = el("button", { type: "button", texto: "Salvar configuração" });
+    const salvar = el("button", { type: "button", class: "primario", texto: "Salvar configuração" });
     salvar.addEventListener("click", async () => {
       try {
         const valores = Object.fromEntries(Object.entries(inputs.campos).map(([k, v]) => [k, v.input.value]));
@@ -385,7 +432,7 @@ export async function iniciarProjetos(raiz) {
     const situacaoBox = el("section", { class: "bloco" }, [
       el("h3", { texto: "Estado" }),
       el("p", { texto: acoesDoEstado(situacao.estado).texto }),
-      el("div", { class: "linha" }, [pausar, retomar, confirmar]),
+      el("div", { class: "acoes-cartao" }, [pausar, retomar, confirmar]),
       el("h3", { texto: "Pendências" }),
       el(
         "ul",
@@ -422,7 +469,7 @@ export async function iniciarProjetos(raiz) {
         mensagem.textContent = erro.message;
       }
     });
-    remocaoBox.append(el("div", { class: "linha" }, [remover]));
+    remocaoBox.append(el("div", { class: "acoes-cartao" }, [remover]));
     // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
     const formulario = el("fieldset", { class: "projeto-config-form" }, secoes);
     const editar = el("button", { type: "button", texto: "Editar configuração" });
@@ -436,7 +483,12 @@ export async function iniciarProjetos(raiz) {
     aplicarEstado(false);
     editar.addEventListener("click", () => aplicarEstado(true));
     cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
-    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario, situacaoBox, remocaoBox);
+    corpo.replaceChildren(
+      el("div", { class: "acoes-cartao" }, [editar, cancelar]),
+      formulario,
+      situacaoBox,
+      remocaoBox,
+    );
   }
 
   seletor.addEventListener("change", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
@@ -461,7 +513,7 @@ async function desenharTelegram(box, mensagemDe, seletorDeCredencial) {
     placeholder: "id do usuário",
   });
   const credencial = seletorDeCredencial("Credencial do bot no cofre", salvo.credential ?? "");
-  const salvar = el("button", { type: "button", texto: "Salvar Telegram" });
+  const salvar = el("button", { type: "button", class: "primario", texto: "Salvar Telegram" });
   salvar.addEventListener("click", async () => {
     try {
       await api("PUT", "/telegram/configuracao", {
@@ -475,7 +527,15 @@ async function desenharTelegram(box, mensagemDe, seletorDeCredencial) {
     }
   });
   box.replaceChildren(
-    el("h3", { texto: "Telegram (interface de gestão, global ao usuário)" }),
-    el("div", { class: "linha" }, [chat, usuario, credencial, salvar]),
+    cabecalhoCartao(
+      "Telegram (interface de gestão)",
+      "Canal de gestão do usuário. O token do bot fica no cofre; esta tela guarda só o nome da credencial.",
+    ),
+    el("div", { class: "grade-campos" }, [
+      rotulado("Chat", chat),
+      rotulado("Usuário autorizado", usuario),
+      rotulado("Credencial do bot", credencial),
+    ]),
+    el("div", { class: "acoes-cartao" }, [salvar]),
   );
 }
