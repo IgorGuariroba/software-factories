@@ -1,5 +1,4 @@
 import { ProjectConfig } from "../../../config.js";
-import { pessoasDoPapel } from "../../profiles/index.js";
 
 /**
  * Configurações de projeto guardadas no estado durável, por nome, como JSON (o estado precisa ser compatível com JSON).
@@ -36,17 +35,13 @@ export interface AlteracaoConfiguracao {
 export function camposAlterados(antes: object, depois: object): string[] {
   const a = antes as Record<string, unknown>;
   const d = depois as Record<string, unknown>;
+  // Ausente, lista vazia e o padrão do Telegram (`full`) são o mesmo "nenhum": a tela manda esses valores onde o YAML
+  // não tinha o campo, e isso não é uma alteração do usuário.
+  const valor = (v: unknown) => {
+    if (v === undefined || (Array.isArray(v) && v.length === 0)) return null;
+    if (JSON.stringify(v) === '{"content":"full"}') return null;
+    return v;
+  };
   const nomes = [...new Set([...Object.keys(a), ...Object.keys(d)])].sort();
-  return nomes.filter((nome) => JSON.stringify(a[nome]) !== JSON.stringify(d[nome]));
-}
-
-/**
- * O que falta na configuração para a fábrica agir com segurança (fatia 11). Só avisos: a configuração salva mesmo
- * incompleta, e a interface lista as pendências.
- */
-export function pendenciasDeConfiguracao(config: ProjectConfig): string[] {
-  const pendencias: string[] = [];
-  if (pessoasDoPapel(config, "po").length === 0) pendencias.push("falta uma pessoa no perfil PO");
-  if (config.source.type === "jira" && !config.source.credential) pendencias.push("Fonte Jira sem credencial no cofre");
-  return pendencias;
+  return nomes.filter((nome) => JSON.stringify(valor(a[nome])) !== JSON.stringify(valor(d[nome])));
 }

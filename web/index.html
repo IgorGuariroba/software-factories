@@ -79,7 +79,7 @@
             </div>
           </div>
         </section>
-        <section class="pagina-simples" data-tela="projetos" hidden aria-labelledby="titulo-projetos">
+        <section class="pagina-simples projetos-tela" data-tela="projetos" hidden aria-labelledby="titulo-projetos">
           <h2 id="titulo-projetos">Projetos</h2>
           <p class="introducao">Fonte de demandas, perfis e pessoas de cada projeto. Tudo grava pela API; a fábrica só age depois de salvar.</p>
           <div id="projetos-config"></div>
@@ -103,6 +103,71 @@
             <p id="repos-gh-vazio" class="vazio" hidden>Nenhum repositório encontrado.</p>
             <p id="repos-gh-status" role="status"></p>
             <p class="ajuda">Consultado em <span id="repos-gh-consulta">—</span>.</p>
+          </section>
+          <section class="cartao-area" aria-labelledby="titulo-criar-gitlab">
+            <div class="cartao-cabeca">
+              <div>
+                <h3 id="titulo-criar-gitlab">Projeto com repositório GitLab</h3>
+                <p>Informe o caminho completo do repositório (grupo/projeto) e o servidor, gitlab.com ou self-hosted. A Fonte é o GitLab Issues do mesmo repositório. O token vem do cofre de credenciais e o caminho é conferido com ele antes de salvar.</p>
+              </div>
+            </div>
+            <form id="repos-gl-form" class="form-projeto">
+              <label class="campo">
+                <span>Nome do projeto</span>
+                <input name="nome" required pattern="[a-z][a-z0-9\-]{1,39}" autocomplete="off">
+              </label>
+              <label class="campo">
+                <span>Servidor (vazio para gitlab.com)</span>
+                <input name="servidor" type="url" placeholder="https://gitlab.empresa.com" autocomplete="off">
+              </label>
+              <label class="campo">
+                <span>Repositório (grupo/projeto)</span>
+                <input name="caminho" required placeholder="grupo/projeto" autocomplete="off">
+              </label>
+              <label class="campo">
+                <span>Credencial do token (cofre)</span>
+                <select name="credencial" id="repos-gl-credencial" required></select>
+              </label>
+              <label class="campo">
+                <span>Usuário dono das issues</span>
+                <input name="dono" required autocomplete="off">
+              </label>
+              <label class="campo">
+                <span>Prefixo das chaves</span>
+                <input name="prefixo" required placeholder="ex.: GL" autocomplete="off">
+              </label>
+              <div class="acoes">
+                <button type="button" id="repos-gl-buscar-pessoas" class="secundario">Buscar pessoas na Fonte</button>
+              </div>
+              <label class="campo">
+                <span>PO (pessoa da Fonte)</span>
+                <select name="po" id="repos-gl-po" aria-describedby="repos-gl-pessoas-status"></select>
+              </label>
+              <label class="campo">
+                <span>Tech lead (pessoa da Fonte)</span>
+                <select name="techLead" id="repos-gl-tech-lead"></select>
+              </label>
+              <p id="repos-gl-pessoas-status" class="ajuda" role="status"></p>
+              <label class="campo">
+                <span>Comando de teste (ex.: npm test)</span>
+                <input name="comandoTeste" autocomplete="off">
+              </label>
+              <label class="campo">
+                <span>Horário de atividade</span>
+                <select name="horario">
+                  <option value="business-hours">Horário comercial (padrão)</option>
+                  <option value="always">Sempre ativo</option>
+                </select>
+              </label>
+              <label class="ajuda">
+                <input type="checkbox" name="ensaio" checked>
+                Ensaio: a fábrica não escreve no GitLab até você desligar
+              </label>
+              <div class="acoes">
+                <button type="submit" class="primario">Criar projeto</button>
+              </div>
+              <p id="repos-gl-status" class="ajuda" role="status"></p>
+            </form>
           </section>
         </section>
 

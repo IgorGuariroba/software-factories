@@ -49,6 +49,8 @@ it("fila da empresa sobrevive ao reinício sem bloquear mensagens pessoais", asy
         veto: async () => "inexistente",
         reorder: async () => {},
         setDaemonPaused: async () => {},
+        pausarProjeto: async () => {},
+        retomarProjeto: async () => {},
       },
     });
   let bridge = await start();
@@ -128,6 +130,8 @@ it.each(["atual", "legado"])("aviso diferido %s full não vaza segredo ao mudar 
         veto: async () => "inexistente",
         reorder: async () => {},
         setDaemonPaused: async () => {},
+        pausarProjeto: async () => {},
+        retomarProjeto: async () => {},
       },
     });
   let bridge = await start();

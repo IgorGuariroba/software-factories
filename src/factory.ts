@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -69,6 +69,12 @@ import {
   type WebhookProject,
 } from "./github-webhook.js";
 import { ESQUEMA_FONTE as ESQUEMA_GITLAB } from "./gitlab-demand-source.js";
+import {
+  clonarRepositorioGitlab,
+  hostDoServidor,
+  SERVIDOR_PADRAO,
+  verificarRepositorioGitlab,
+} from "./gitlab-repositorio.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { aplicarImportacao } from "./importacao-issues.js";
 import { ESQUEMA_FONTE as ESQUEMA_JIRA } from "./jira-demand-source.js";
@@ -76,6 +82,7 @@ import { type ManagementInterface, startManagementBridge } from "./management.js
 import { ferramentasMcpDaEtapa } from "./mcp-etapa.js";
 import {
   camposAlterados,
+  estadoDoProjeto,
   lerConfiguracao,
   pendenciasDeConfiguracao,
   semearConfiguracoes,
@@ -91,12 +98,29 @@ import {
   validarPerfis,
 } from "./packages/profiles/index.js";
 import { createSecretStore } from "./packages/secret-store/index.js";
+import {
+  conferirEscolhasPessoas,
+  type EscolhasPessoas,
+  listarPessoasGitlab,
+  listarPessoasJira,
+  type PessoaDaFonte,
+  pessoasDeAssignees,
+} from "./pessoas-fonte.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
-import { conflitoProjeto, montarProjetoGithub, padroesDe } from "./projetos-github.js";
+import { aguardandoConfirmacao, comConfirmacaoPendente, trocouFonteOuRepositorio } from "./projeto-fonte.js";
+import { projetoPausado } from "./projeto-pausa.js";
+import { projetosReservados, semProjeto } from "./projeto-remocao.js";
+import {
+  conflitoProjeto,
+  montarProjetoGithub,
+  padroesDe,
+  pessoasDoProjeto,
+  type ReservaDeProjeto,
+} from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
-import { ativarProjeto, desativarProjeto, repoDesativado, tarefasAtivas } from "./repositorios.js";
+import { ativarProjeto, desativarProjeto, repoDesativado, tarefasAtivas, tarefasEmAndamento } from "./repositorios.js";
 import { respostaNaoSei } from "./resposta-tecnica.js";
 import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
@@ -173,6 +197,10 @@ export interface FactoryCommands {
   /** Veta, dentro do prazo, a Tarefa de um card que já estava em andamento: ela fica `vetada` e não age mais no card. */
   veto(id: string): Promise<VetoResult>;
   setDaemonPaused(paused: boolean): Promise<void>;
+  /** Pausa um projeto ativo (ticket 09): nada novo começa nele até a retomada. */
+  pausarProjeto(nome: string): Promise<void>;
+  /** Retoma um projeto pausado; as Tarefas que a pausa parou voltam para a fila. */
+  retomarProjeto(nome: string): Promise<void>;
   reorder(ids: string[]): Promise<void>;
   /** Responde localmente sem publicar na Fonte; false se a pergunta não está disponível. */
   answerQuestion?(id: string, n: number, answer: string): Promise<boolean>;
@@ -385,6 +413,15 @@ export async function startFactory(opts: {
    * não está configurado. `fetch` é injetado nos testes.
    */
   githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
+  /**
+   * Clona o repositório de um projeto criado pela interface em `destino`. Padrão: clone pelo GitHub App; os testes
+   * injetam um clone local.
+   */
+  clonarRepositorio?: (opts: { repo: string; instalacaoId: number; destino: string }) => Promise<void>;
+  /** Clona um repositório GitLab de projeto criado pela interface (padrão: `git` com o token do cofre); os testes injetam. */
+  clonarRepositorioGitlab?: (opts: { host: string; caminho: string; token: string; destino: string }) => Promise<void>;
+  /** `fetch` da conferência do caminho GitLab com o token (padrão: o global); os testes injetam. */
+  fetchGitlab?: typeof fetch;
   /** Cria a interface de gestão do Telegram com o token do cofre (fatia 09). Quem chama escolhe a implementação. */
   criarInterfaceTelegram?: (token: string, chat: string) => ManagementInterface;
   /** `fetch` da checagem de conexão com a Fonte antes de salvar a configuração (padrão: o global). */
@@ -1327,9 +1364,20 @@ export async function startFactory(opts: {
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
 
+  /** Projetos criados pela UI (ADR-0022). Só eles são barrados enquanto incompletos; os do YAML seguem como estão. */
+  const criadosPelaInterface = new Set<string>();
+  /** Pendências que barram ações: as de um projeto criado pela UI, e a confirmação de uma troca de Fonte (ticket 10). */
+  const pendenciasBloqueantes = (nome: string, state: FactoryState): string[] =>
+    comConfirmacaoPendente(
+      criadosPelaInterface.has(nome) ? pendenciasDeConfiguracao(projectOf(nome).config) : [],
+      state,
+      nome,
+    );
+
   /** Registra um projeto criado pela UI no processo, com a Fonte e o conhecimento do mesmo jeito que os do YAML. */
   function registrarProjeto(config: ProjectConfig): void {
     if (!opts.createSource) throw new Error("este daemon não cria a Fonte de projetos da interface");
+    criadosPelaInterface.add(config.name);
     const knowledgeDir = opts.knowledgeDirFor?.(config.name);
     const base: FactoryProject = {
       config,
@@ -1343,14 +1391,21 @@ export async function startFactory(opts: {
   // ADR-0017: o YAML só semeia o estado; depois da primeira execução, a configuração guardada é a que vale.
   await harness.commit(async (tx) => {
     const state = await tx.doc(StateDoc);
+    // Projeto removido pela interface (ticket 11) não volta do YAML: o nome fica reservado.
+    const removidos = state.projetosRemovidos ?? {};
     state.projetos = semearConfiguracoes(
       state.projetos ?? {},
-      opts.projects.map((p) => p.config),
+      opts.projects.map((p) => p.config).filter((config) => !(config.name in removidos)),
     );
   }, context);
   for (const p of opts.projects) {
     const guardada = lerConfiguracao((await readState()).projetos?.[p.config.name]);
     if (guardada) aplicarConfiguracao(guardada);
+  }
+  for (const nome of Object.keys((await readState()).projetosRemovidos ?? {})) {
+    projects.delete(nome);
+    bases.delete(nome);
+    criadosPelaInterface.delete(nome);
   }
 
   // Projetos criados pela UI voltam com o estado. Um nome que o YAML já usa não é sobrescrito (o YAML manda).
@@ -1365,7 +1420,8 @@ export async function startFactory(opts: {
       console.error(`[fábrica] projeto ${nome} salvo pela interface não carregado: este daemon não cria Fontes`);
       continue;
     }
-    registrarProjeto(lido.data);
+    // A configuração guardada é a que vale: a edição pela interface grava em `projetos`, depois da criação.
+    registrarProjeto(lerConfiguracao((await readState()).projetos?.[nome]) ?? lido.data);
   }
   retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
   if (!retroSettings.repo)
@@ -1437,7 +1493,13 @@ export async function startFactory(opts: {
     const notice = await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
       const task = state.tasks.find((t) => t.id === id);
-      if (state.daemonPaused || !task || task.pauseRequested || !["ativa", "aguardando-humano"].includes(task.status))
+      if (
+        state.daemonPaused ||
+        !task ||
+        task.pauseRequested ||
+        projetoPausado(state, task.project) ||
+        !["ativa", "aguardando-humano"].includes(task.status)
+      )
         return undefined;
       const q = task.questions?.find((item) => item.n === n);
       if (q?.teamsNotice?.status !== "pending" || q.answer !== null) return undefined;
@@ -1521,6 +1583,10 @@ export async function startFactory(opts: {
     for (const { config, source } of projects.values()) {
       // Repositório desativado não entra na busca: nenhuma Tarefa nova dele (ADR-0015).
       if (repoDesativado(state, config.name)) continue;
+      // Projeto pausado pelo usuário não busca cards novos (ticket 09).
+      if (projetoPausado(state, config.name)) continue;
+      // Projeto criado pela UI e incompleto não executa: a interface mostra o que falta (ADR-0022).
+      if (pendenciasBloqueantes(config.name, state).length > 0) continue;
       const cards = await source.listAssignedCards(config.source.assignee);
       if (config.source.type === "github") cards.sort((a, b) => issueOrder(a.key) - issueOrder(b.key));
       for (const card of cards) {
@@ -1596,6 +1662,10 @@ export async function startFactory(opts: {
       if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
       // Repositório desativado: a Tarefa espera o replugue ou o desplugue (ADR-0015).
       if (repoDesativado(state, task.project)) continue;
+      // Projeto pausado: a Tarefa espera a retomada, sem começar (ticket 09).
+      if (projetoPausado(state, task.project)) continue;
+      // Projeto criado pela UI e incompleto não executa nenhuma ação (ADR-0022): a Tarefa espera o projeto ficar pronto.
+      if (pendenciasBloqueantes(task.project, state).length > 0) continue;
       const project = projects.get(task.project);
       if (!project) {
         if (!missingProjectReported.has(task.id)) {
@@ -1917,17 +1987,269 @@ export async function startFactory(opts: {
     }
   }
 
+  /** Confere a Fonte antes de gravar: credencial no cofre e, no Jira, a conexão (ADR-0018). Devolve o erro, se houver. */
+  async function erroDaFonte(fonte: ProjectConfig["source"]): Promise<string | undefined> {
+    if (fonte.type === "jira") {
+      if (!fonte.credential) return undefined;
+      if (!(await segredos.has(fonte.credential))) return `credencial ${fonte.credential} não cadastrada`;
+      if (!fonte.baseUrl || !fonte.email) return "a Fonte Jira com credencial precisa de baseUrl e email";
+      const conexao = await testarConexaoJira({
+        baseUrl: fonte.baseUrl,
+        email: fonte.email,
+        token: (await segredos.get(fonte.credential)) ?? "",
+        fetch: opts.fetchFonte ?? fetch,
+      });
+      return conexao.ok ? undefined : `conexão com o Jira falhou (${conexao.motivo})`;
+    }
+    if (fonte.credential && !(await segredos.has(fonte.credential)))
+      return `credencial ${fonte.credential} não cadastrada`;
+    return undefined;
+  }
+
+  /** Diretório onde a fábrica clona o repositório de um projeto criado pela interface (nunca um caminho do usuário). */
+  const caminhoDoClone = (nome: string) => join(dirname(resolvePath(opts.statePath)), "repositorios", nome);
+
   /**
-   * Cria um projeto de repositório do catálogo do App (ADR-0016). Modelos e estados vêm do primeiro projeto do YAML, e o
-   * projeto nasce em ensaio por padrão. Nome, prefixo e repositório não podem repetir o que já existe.
+   * Grava um projeto novo cujo repositório a fábrica clona antes. Nome, prefixo e a Fonte de issues não podem repetir o
+   * que já existe, nas duas pontas (antes e depois do clone). O clone sai antes da gravação: se a clonagem falhar,
+   * nada fica salvo pela metade.
+   */
+  /** Projetos já existentes: os ativos na memória e os salvos pela interface (incluindo os ainda não carregados). */
+  const salvosDe = (state: FactoryState) =>
+    Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
+      // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
+      const lido = ProjectConfig.safeParse(JSON.parse(t));
+      return lido.success ? [lido.data] : [];
+    });
+
+  /**
+   * Conflito do projeto novo com o que já existe: nome, prefixo ou a mesma Fonte de issues no mesmo repositório. É
+   * conferido antes de qualquer chamada ao provedor, para que a recusa seja imediata e não dependa da rede.
+   */
+  async function conflitoAgora(config: ProjectConfig): Promise<string | undefined> {
+    const existentes = [...projects.values()].map((p) => p.config);
+    return conflitoProjeto(
+      {
+        nome: config.name,
+        prefixo: config.source.project,
+        fonteTipo: config.source.type,
+        fonteRepo: "repo" in config.source ? config.source.repo : undefined,
+      },
+      [...existentes, ...salvosDe(await readState())],
+      projetosReservados(await readState()),
+    );
+  }
+
+  /** Escolhas de PO e tech lead do corpo da criação: texto vazio ou ausente vira "não escolhida". */
+  function lerEscolhasPessoas(bruto: unknown): EscolhasPessoas | undefined {
+    if (typeof bruto !== "object" || bruto === null || Array.isArray(bruto)) return undefined;
+    const { po, techLead } = bruto as { po?: unknown; techLead?: unknown };
+    const texto = (valor: unknown) => (typeof valor === "string" && valor.trim() !== "" ? valor.trim() : undefined);
+    return { po: texto(po), techLead: texto(techLead) };
+  }
+
+  /**
+   * Lista de pessoas para escolher PO e tech lead no formulário de criação (ticket 06). Só consulta; nada é gravado. O
+   * corpo diz de qual Fonte se trata: `gitlab` (caminho e servidor, com o token do cofre), `github` (repositório do
+   * catálogo do App) ou `jira` (baseUrl, email, projeto e credencial).
+   */
+  async function listarPessoasParaCriacao(bruto: unknown): Promise<{ status: number; body: unknown }> {
+    const corpo = (bruto ?? {}) as Record<string, unknown>;
+    const texto = (valor: unknown) => (typeof valor === "string" ? valor.trim() : "");
+    try {
+      if (corpo.tipo === "gitlab") {
+        const credencial = texto(corpo.credencial);
+        if (credencial === "" || !(await segredos.has(credencial)))
+          return { status: 400, body: { error: "informe a credencial do token do GitLab, cadastrada no cofre" } };
+        let host: string;
+        try {
+          host = hostDoServidor(texto(corpo.servidor));
+        } catch (err) {
+          return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
+        }
+        const lista = await listarPessoasDoGitlab(host, texto(corpo.caminho), credencial);
+        return { status: 200, body: lista };
+      }
+      if (corpo.tipo === "jira") {
+        const credencial = texto(corpo.credencial);
+        if (credencial === "" || !(await segredos.has(credencial)) || !texto(corpo.baseUrl) || !texto(corpo.email))
+          return { status: 400, body: { error: "a Fonte Jira precisa de credencial do cofre, baseUrl e email" } };
+        const lista = await listarPessoasDoJira(
+          texto(corpo.baseUrl),
+          texto(corpo.email),
+          credencial,
+          texto(corpo.projeto),
+        );
+        return { status: 200, body: lista };
+      }
+      if (corpo.tipo === "github") {
+        if (!Number.isInteger(corpo.repoId)) return { status: 400, body: { error: "informe repoId do repositório" } };
+        const app = await appChecker.status();
+        if (!app.configurado || app.erro)
+          return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
+        const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
+        if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
+        return { status: 200, body: await listarPessoasDoGithub(repo.nome, repo.instalacaoId) };
+      }
+    } catch (err) {
+      const motivo = err instanceof Error ? err.message : "falha ao consultar a Fonte";
+      return { status: 502, body: { error: motivo } };
+    }
+    return { status: 400, body: { error: "tipo: use gitlab, github ou jira" } };
+  }
+
+  /** Lista de pessoas do GitLab do projeto, com o token do cofre. Falha de rede ou de resposta lança o erro. */
+  async function listarPessoasDoGitlab(host: string, caminho: string, credencial: string): Promise<PessoaDaFonte[]> {
+    return listarPessoasGitlab({
+      host,
+      caminho,
+      token: (await segredos.get(credencial)) ?? "",
+      fetch: opts.fetchGitlab ?? fetch,
+    });
+  }
+
+  /** Lista de pessoas do Jira (usuários atribuíveis ao projeto), com o token do cofre. */
+  async function listarPessoasDoJira(
+    baseUrl: string,
+    email: string,
+    credencial: string,
+    projeto: string,
+  ): Promise<PessoaDaFonte[]> {
+    return listarPessoasJira({
+      baseUrl,
+      email,
+      token: (await segredos.get(credencial)) ?? "",
+      projeto,
+      fetch: opts.fetchFonte ?? fetch,
+    });
+  }
+
+  /** Lista de responsáveis possíveis do repositório do GitHub App, pelo token da instalação. */
+  async function listarPessoasDoGithub(repo: string, instalacaoId: number): Promise<PessoaDaFonte[]> {
+    return pessoasDeAssignees(await appChecker.responsaveisPossiveis(repo, instalacaoId));
+  }
+
+  /**
+   * Escolhas de PO e tech lead conferidas na Fonte antes de gravar (ticket 06). Sem escolha, não há consulta e o projeto
+   * nasce incompleto. Fonte fora do ar responde 502; pessoa que a Fonte não conhece responde 400. Nos dois casos nada
+   * é gravado.
+   */
+  async function conferirEscolhas(
+    fonte: ProjectConfig["source"],
+    escolhas: EscolhasPessoas | undefined,
+    instalacaoId?: number,
+  ): Promise<{ erro?: { status: number; body: unknown }; lista: PessoaDaFonte[] }> {
+    if (escolhas?.po === undefined && escolhas?.techLead === undefined) return { lista: [] };
+    if (fonte.type === "jira" && (!fonte.credential || !fonte.baseUrl || !fonte.email))
+      return {
+        erro: {
+          status: 400,
+          body: { error: "para escolher PO e tech lead, a Fonte Jira precisa de credencial, baseUrl e email" },
+        },
+        lista: [],
+      };
+    let lista: PessoaDaFonte[];
+    try {
+      if (fonte.type === "gitlab")
+        lista = await listarPessoasDoGitlab(fonte.hostname ?? SERVIDOR_PADRAO, fonte.repo, fonte.credential ?? "");
+      else if (fonte.type === "jira")
+        lista = await listarPessoasDoJira(
+          fonte.baseUrl ?? "",
+          fonte.email ?? "",
+          fonte.credential ?? "",
+          fonte.project,
+        );
+      else if (instalacaoId === undefined) throw new Error("repositório sem instalação do GitHub App");
+      else lista = await listarPessoasDoGithub(fonte.repo, instalacaoId);
+    } catch (err) {
+      const motivo = err instanceof Error ? err.message : "falha ao consultar a Fonte";
+      return { erro: { status: 502, body: { error: `${motivo}; o projeto não foi salvo` } }, lista: [] };
+    }
+    const erro = conferirEscolhasPessoas(escolhas, lista, fonte.type);
+    return erro ? { erro: { status: 400, body: { error: erro } }, lista } : { lista };
+  }
+
+  async function criarProjetoClonado(projeto: {
+    config: ProjectConfig;
+    destino: string;
+    clonar: () => Promise<void>;
+    /** Dados extras do estado que só um tipo de repositório precisa (ex.: o plugue do catálogo do GitHub App). */
+    ajustarEstado?: (state: FactoryState) => void;
+  }): Promise<{ status: number; body: unknown }> {
+    const { config, destino } = projeto;
+    const conflitoDe = (existentes: ProjectConfig[], reservados: ReservaDeProjeto[]) =>
+      conflitoProjeto(
+        {
+          nome: config.name,
+          prefixo: config.source.project,
+          fonteTipo: config.source.type,
+          fonteRepo: "repo" in config.source ? config.source.repo : undefined,
+        },
+        existentes,
+        reservados,
+      );
+    const existentesAgora = () => [...projects.values()].map((p) => p.config);
+
+    try {
+      await projeto.clonar();
+    } catch (err) {
+      return { status: 502, body: { error: redactSecrets(err instanceof Error ? err.message : "falha ao clonar") } };
+    }
+
+    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
+    let registrar = false;
+    await harness.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)], projetosReservados(state));
+      if (conflito) {
+        resposta = { status: 409, body: { error: conflito } };
+        return;
+      }
+      state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
+      state.projetos = { ...state.projetos, [config.name]: JSON.stringify(config) };
+      state.historicoConfig = {
+        ...state.historicoConfig,
+        [config.name]: [{ quando: new Date(clock.now()).toISOString(), autor: "usuario", campos: ["projeto criado"] }],
+      };
+      projeto.ajustarEstado?.(state);
+      registrar = true;
+      const pendencias = pendenciasDeConfiguracao(config);
+      resposta = {
+        status: 201,
+        body: {
+          projeto: config.name,
+          repo: "repo" in config.source ? config.source.repo : undefined,
+          prefixo: config.source.project,
+          fonte: config.source.type,
+          horario: config.activity,
+          ensaio: config.dryRun,
+          estado: estadoDoProjeto(pendencias),
+          pendencias,
+        },
+      };
+    }, context);
+    if (registrar) registrarProjeto(config);
+    else await rm(destino, { recursive: true, force: true });
+    return resposta;
+  }
+
+  /**
+   * Cria um projeto a partir de um repositório do catálogo do App (ADR-0016, ADR-0022). A Fonte e o horário vêm do
+   * formulário; a fábrica clona o repositório em diretório gerenciado antes de gravar, e o projeto nasce incompleto
+   * quando faltam PO, tech lead ou outros itens.
    */
   async function criarProjetoGithub(corpo: {
     repoId: number;
     nome: string;
-    prefixo: string;
+    fonte: Record<string, unknown>;
+    horario: "always" | "business-hours";
     ensaio: boolean;
+    comandoTeste: string[];
+    pessoas?: EscolhasPessoas;
   }): Promise<{ status: number; body: unknown }> {
     if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
+    if (corpo.fonte.type === "gitlab")
+      return { status: 400, body: { error: "a Fonte GitLab Issues é criada por caminho: use POST /projetos/gitlab" } };
     const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
     if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
     const app = await appChecker.status();
@@ -1940,45 +2262,115 @@ export async function startFactory(opts: {
       config = montarProjetoGithub({
         padroes: padroesDe(referencia.config),
         repo: repo.nome,
+        caminho: caminhoDoClone(corpo.nome),
         nome: corpo.nome,
-        prefixo: corpo.prefixo,
+        fonte: corpo.fonte,
+        horario: corpo.horario,
         ensaio: corpo.ensaio,
+        comandoTeste: corpo.comandoTeste,
       });
     } catch (err) {
       return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
     }
+    const erroFonte = await erroDaFonte(config.source);
+    if (erroFonte) return { status: 400, body: { error: erroFonte } };
+    const conflito = await conflitoAgora(config);
+    if (conflito) return { status: 409, body: { error: conflito } };
+    const pessoas = await conferirEscolhas(config.source, corpo.pessoas, repo.instalacaoId);
+    if (pessoas.erro) return pessoas.erro;
+    config = { ...config, ...pessoasDoProjeto(corpo.pessoas, config.source.type, pessoas.lista) };
 
-    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
-    let registrar = false;
-    await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
-      const salvos = Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
-        const lido = ProjectConfig.safeParse(JSON.parse(t));
-        return lido.success ? [lido.data] : [];
+    const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
+    return criarProjetoClonado({
+      config,
+      destino,
+      clonar: () =>
+        (opts.clonarRepositorio ?? ((c) => appChecker.clonar(c.repo, c.instalacaoId, c.destino)))({
+          repo: repo.nome,
+          instalacaoId: repo.instalacaoId,
+          destino,
+        }),
+      ajustarEstado: (state) => {
+        state.repos = {
+          ...state.repos,
+          [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
+        };
+      },
+    });
+  }
+
+  /**
+   * Cria um projeto a partir de um repositório GitLab informado por caminho completo (`grupo/projeto`) no servidor
+   * dado (gitlab.com ou self-hosted). O token vem do cofre pelo nome da credencial, e o caminho é conferido com ele
+   * antes de qualquer gravação: repositório inexistente ou token sem acesso são recusados com a causa.
+   */
+  async function criarProjetoGitlab(corpo: {
+    nome: string;
+    caminho: string;
+    servidor: string;
+    fonte: Record<string, unknown>;
+    horario: "always" | "business-hours";
+    ensaio: boolean;
+    comandoTeste: string[];
+    pessoas?: EscolhasPessoas;
+  }): Promise<{ status: number; body: unknown }> {
+    if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
+    const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
+    if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
+    const credencial = corpo.fonte.credential;
+    if (typeof credencial !== "string" || credencial === "")
+      return { status: 400, body: { error: "informe a credencial do token do GitLab (cadastrada no cofre)" } };
+
+    let host: string;
+    try {
+      host = hostDoServidor(corpo.servidor);
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
+    }
+    let config: ProjectConfig;
+    try {
+      config = montarProjetoGithub({
+        padroes: padroesDe(referencia.config),
+        repo: corpo.caminho.trim(),
+        caminho: caminhoDoClone(corpo.nome),
+        nome: corpo.nome,
+        fonte: {
+          ...corpo.fonte,
+          type: "gitlab",
+          repo: corpo.caminho.trim(),
+          ...(host === SERVIDOR_PADRAO ? {} : { hostname: host }),
+        },
+        horario: corpo.horario,
+        ensaio: corpo.ensaio,
+        comandoTeste: corpo.comandoTeste,
       });
-      const existentes = [...projects.values()].map((p) => p.config).concat(salvos);
-      const conflito = conflitoProjeto(
-        { nome: config.name, prefixo: config.source.project, repo: repo.nome },
-        existentes,
-      );
-      if (conflito) {
-        resposta = { status: 409, body: { error: conflito } };
-        return;
-      }
-      state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
-      state.repos = {
-        ...state.repos,
-        [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
-      };
-      registrar = true;
-      resposta = {
-        status: 201,
-        body: { projeto: config.name, repo: repo.nome, prefixo: config.source.project, ensaio: config.dryRun },
-      };
-    }, context);
-    if (registrar) registrarProjeto(config);
-    return resposta;
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
+    }
+    const erroFonte = await erroDaFonte(config.source);
+    if (erroFonte) return { status: 400, body: { error: erroFonte } };
+    const conflito = await conflitoAgora(config);
+    if (conflito) return { status: 409, body: { error: conflito } };
+
+    const token = (await segredos.get(credencial)) ?? "";
+    const caminho = corpo.caminho.trim();
+    const erroRepo = await verificarRepositorioGitlab({
+      host,
+      caminho,
+      token,
+      fetch: opts.fetchGitlab ?? fetch,
+    });
+    if (erroRepo) return { status: 400, body: { error: erroRepo } };
+    const pessoas = await conferirEscolhas(config.source, corpo.pessoas);
+    if (pessoas.erro) return pessoas.erro;
+    config = { ...config, ...pessoasDoProjeto(corpo.pessoas, "gitlab", pessoas.lista) };
+
+    const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
+    return criarProjetoClonado({
+      config,
+      destino,
+      clonar: () => (opts.clonarRepositorioGitlab ?? clonarRepositorioGitlab)({ host, caminho, token, destino }),
+    });
   }
 
   /**
@@ -1997,12 +2389,21 @@ export async function startFactory(opts: {
         body: { error: `nenhum projeto monitora ${repo.nome}; configure o projeto no YAML primeiro` },
       };
     }
+    // Importar cria Tarefas: projeto incompleto não executa, então não importa (ADR-0022).
+    const pendencias = pendenciasBloqueantes(project, await readState());
+    if (pendencias.length > 0) {
+      return { status: 409, body: { error: `projeto ${project} incompleto: ${pendencias.join("; ")}` } };
+    }
     let resposta: { status: number; body: unknown } = { status: 500, body: { error: "importação não registrada" } };
     let enfileirar = false;
     await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
       if (repoDesativado(state, project)) {
         resposta = { status: 409, body: { error: `o repositório ${repo.nome} está desplugado` } };
+        return;
+      }
+      if (projetoPausado(state, project)) {
+        resposta = { status: 409, body: { error: `projeto ${project} pausado: retome-o para importar` } };
         return;
       }
       const atual = state.importacoes?.[String(repoId)];
@@ -2208,6 +2609,19 @@ export async function startFactory(opts: {
       if (gate !== null) await harness.abortTask(gate as TaskId, context);
       return result;
     },
+    pausarProjeto: (nome: string) =>
+      harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        state.projetosPausados = [...new Set([...(state.projetosPausados ?? []), nome])];
+      }, context),
+    retomarProjeto: (nome: string) =>
+      harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
+        // Como no daemon: as Tarefas paradas só pela pausa do projeto voltam para a fila; as pausadas pelo usuário não.
+        for (const t of state.tasks)
+          if (t.project === nome && t.status === "pausada" && !t.pauseRequested) t.status = "enfileirada";
+      }, context),
     setDaemonPaused: (paused: boolean) =>
       harness.commit(async (tx) => {
         const state = await tx.doc(StateDoc);
@@ -2613,6 +3027,7 @@ export async function startFactory(opts: {
             const currentQuestion = current?.questions?.find((item) => item.n === n);
             if (
               currentState.daemonPaused ||
+              (current && projetoPausado(currentState, current.project)) ||
               current?.status !== "aguardando-humano" ||
               current.pauseRequested ||
               currentQuestion?.publication !== "draft" ||
@@ -2760,7 +3175,110 @@ export async function startFactory(opts: {
         const nome = decodeURIComponent(pendenciasMatch[1] ?? "");
         const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
         if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        return json(res, 200, pendenciasDeConfiguracao(guardada));
+        return json(res, 200, comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome));
+      }
+      const estadoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/estado$/);
+      if (estadoMatch && req.method === "GET") {
+        const nome = decodeURIComponent(estadoMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        const state = await readState();
+        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
+        const pausado = projetoPausado(state, nome);
+        return json(res, 200, {
+          estado: estadoDoProjeto(pendencias, pausado),
+          pendencias,
+          aguardandoConfirmacao: aguardandoConfirmacao(state, nome),
+        });
+      }
+      const pausaMatch = url.pathname.match(/^\/projetos\/([^/]+)\/(pausa|retomada)$/);
+      if (pausaMatch && req.method === "POST") {
+        const nome = decodeURIComponent(pausaMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome);
+        if (pausaMatch[2] === "pausa") {
+          // Só um projeto ativo se pausa: um incompleto já não executa (ADR-0022).
+          if (pendencias.length > 0)
+            return json(res, 409, { error: `projeto ${nome} incompleto: ${pendencias.join("; ")}` });
+          await commands.pausarProjeto(nome);
+        } else {
+          // Retomar revalida a configuração: volta a ativo só sem pendências; senão segue pausado com o que falta.
+          if (pendencias.length > 0)
+            return json(res, 409, { error: `projeto ${nome} incompleto: ${pendencias.join("; ")}` });
+          await commands.retomarProjeto(nome);
+        }
+        const pausado = projetoPausado(await readState(), nome);
+        return json(res, 200, { estado: estadoDoProjeto(pendencias, pausado), pendencias });
+      }
+      const confirmacaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/confirmacao$/);
+      if (confirmacaoMatch && req.method === "POST") {
+        const nome = decodeURIComponent(confirmacaoMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        // Confirmar a Fonte nova tira só a pendência da troca: o projeto vira ativo se não houver outras (e não pausado).
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
+        }, context);
+        const state = await readState();
+        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
+        return json(res, 200, {
+          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
+          pendencias,
+          aguardandoConfirmacao: false,
+        });
+      }
+      const remocaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/remocao$/);
+      if (remocaoMatch && req.method === "POST") {
+        const nome = decodeURIComponent(remocaoMatch[1] ?? "");
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const corpo = (await readBody(req)) as { confirmar?: unknown } | undefined;
+        if (!(await readState()).projetos?.[nome]) return json(res, 404, { error: `projeto ${nome} não existe` });
+        // Remover é irreversível: o nome do projeto precisa ser repetido no corpo, como confirmação explícita.
+        if (corpo?.confirmar !== nome)
+          return json(res, 400, { error: `confirme a remoção enviando "confirmar" com o nome do projeto: ${nome}` });
+        let emAndamento: string[] = [];
+        let removido = false;
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          if (!state.projetos?.[nome]) return;
+          // Com Tarefa em andamento, nada muda: a remoção só sai quando o projeto não tem nenhuma (ticket 11).
+          emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
+          if (emAndamento.length > 0) return;
+          const guardada = lerConfiguracao(state.projetos[nome]);
+          removido = true;
+          state.projetos = semProjeto(state.projetos, nome);
+          state.projetosGitHub = semProjeto(state.projetosGitHub, nome);
+          state.repos = semProjeto(state.repos, nome);
+          state.sincronizadoEm = semProjeto(state.sincronizadoEm, nome);
+          state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
+          state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
+          const quando = new Date(clock.now()).toISOString();
+          state.projetosRemovidos = {
+            ...state.projetosRemovidos,
+            [nome]: { prefixo: guardada?.source.project ?? "", quando },
+          };
+          state.historicoConfig = {
+            ...state.historicoConfig,
+            [nome]: [
+              ...(state.historicoConfig?.[nome] ?? []),
+              { quando, autor: "usuario", campos: ["projeto removido"] },
+            ],
+          };
+          // Dentro do commit: nenhuma Tarefa nova entra no projeto entre a gravação e a saída da memória.
+          projects.delete(nome);
+          bases.delete(nome);
+          criadosPelaInterface.delete(nome);
+        }, context);
+        if (emAndamento.length > 0)
+          return json(res, 409, {
+            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para remover o projeto`,
+            tarefasEmAndamento: emAndamento,
+          });
+        if (!removido) return json(res, 404, { error: `projeto ${nome} não existe` });
+        const reserva = projetosReservados(await readState()).find((r) => r.nome === nome);
+        return json(res, 200, { removido: nome, prefixoReservado: reserva?.prefixo ?? null });
       }
       if (route === "GET /telegram/configuracao") {
         const salvo = (await readState()).telegramConfig;
@@ -2793,7 +3311,9 @@ export async function startFactory(opts: {
       if (historicoMatch && req.method === "GET") {
         const nome = decodeURIComponent(historicoMatch[1] ?? "");
         const state = await readState();
-        if (!lerConfiguracao(state.projetos?.[nome])) return json(res, 404, { error: `projeto ${nome} não existe` });
+        // Depois da remoção o histórico continua consultável: o registro da remoção é a última alteração.
+        const existe = lerConfiguracao(state.projetos?.[nome]) !== undefined || nome in (state.projetosRemovidos ?? {});
+        if (!existe) return json(res, 404, { error: `projeto ${nome} não existe` });
         return json(res, 200, state.historicoConfig?.[nome] ?? []);
       }
       const segredoMatch = url.pathname.match(/^\/segredos\/([^/]+)$/);
@@ -2828,6 +3348,8 @@ export async function startFactory(opts: {
             });
         }
         const gravado = await segredos.put(nomeSegredo, corpo.valor);
+        // A interface do Telegram lê o token ao ligar: trocar a credencial do bot religa a interface na hora.
+        if ((await readState()).telegramConfig?.credential === nomeSegredo) await reiniciarBridge();
         if (usadoPor.length > 0) {
           await harness.commit(async (tx) => {
             const state = await tx.doc(StateDoc);
@@ -2860,40 +3382,26 @@ export async function startFactory(opts: {
         if (lida.data.name !== nome) return json(res, 400, { error: "o nome do projeto no corpo não bate com a URL" });
         const errosPerfis = validarPerfis({ profiles: lida.data.profiles, people: lida.data.people });
         if (errosPerfis.length > 0) return json(res, 400, { error: errosPerfis[0] });
-        const semIdentidade = lida.data.people.find((p) => p.canal === "teams" && !identidadeTeams(p));
-        if (semIdentidade)
-          return json(res, 400, { error: `pessoa ${semIdentidade.id}: canal teams exige identidade no Teams` });
         for (const repositorio of lida.data.repositories ?? []) {
           if (!(await ehDiretorio(repositorio.path)))
             return json(res, 400, { error: `caminho do repositório não existe: ${repositorio.path}` });
         }
-        const fonte = lida.data.source;
-        if (
-          (fonte.type === "gitlab" || fonte.type === "github") &&
-          fonte.credential &&
-          !(await segredos.has(fonte.credential))
-        )
-          return json(res, 400, { error: `credencial ${fonte.credential} não cadastrada` });
-        if (fonte.type === "jira" && fonte.credential) {
-          if (!(await segredos.has(fonte.credential)))
-            return json(res, 400, { error: `credencial ${fonte.credential} não cadastrada` });
-          if (!fonte.baseUrl || !fonte.email)
-            return json(res, 400, { error: "a Fonte Jira com credencial precisa de baseUrl e email" });
-          const token = await segredos.get(fonte.credential);
-          const conexao = await testarConexaoJira({
-            baseUrl: fonte.baseUrl,
-            email: fonte.email,
-            token: token ?? "",
-            fetch: opts.fetchFonte ?? fetch,
-          });
-          if (!conexao.ok) return json(res, 400, { error: `conexão com o Jira falhou (${conexao.motivo})` });
-        }
+        const erroFonte = await erroDaFonte(lida.data.source);
+        if (erroFonte) return json(res, 400, { error: erroFonte });
         let existe = false;
+        let emAndamento: string[] = [];
         await harness.commit(async (tx) => {
           const state = await tx.doc(StateDoc);
           const anterior = lerConfiguracao(state.projetos?.[nome]);
           if (!anterior) return;
           existe = true;
+          // Trocar a Fonte ou o repositório só sem tarefas em andamento (ticket 10): nada é gravado se houver.
+          const troca = trocouFonteOuRepositorio(anterior, lida.data);
+          if (troca) {
+            emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
+            if (emAndamento.length > 0) return;
+            state.projetosAguardandoConfirmacao = [...new Set([...(state.projetosAguardandoConfirmacao ?? []), nome])];
+          }
           state.projetos = { ...state.projetos, [nome]: JSON.stringify(lida.data) };
           const campos = camposAlterados(anterior, lida.data);
           if (campos.length > 0)
@@ -2905,8 +3413,14 @@ export async function startFactory(opts: {
               ],
             };
         }, context);
-        if (existe) aplicarConfiguracao(lida.data);
-        return existe ? json(res, 200, lida.data) : json(res, 404, { error: `projeto ${nome} não existe` });
+        if (!existe) return json(res, 404, { error: `projeto ${nome} não existe` });
+        if (emAndamento.length > 0)
+          return json(res, 409, {
+            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para trocar a Fonte ou o repositório`,
+            tarefasEmAndamento: emAndamento,
+          });
+        aplicarConfiguracao(lida.data);
+        return json(res, 200, lida.data);
       }
       if (route === "GET /projetos")
         return json(
@@ -2931,16 +3445,90 @@ export async function startFactory(opts: {
       if (route === "POST /projetos/github") {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as
-          | { repoId?: unknown; nome?: unknown; prefixo?: unknown; ensaio?: unknown }
+          | {
+              repoId?: unknown;
+              nome?: unknown;
+              fonte?: unknown;
+              horario?: unknown;
+              ensaio?: unknown;
+              comandoTeste?: unknown;
+              pessoas?: unknown;
+            }
           | undefined;
-        if (!Number.isInteger(body?.repoId) || typeof body?.nome !== "string" || typeof body?.prefixo !== "string")
-          return json(res, 400, { error: "informe repoId, nome e prefixo do projeto" });
+        if (
+          !Number.isInteger(body?.repoId) ||
+          typeof body?.nome !== "string" ||
+          typeof body?.fonte !== "object" ||
+          body.fonte === null ||
+          Array.isArray(body.fonte)
+        )
+          return json(res, 400, { error: "informe repoId, nome e a fonte (objeto com type e os campos dela)" });
+        if (body.horario !== undefined && body.horario !== "business-hours" && body.horario !== "always")
+          return json(res, 400, { error: "horario: use business-hours (horário comercial) ou always (sempre ativo)" });
+        const comando = Array.isArray(body.comandoTeste)
+          ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
+          : [];
+        // Sem comando nenhum o projeto nasce incompleto (ticket 08); um item vazio no meio do argv é erro de digitação.
+        if (comando.some((item) => item === ""))
+          return json(res, 400, { error: "comando de teste: cada argumento precisa ter texto" });
         const result = await criarProjetoGithub({
           repoId: body.repoId as number,
           nome: body.nome.trim(),
-          prefixo: body.prefixo.trim().toUpperCase(),
+          fonte: body.fonte as Record<string, unknown>,
+          horario: body.horario === "always" ? "always" : "business-hours",
           ensaio: body.ensaio !== false,
+          comandoTeste: comando,
+          pessoas: lerEscolhasPessoas(body.pessoas),
         });
+        return json(res, result.status, result.body);
+      }
+      if (route === "POST /projetos/gitlab") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as
+          | {
+              nome?: unknown;
+              caminho?: unknown;
+              servidor?: unknown;
+              fonte?: unknown;
+              horario?: unknown;
+              ensaio?: unknown;
+              comandoTeste?: unknown;
+              pessoas?: unknown;
+            }
+          | undefined;
+        if (
+          typeof body?.nome !== "string" ||
+          typeof body?.caminho !== "string" ||
+          typeof body?.fonte !== "object" ||
+          body.fonte === null ||
+          Array.isArray(body.fonte)
+        )
+          return json(res, 400, { error: "informe nome, caminho (grupo/projeto), servidor e a fonte (objeto)" });
+        if (body.servidor !== undefined && typeof body.servidor !== "string")
+          return json(res, 400, { error: "servidor: informe a URL do GitLab como texto" });
+        if (body.horario !== undefined && body.horario !== "business-hours" && body.horario !== "always")
+          return json(res, 400, { error: "horario: use business-hours (horário comercial) ou always (sempre ativo)" });
+        const comando = Array.isArray(body.comandoTeste)
+          ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
+          : [];
+        // Sem comando nenhum o projeto nasce incompleto (ticket 08); um item vazio no meio do argv é erro de digitação.
+        if (comando.some((item) => item === ""))
+          return json(res, 400, { error: "comando de teste: cada argumento precisa ter texto" });
+        const result = await criarProjetoGitlab({
+          nome: body.nome.trim(),
+          caminho: body.caminho,
+          servidor: body.servidor ?? "",
+          fonte: body.fonte as Record<string, unknown>,
+          horario: body.horario === "always" ? "always" : "business-hours",
+          ensaio: body.ensaio !== false,
+          comandoTeste: comando,
+          pessoas: lerEscolhasPessoas(body.pessoas),
+        });
+        return json(res, result.status, result.body);
+      }
+      if (route === "POST /projetos/pessoas-da-fonte") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const result = await listarPessoasParaCriacao(await readBody(req));
         return json(res, result.status, result.body);
       }
       if (route === "POST /github/importar") {

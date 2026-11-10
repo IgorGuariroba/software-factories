@@ -502,7 +502,21 @@ export const API_SCHEMA = {
     "/projetos/github": {
       post: {
         summary:
-          "Cria um projeto de repositório do GitHub App a partir do catálogo (corpo: { repoId, nome, prefixo, ensaio? }). Modelos e estados vêm do primeiro projeto do YAML; ensaio é o padrão. Responde 201",
+          "Cria um projeto a partir de um repositório do catálogo do GitHub App (corpo: { repoId, nome, fonte: { type: github|gitlab|jira, project, ...campos da Fonte }, comandoTeste: string[], horario?: business-hours|always, ensaio?, pessoas?: { po?, techLead? } com os identificadores da lista de /projetos/pessoas-da-fonte }). A fábrica clona o repositório em diretório gerenciado; o projeto nasce incompleto se faltar PO, tech lead ou outro item (ADR-0022). Responde 201 com estado e pendencias; 502 se a clonagem falhar, sem gravar nada",
+        responses: ok,
+      },
+    },
+    "/projetos/gitlab": {
+      post: {
+        summary:
+          "Cria um projeto a partir de um repositório GitLab por caminho completo (corpo: { nome, caminho: grupo/projeto, servidor?: URL https (vazio para gitlab.com), fonte: { project, assignee, credential, ignoreLabels? }, comandoTeste: string[], horario?, ensaio?, pessoas?: { po?, techLead? } com os identificadores da lista de /projetos/pessoas-da-fonte }). O token do cofre é conferido no caminho antes de salvar; a fábrica clona o repositório em diretório gerenciado. Responde 201 com estado e pendencias; 400 se o caminho ou o token não servirem, sem gravar nada",
+        responses: ok,
+      },
+    },
+    "/projetos/pessoas-da-fonte": {
+      post: {
+        summary:
+          "Lista as pessoas da Fonte para escolher PO e tech lead na criação, sem gravar nada (corpo: { tipo: gitlab, caminho, servidor?, credencial } | { tipo: github, repoId } | { tipo: jira, baseUrl, email, projeto, credencial }). Responde [{ id, nome }]; 502 se a Fonte não responder",
         responses: ok,
       },
     },
@@ -528,7 +542,7 @@ export const API_SCHEMA = {
       get: { summary: "Configuração guardada do projeto (ADR-0017)", responses: ok },
       put: {
         summary:
-          "Grava a configuração do projeto, validada pelo schema, pelos perfis, pelos caminhos de repositório e pela conexão da Fonte Jira com credencial; aplica na hora",
+          "Grava a configuração do projeto, validada pelo schema, pelos perfis, pelos caminhos de repositório e pela conexão da Fonte Jira com credencial; aplica na hora. Trocar a Fonte ou o repositório só sem tarefas em andamento (409) e deixa o projeto incompleto até a confirmação",
         responses: ok,
       },
     },
@@ -536,6 +550,45 @@ export const API_SCHEMA = {
       get: { summary: "Histórico de alterações da configuração, sem valores", responses: ok },
     },
     "/projetos/{nome}/pendencias": { get: { summary: "O que falta na configuração (lista de avisos)", responses: ok } },
+    "/projetos/{nome}/estado": {
+      get: {
+        summary:
+          "Estado do projeto (incompleto, ativo ou pausado) com a lista do que falta (ADR-0022) e se aguarda confirmação de troca de Fonte",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/pausa": {
+      post: {
+        summary:
+          "Pausa um projeto ativo: nada novo começa nele, e a Tarefa em andamento para no próximo passo. Incompleto: 409",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/confirmacao": {
+      post: {
+        summary:
+          "Confirma a Fonte ou o repositório trocados: tira essa pendência, e o projeto fica ativo se não houver outras",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/remocao": {
+      post: {
+        summary:
+          'Remove a configuração do projeto, com confirmação (corpo "confirmar" igual ao nome). Com Tarefa em andamento, 409 e nada muda. O histórico das Tarefas fica, e o prefixo segue reservado enquanto ele existir; o nome nunca volta a ser usado',
+        responses: {
+          ...ok,
+          "400": { description: "Confirmação ausente ou diferente do nome do projeto" },
+          "404": { description: "Projeto inexistente" },
+          "409": { description: "Há Tarefas em andamento no projeto; tarefasEmAndamento traz as ids" },
+        },
+      },
+    },
+    "/projetos/{nome}/retomada": {
+      post: {
+        summary: "Retoma um projeto pausado, revalidando a configuração: com pendências, 409 e segue pausado",
+        responses: ok,
+      },
+    },
     "/segredos": { get: { summary: "Credenciais cadastradas: nome e data, nunca o valor", responses: ok } },
     "/ferramentas": {
       get: {

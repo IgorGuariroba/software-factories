@@ -36,6 +36,7 @@ export function testProjectConfig(overrides: Partial<ProjectConfig> = {}): Proje
     people: [{ id: PO, role: "po" }],
     profiles: [],
     vetoMinutes: 30,
+    allowedProviders: [FakeModel.PROVIDER],
     calendar: {
       timezone: "UTC",
       workdays: ["mon", "tue", "wed", "thu", "fri"],
@@ -104,6 +105,11 @@ interface TestFactoryOptions {
   webhookSecret?: string;
   /** Painel do GitHub App: App ID e chave (caminho) e o `fetch` falso que responde pela API do GitHub. */
   githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
+  /** Clone do repositório de um projeto criado pela UI, falso nos testes (sem rede). */
+  clonarRepositorio?: (opts: { repo: string; instalacaoId: number; destino: string }) => Promise<void>;
+  /** Clone e conferência de um repositório GitLab de projeto criado pela UI, falsos nos testes (sem rede). */
+  clonarRepositorioGitlab?: (opts: { host: string; caminho: string; token: string; destino: string }) => Promise<void>;
+  fetchGitlab?: typeof fetch;
   /** Janela de agrupamento dos avisos. Padrão nos testes: 0 (cada aviso sai na hora). */
   avisoJanelaMs?: number;
   /** Fonte dos projetos criados pela interface. Padrão: uma Fonte em memória vazia (sem cards). */
@@ -141,6 +147,9 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     webhook: opts.webhookSecret ? { port: 0, secret: opts.webhookSecret } : undefined,
     avisos: { janelaMs: opts.avisoJanelaMs ?? 0 },
     githubApp: opts.githubApp,
+    clonarRepositorio: opts.clonarRepositorio,
+    clonarRepositorioGitlab: opts.clonarRepositorioGitlab,
+    fetchGitlab: opts.fetchGitlab,
     fetchFonte: opts.fetchFonte,
     criarInterfaceTelegram: opts.criarInterfaceTelegram,
     createSource: opts.createSource ?? (() => new MemoryDemandSource([])),

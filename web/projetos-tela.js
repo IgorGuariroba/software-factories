@@ -1,14 +1,18 @@
 // Tela de configuração de projeto: monta o formulário a partir da API e grava pela API (ADR-0017). Não há regra de
 // negócio aqui: a API valida tudo; esta tela só converte valores (ver projeto-config.js, testado em Node).
-import { api } from "./api.js";
+import { api, getSegredos } from "./api.js";
 import { desenharEtapasAgente } from "./etapas-agente-tela.js";
 import {
+  acoesDoEstado,
   camposDaFonte,
   configDoFormulario,
   estadoDoFormulario,
   fonteDoFormulario,
+  linhaDaCredencial,
+  opcoesDeCredenciais,
   perfisDoFormulario,
   pessoasDoFormulario,
+  provedoresDoFormulario,
   repositoriosDoFormulario,
   resumoHistorico,
 } from "./projeto-config.js";
@@ -30,15 +34,46 @@ function el(tag, props = {}, filhos = []) {
   return node;
 }
 
+/** Rótulo visível acima do controle; o controle mantém o próprio aria-label. */
+const rotulado = (texto, controle) => el("label", { class: "campo" }, [el("span", { texto }), controle]);
+
+/** Cabeçalho de cartão: título e descrição com largura de leitura limitada. */
+const cabecalhoCartao = (titulo, descricao) =>
+  el("div", { class: "cartao-cabecalho" }, [el("h3", { texto: titulo }), el("p", { texto: descricao })]);
+
+/**
+ * Define o número de colunas via CSSOM: o CSP da página bloqueia `style` inline no HTML (style-src 'self'), mas aceita
+ * `style.setProperty`.
+ */
+const comColunas = (node, quantidade) => {
+  node.style.setProperty("--colunas", String(quantidade));
+  return node;
+};
+
+/** Cabeçalho de colunas acima de uma lista de linhas repetidas (perfis, pessoas, repositórios). */
+const cabecalhoGrade = (rotulos) =>
+  comColunas(
+    el(
+      "div",
+      { class: "grade-cabecalho", "aria-hidden": "true" },
+      rotulos.map((r) => el("span", { texto: r })),
+    ),
+    rotulos.length,
+  );
+
+/** Linha de controles alinhada às colunas do cabeçalho. */
+const linhaGrade = (controles) => comColunas(el("div", { class: "grade-linha" }, controles), controles.length);
+
 /**
  * Monta a tela dentro de `raiz`. Carrega a lista de projetos, o schema das Fontes e os modelos de perfis.
  * @param {HTMLElement} raiz
  */
 export async function iniciarProjetos(raiz) {
-  const [projetos, fontes, modelos] = await Promise.all([
+  const [projetos, fontes, modelos, segredos] = await Promise.all([
     api("GET", "/projetos"),
     api("GET", "/integracoes/fontes"),
     api("GET", "/perfis/modelos"),
+    getSegredos(),
   ]);
   const mensagem = el("p", { class: "mensagem", role: "status" });
   const seletor = el(
@@ -47,31 +82,114 @@ export async function iniciarProjetos(raiz) {
     projetos.map((p) => el("option", { valor: p.nome, texto: p.nome })),
   );
   const corpo = el("div", { class: "projeto-config-corpo" });
+  const cofreBox = el("section", { class: "bloco" });
   const telegramBox = el("section", { class: "bloco" });
-  raiz.replaceChildren(
-    telegramBox,
-    el("div", { class: "projeto-config-topo" }, [
-      el("label", { for: "projeto-config-nome", texto: "Projeto " }),
-      seletor,
+
+  // Cofre único (ticket 03): credenciais por nome. Os seletores de Fonte e de Canal leem esta lista e são atualizados
+  // quando ela muda; o valor nunca volta para a tela.
+  let credenciais = segredos;
+  const seletoresDeCredencial = new Set();
+  const preencherSeletor = (sel, escolhido) => {
+    sel.replaceChildren(
+      ...opcoesDeCredenciais(credenciais, escolhido).map((o) => el("option", { valor: o.valor, texto: o.texto })),
+    );
+    sel.value = escolhido ?? "";
+  };
+  const seletorDeCredencial = (rotulo, atual = "") => {
+    const sel = el("select", { "aria-label": rotulo });
+    seletoresDeCredencial.add(sel);
+    preencherSeletor(sel, atual);
+    return sel;
+  };
+  const listaCredenciais = el("ul", { class: "lista-cofre" });
+  const vazioCredenciais = el("div", { class: "estado-vazio-cartao" }, [
+    el("p", { class: "estado-vazio-titulo", texto: "Nenhuma credencial cadastrada." }),
+    el("p", { class: "ajuda", texto: "Cadastre a primeira abaixo para usá-la nas Fontes e nos Canais." }),
+  ]);
+  const desenharCofre = () => {
+    listaCredenciais.replaceChildren(...credenciais.map((c) => el("li", { texto: linhaDaCredencial(c) })));
+    listaCredenciais.hidden = credenciais.length === 0;
+    vazioCredenciais.hidden = credenciais.length !== 0;
+    for (const sel of [...seletoresDeCredencial]) {
+      if (!sel.isConnected) seletoresDeCredencial.delete(sel);
+      else preencherSeletor(sel, sel.value);
+    }
+  };
+  const recarregarCredenciais = async () => {
+    credenciais = await getSegredos();
+    desenharCofre();
+  };
+  const nomeCredencial = el("input", { "aria-label": "Nome da credencial", placeholder: "ex.: jira-token" });
+  const valorCredencial = el("input", { type: "password", "aria-label": "Valor da credencial", autocomplete: "off" });
+  const gravarCredencial = el("button", { type: "button", class: "primario", texto: "Gravar credencial" });
+  gravarCredencial.addEventListener("click", async () => {
+    const nome = nomeCredencial.value.trim();
+    try {
+      await api("PUT", `/segredos/${encodeURIComponent(nome)}`, { valor: valorCredencial.value });
+      valorCredencial.value = "";
+      nomeCredencial.value = "";
+      await recarregarCredenciais();
+      mensagem.textContent = `Credencial ${nome} gravada. O valor não é exibido de novo; os projetos que a usam passam a usar o novo valor.`;
+    } catch (erro) {
+      mensagem.textContent = erro.message;
+    }
+  });
+  cofreBox.replaceChildren(
+    cabecalhoCartao(
+      "Credenciais (cofre único)",
+      "Cadastre a credencial com um nome e escolha-a pelo nome nas Fontes e nos Canais. Para trocar o valor, grave de novo com o mesmo nome.",
+    ),
+    listaCredenciais,
+    vazioCredenciais,
+    el("div", { class: "formulario-linha" }, [
+      rotulado("Nome da credencial", nomeCredencial),
+      rotulado("Valor", valorCredencial),
+      el("div", { class: "acoes-cartao" }, [gravarCredencial]),
     ]),
-    mensagem,
-    corpo,
   );
-  desenharTelegram(telegramBox, () => mensagem);
+  desenharCofre();
+
+  // Dois escopos separados: o que vale para o usuário inteiro, e o que é de cada projeto. O seletor de projeto fica
+  // numa barra de contexto no topo do escopo "Por projeto", porque só ele muda o que aparece abaixo.
+  raiz.replaceChildren(
+    mensagem,
+    el("section", { class: "escopo escopo-global", "aria-labelledby": "escopo-global-titulo" }, [
+      el("div", {}, [
+        el("h3", { class: "grupo-titulo", id: "escopo-global-titulo", texto: "Globais ao usuário" }),
+        el("p", { class: "grupo-descricao", texto: "Valem para todos os projetos: cofre de credenciais e Telegram." }),
+      ]),
+      cofreBox,
+      telegramBox,
+    ]),
+    el("section", { class: "escopo escopo-projeto", "aria-labelledby": "escopo-projeto-titulo" }, [
+      el("div", {}, [
+        el("h3", { class: "grupo-titulo", id: "escopo-projeto-titulo", texto: "Por projeto" }),
+        el("p", {
+          class: "grupo-descricao",
+          texto:
+            "Fonte, pessoas, repositórios, provedores, ensaio, conteúdo no Telegram, estado e remoção de cada projeto.",
+        }),
+      ]),
+      el("div", { class: "projeto-contexto" }, [rotulado("Projeto", seletor)]),
+      corpo,
+    ]),
+  );
+  desenharTelegram(telegramBox, () => mensagem, seletorDeCredencial);
 
   async function carregar() {
     const nome = seletor.value;
     if (!nome) return;
-    const [atual, pendencias, historico, catalogo] = await Promise.all([
+    const [atual, situacao, historico, catalogo] = await Promise.all([
       api("GET", `/projetos/${encodeURIComponent(nome)}/configuracao`),
-      api("GET", `/projetos/${encodeURIComponent(nome)}/pendencias`),
+      api("GET", `/projetos/${encodeURIComponent(nome)}/estado`),
       api("GET", `/projetos/${encodeURIComponent(nome)}/historico`),
       api("GET", "/ferramentas"),
     ]);
-    desenhar(nome, atual, pendencias, historico, catalogo);
+    desenhar(nome, atual, situacao, historico, catalogo);
   }
 
-  function desenhar(nome, atual, pendencias, historico, catalogo) {
+  function desenhar(nome, atual, situacao, historico, catalogo) {
+    const pendencias = situacao.pendencias;
     const tipoSel = el(
       "select",
       { "aria-label": "Tipo da Fonte" },
@@ -86,7 +204,11 @@ export async function iniciarProjetos(raiz) {
       inputs.campos = {};
       camposBox.replaceChildren(
         ...camposDaFonte(esquema, valoresAtuais).map((c) => {
-          const input = el("input", { id: `campo-${c.campo}`, valor: c.valor, "aria-label": c.rotulo });
+          // Credencial: escolhida pelo nome no cofre (ticket 03); o projeto guarda só o nome.
+          const input =
+            c.tipo === "segredo"
+              ? seletorDeCredencial(c.rotulo, c.valor)
+              : el("input", { id: `campo-${c.campo}`, valor: c.valor, "aria-label": c.rotulo });
           inputs.campos[c.campo] = { input, tipo: c.tipo, esquema: c };
           return el("label", { class: "campo" }, [el("span", { texto: c.rotulo }), input]);
         }),
@@ -94,21 +216,6 @@ export async function iniciarProjetos(raiz) {
     }
     tipoSel.addEventListener("change", desenharCampos);
     desenharCampos();
-
-    const credencialNome = el("input", { "aria-label": "Nome da credencial no cofre", placeholder: "ex.: jira-token" });
-    const credencialValor = el("input", { type: "password", "aria-label": "Valor da credencial", autocomplete: "off" });
-    const salvarCredencial = el("button", { type: "button", texto: "Salvar credencial" });
-    salvarCredencial.addEventListener("click", async () => {
-      try {
-        await api("PUT", `/segredos/${encodeURIComponent(credencialNome.value.trim())}`, {
-          valor: credencialValor.value,
-        });
-        credencialValor.value = "";
-        mensagem.textContent = "Credencial gravada. O valor não é exibido de novo.";
-      } catch (erro) {
-        mensagem.textContent = erro.message;
-      }
-    });
 
     const perfisLinhas = [];
     const perfisBox = el("div");
@@ -124,7 +231,8 @@ export async function iniciarProjetos(raiz) {
       p.value = papel;
       const linha = { nome: n, papel: p };
       perfisLinhas.push(linha);
-      perfisBox.append(el("div", { class: "linha" }, [n, p]));
+      if (perfisBox.childElementCount === 0) perfisBox.append(cabecalhoGrade(["Nome do perfil", "Papel"]));
+      perfisBox.append(linhaGrade([n, p]));
     };
     const addPessoa = (pessoa = { id: "", perfis: [], identidades: {} }) => {
       const campo = (rotulo, valor) => el("input", { valor, "aria-label": rotulo, placeholder: rotulo });
@@ -145,7 +253,9 @@ export async function iniciarProjetos(raiz) {
       const campos = Object.entries(linha)
         .filter(([chave]) => chave !== "role")
         .map(([, input]) => input);
-      pessoasBox.append(el("div", { class: "linha" }, campos));
+      if (pessoasBox.childElementCount === 0)
+        pessoasBox.append(cabecalhoGrade(["Canal", "Identificador na Fonte", "Perfis (vírgula)", ...IDENTIDADES]));
+      pessoasBox.append(linhaGrade(campos));
     };
     for (const p of atual.profiles ?? []) addPerfil(p.nome, p.papel);
     for (const p of atual.people ?? []) addPessoa(p);
@@ -162,7 +272,9 @@ export async function iniciarProjetos(raiz) {
         }),
       };
       repoLinhas.push(linha);
-      repoBox.append(el("div", { class: "linha" }, [linha.path, linha.prefix, linha.comando]));
+      if (repoBox.childElementCount === 0)
+        repoBox.append(cabecalhoGrade(["Caminho do repositório local", "Prefixo dos cards", "Comando de teste"]));
+      repoBox.append(linhaGrade([linha.path, linha.prefix, linha.comando]));
     };
     for (const r of atual.repositories ?? []) addRepo(r);
     const adicionarRepo = el("button", { type: "button", texto: "Adicionar repositório" });
@@ -182,6 +294,12 @@ export async function iniciarProjetos(raiz) {
     const adicionarPessoa = el("button", { type: "button", texto: "Adicionar pessoa" });
     adicionarPessoa.addEventListener("click", () => addPessoa());
 
+    // Provedores de modelos permitidos ao projeto (ticket 08): sem nenhum, o projeto fica incompleto.
+    const provedores = el("input", {
+      valor: (atual.allowedProviders ?? []).join(", "),
+      "aria-label": "Provedores permitidos (vírgula)",
+    });
+
     const ensaio = el("input", { type: "checkbox", id: "projeto-config-ensaio", marcado: atual.dryRun === true });
     // Conteúdo das mensagens deste projeto no Telegram (fatia 09): completo ou mínimo.
     const conteudoTelegram = el("select", { "aria-label": "Conteúdo no Telegram" }, [
@@ -189,7 +307,47 @@ export async function iniciarProjetos(raiz) {
       el("option", { valor: "minimal", texto: "mínimo" }),
     ]);
     conteudoTelegram.value = atual.telegram?.content ?? "full";
-    const salvar = el("button", { type: "button", texto: "Salvar configuração" });
+    // Pausa e retomada (ticket 09): a configuração fica como está; o estado vem da API depois de cada ação.
+    const acoes = acoesDoEstado(situacao.estado);
+    const pausar = el("button", { type: "button", texto: "Pausar projeto" });
+    const retomar = el("button", { type: "button", texto: "Retomar projeto" });
+    pausar.hidden = !acoes.pausar;
+    retomar.hidden = !acoes.retomar;
+    // Troca de Fonte ou repositório (ticket 10): o projeto fica incompleto até o usuário confirmar a configuração nova.
+    const confirmar = el("button", { type: "button", texto: "Confirmar nova Fonte ou repositório" });
+    confirmar.hidden = situacao.aguardandoConfirmacao !== true;
+    confirmar.addEventListener("click", async () => {
+      try {
+        const resposta = await api("POST", `/projetos/${encodeURIComponent(nome)}/confirmacao`);
+        const fim = resposta.pendencias.length === 0 ? "" : `: ${resposta.pendencias.join("; ")}`;
+        mensagem.textContent = `Nova Fonte ou repositório confirmado. Projeto ${resposta.estado}${fim}.`;
+        await carregar();
+      } catch (erro) {
+        mensagem.textContent = erro.message;
+      }
+    });
+    const aplicarPausa = async (chamar, sucesso) => {
+      try {
+        const resposta = await chamar();
+        mensagem.textContent = resposta.estado === "pausado" ? sucesso.pausado : sucesso.ativo;
+        await carregar();
+      } catch (erro) {
+        mensagem.textContent = erro.message;
+      }
+    };
+    pausar.addEventListener("click", () =>
+      aplicarPausa(() => api("POST", `/projetos/${encodeURIComponent(nome)}/pausa`), {
+        pausado: "Projeto pausado. A configuração foi preservada.",
+        ativo: "Projeto ativo.",
+      }),
+    );
+    retomar.addEventListener("click", () =>
+      aplicarPausa(() => api("POST", `/projetos/${encodeURIComponent(nome)}/retomada`), {
+        pausado: "Projeto ainda pausado.",
+        ativo: "Projeto retomado e ativo.",
+      }),
+    );
+    const salvar = el("button", { type: "button", class: "primario", texto: "Salvar configuração" });
     salvar.addEventListener("click", async () => {
       try {
         const valores = Object.fromEntries(Object.entries(inputs.campos).map(([k, v]) => [k, v.input.value]));
@@ -218,13 +376,19 @@ export async function iniciarProjetos(raiz) {
           pessoas,
           dryRun: ensaio.checked,
           telegram: conteudoTelegram.value,
+          provedores: provedoresDoFormulario(provedores.value),
           repositorios: atual.repositories || repositorios.length > 0 ? repositorios : undefined,
           etapas: lerEtapas(),
           skills: lerSkills(),
           mcpServers: lerServidores(),
         });
         await api("PUT", `/projetos/${encodeURIComponent(nome)}/configuracao`, nova);
-        mensagem.textContent = "Configuração salva.";
+        // Aviso visível: salvar pode deixar o projeto incompleto (ex.: removendo o último PO ou tech lead).
+        const depois = await api("GET", `/projetos/${encodeURIComponent(nome)}/estado`);
+        mensagem.textContent =
+          depois.estado === "ativo"
+            ? "Configuração salva. Projeto ativo."
+            : `Configuração salva. Projeto incompleto, não executa: ${depois.pendencias.join("; ")}.`;
         await carregar();
       } catch (erro) {
         mensagem.textContent = erro.message;
@@ -240,26 +404,18 @@ export async function iniciarProjetos(raiz) {
         el("h3", { texto: "Fonte de demandas" }),
         el("label", { class: "campo" }, [el("span", { texto: "Tipo" }), tipoSel]),
         camposBox,
-        el("h4", { texto: "Credencial (valor não é exibido depois de salvo)" }),
-        el("div", { class: "linha" }, [credencialNome, credencialValor, salvarCredencial]),
       ]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Perfis" }), modelosBox, adicionarPerfil, perfisBox]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Pessoas do projeto" }), adicionarPessoa, pessoasBox]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Repositórios locais" }), adicionarRepo, repoBox]),
       el("section", { class: "bloco" }, [
+        el("h3", { texto: "Provedores" }),
+        el("label", { class: "campo" }, [el("span", { texto: "Provedores permitidos (vírgula)" }), provedores]),
+      ]),
+      el("section", { class: "bloco" }, [
         el("label", {}, [ensaio, el("span", { texto: " Ensaio (dry-run): registra as escritas sem aplicá-las" })]),
         el("label", { class: "campo" }, [el("span", { texto: "Conteúdo no Telegram" }), conteudoTelegram]),
         salvar,
-      ]),
-      el("section", { class: "bloco" }, [
-        el("h3", { texto: "Pendências" }),
-        el(
-          "ul",
-          {},
-          pendencias.length === 0
-            ? [el("li", { texto: "Nenhuma pendência." })]
-            : pendencias.map((p) => el("li", { texto: p })),
-        ),
       ]),
       el("section", { class: "bloco" }, [
         el("h3", { texto: "Histórico de alterações" }),
@@ -272,6 +428,48 @@ export async function iniciarProjetos(raiz) {
         ),
       ]),
     ];
+    // Estado fica fora do formulário travado: pausar e retomar não são edições da configuração (ticket 09).
+    const situacaoBox = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Estado" }),
+      el("p", { texto: acoesDoEstado(situacao.estado).texto }),
+      el("div", { class: "acoes-cartao" }, [pausar, retomar, confirmar]),
+      el("h3", { texto: "Pendências" }),
+      el(
+        "ul",
+        {},
+        pendencias.length === 0
+          ? [el("li", { texto: "Nenhuma pendência." })]
+          : pendencias.map((p) => el("li", { texto: p })),
+      ),
+    ]);
+    // Remoção (ticket 11): pede confirmação explícita; a fábrica recusa se houver Tarefa em andamento.
+    const remocaoBox = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Remover projeto" }),
+      el("p", {
+        texto: `Apaga a configuração do projeto. O histórico das tarefas concluídas fica, e o prefixo ${atual.source.project} segue reservado enquanto esse histórico existir. Não há como desfazer.`,
+      }),
+    ]);
+    const remover = el("button", { type: "button", texto: "Remover projeto" });
+    remover.addEventListener("click", async () => {
+      if (!window.confirm(`Remover o projeto ${nome}? A configuração some e não volta sozinha.`)) return;
+      try {
+        const resposta = await api("POST", `/projetos/${encodeURIComponent(nome)}/remocao`, { confirmar: nome });
+        const reservado = resposta.prefixoReservado
+          ? ` O prefixo ${resposta.prefixoReservado} segue reservado pelo histórico.`
+          : "";
+        [...seletor.options].find((o) => o.value === nome)?.remove();
+        mensagem.textContent = `Projeto ${nome} removido.${reservado}`;
+        if (seletor.options.length > 0) {
+          seletor.value = seletor.options[0].value;
+          await carregar();
+        } else {
+          corpo.replaceChildren(el("p", { texto: "Nenhum projeto configurado." }));
+        }
+      } catch (erro) {
+        mensagem.textContent = erro.message;
+      }
+    });
+    remocaoBox.append(el("div", { class: "acoes-cartao" }, [remover]));
     // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
     const formulario = el("fieldset", { class: "projeto-config-form" }, secoes);
     const editar = el("button", { type: "button", texto: "Editar configuração" });
@@ -285,7 +483,12 @@ export async function iniciarProjetos(raiz) {
     aplicarEstado(false);
     editar.addEventListener("click", () => aplicarEstado(true));
     cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
-    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario);
+    corpo.replaceChildren(
+      el("div", { class: "acoes-cartao" }, [editar, cancelar]),
+      formulario,
+      situacaoBox,
+      remocaoBox,
+    );
   }
 
   seletor.addEventListener("change", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
@@ -296,7 +499,7 @@ export async function iniciarProjetos(raiz) {
  * Seção global do Telegram do usuário (fatia 09): chat, usuário autorizado e a credencial do bot no cofre. Não mostra
  * o token; ele fica no cofre e é lido pela fábrica no startup.
  */
-async function desenharTelegram(box, mensagemDe) {
+async function desenharTelegram(box, mensagemDe, seletorDeCredencial) {
   let salvo = {};
   try {
     salvo = await api("GET", "/telegram/configuracao");
@@ -309,18 +512,14 @@ async function desenharTelegram(box, mensagemDe) {
     "aria-label": "Usuário autorizado",
     placeholder: "id do usuário",
   });
-  const credencial = el("input", {
-    valor: salvo.credential ?? "",
-    "aria-label": "Credencial do bot no cofre",
-    placeholder: "ex.: telegram-bot",
-  });
-  const salvar = el("button", { type: "button", texto: "Salvar Telegram" });
+  const credencial = seletorDeCredencial("Credencial do bot no cofre", salvo.credential ?? "");
+  const salvar = el("button", { type: "button", class: "primario", texto: "Salvar Telegram" });
   salvar.addEventListener("click", async () => {
     try {
       await api("PUT", "/telegram/configuracao", {
         chat: chat.value.trim(),
         usuario: usuario.value.trim(),
-        ...(credencial.value.trim() ? { credential: credencial.value.trim() } : {}),
+        ...(credencial.value ? { credential: credencial.value } : {}),
       });
       mensagemDe().textContent = "Telegram salvo.";
     } catch (erro) {
@@ -328,7 +527,15 @@ async function desenharTelegram(box, mensagemDe) {
     }
   });
   box.replaceChildren(
-    el("h3", { texto: "Telegram (interface de gestão, global ao usuário)" }),
-    el("div", { class: "linha" }, [chat, usuario, credencial, salvar]),
+    cabecalhoCartao(
+      "Telegram (interface de gestão)",
+      "Canal de gestão do usuário. O token do bot fica no cofre; esta tela guarda só o nome da credencial.",
+    ),
+    el("div", { class: "grade-campos" }, [
+      rotulado("Chat", chat),
+      rotulado("Usuário autorizado", usuario),
+      rotulado("Credencial do bot", credencial),
+    ]),
+    el("div", { class: "acoes-cartao" }, [salvar]),
   );
 }

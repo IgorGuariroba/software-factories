@@ -3,6 +3,9 @@
 > **Atualização (ADR-0017):** a prioridade do YAML sobre projetos criados pela interface e a limitação de configuração
 > avançada (repositórios, caminho local, comando de teste) foram substituídas. A configuração passa a ser editada pela
 > interface, e o YAML só semeia projetos novos na primeira execução.
+>
+> **Atualização (ADR-0022):** a recusa de repositório repetido, a Fonte fixa em GitHub Issues, o PO como dono do
+> repositório, o ensaio obrigatório na criação e a ausência de remoção foram substituídos pela ADR-0022.
 
 Substitui parcialmente o ADR-0010 (projetos vêm do YAML), só no ponto de criar projeto de repositório GitHub. Os demais
 pontos do 0010 seguem valendo: a configuração e o conhecimento ficam fora do repositório da fábrica, e o YAML continua

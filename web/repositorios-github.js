@@ -107,6 +107,77 @@ export function mensagemCatalogo(catalogo) {
 /** Há importação em andamento? A tela consulta de novo enquanto houver. */
 export const temImportacaoEmAndamento = (repos) => repos.some((r) => r.importacao?.status === "importando");
 
+/**
+ * Comando de teste digitado (ex.: `npm test`) como lista de argumentos, sem vazios. Vazio deixa o projeto incompleto.
+ * @param {string} texto
+ */
+export const comandoDoTexto = (texto) =>
+  String(texto ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+/**
+ * Campos do schema da Fonte que o formulário de criação mostra. No GitHub Issues, o repositório é o do catálogo, então
+ * o campo não aparece.
+ * @param {string} tipo
+ * @param {{ campo: string }[]} campos
+ */
+export const camposDaFonteNaCriacao = (tipo, campos) =>
+  campos.filter((c) => !(tipo === "github" && c.campo === "repo"));
+
+/**
+ * Corpo de `POST /projetos/gitlab` a partir dos campos do formulário (ticket 04). O servidor vazio quer dizer gitlab.com;
+ * a Fonte é GitLab Issues, com o prefixo e o usuário dono das issues. O servidor confere o caminho com o token.
+ * @param {{ nome: string, servidor: string, caminho: string, credencial: string, prefixo: string, dono: string, comandoTeste: string, horario: string, ensaio: boolean, pessoas?: { po?: string, techLead?: string } }} campos
+ */
+export const corpoProjetoGitlab = (campos) => ({
+  nome: campos.nome.trim(),
+  caminho: campos.caminho.trim(),
+  servidor: campos.servidor.trim(),
+  fonte: { project: campos.prefixo.trim(), assignee: campos.dono.trim(), credential: campos.credencial },
+  comandoTeste: comandoDoTexto(campos.comandoTeste),
+  horario: campos.horario,
+  ensaio: campos.ensaio,
+  ...(campos.pessoas ? { pessoas: campos.pessoas } : {}),
+});
+
+/**
+ * Opções de um seletor de PO ou tech lead (ticket 06): a primeira é "sem pessoa por enquanto", que deixa o projeto
+ * incompleto; as demais são as pessoas da lista da Fonte.
+ * @param {{ id: string, nome: string }[]} pessoas
+ */
+export function opcoesDePessoas(pessoas) {
+  return [
+    { valor: "", texto: "sem pessoa por enquanto (pendência)" },
+    ...pessoas.map((p) => ({ valor: p.id, texto: p.nome && p.nome !== p.id ? `${p.nome} (${p.id})` : p.id })),
+  ];
+}
+
+/**
+ * Escolhas de PO e tech lead do formulário. Campo vazio não entra no corpo, e a criação não consulta a Fonte por isso.
+ * @param {string} po
+ * @param {string} techLead
+ * @returns {{ po?: string, techLead?: string }}
+ */
+export function pessoasDoFormulario(po, techLead) {
+  const escolhas = {};
+  if (po) escolhas.po = po;
+  if (techLead) escolhas.techLead = techLead;
+  return escolhas;
+}
+
+/**
+ * Texto de conclusão da criação: o que foi criado, em que modo e horário, e, se incompleto, o que falta.
+ * @param {{ projeto: string, repo: string, ensaio: boolean, horario: string, estado: string, pendencias: string[] }} criado
+ */
+export function mensagemCriacao(criado) {
+  const modo = criado.ensaio ? "em ensaio" : "execução real";
+  const horario = criado.horario === "always" ? "sempre ativo" : "horário comercial";
+  const situacao = criado.estado === "ativo" ? "Ativo." : `Incompleto: falta ${criado.pendencias.join("; ")}.`;
+  return `Projeto ${criado.projeto} criado para ${criado.repo}, ${modo}, ${horario}. ${situacao}`;
+}
+
 /** Data e hora legíveis em português, a partir do ISO 8601. */
 function formatarInstante(iso) {
   const data = new Date(iso);

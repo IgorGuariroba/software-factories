@@ -8,6 +8,7 @@ import {
   approveSpec,
   cancelTask,
   criarProjetoGithub,
+  criarProjetoGitlab,
   decideTriage,
   enviarMensagemEtapa,
   esquecerMemoriaEtapa,
@@ -15,18 +16,21 @@ import {
   getDaemon,
   getGithubApp,
   getGithubRepos,
+  getIntegracoesFontes,
   getQuestionPreview,
   getQueue,
   getReminderPreview,
   getRepos,
   getRetroPreview,
   getRetroSettings,
+  getSegredos,
   getSpecPreview,
   getTask,
   getTasks,
   getTrace,
   getTriagePreview,
   importarRepoGithub,
+  listarPessoasDaFonte,
   pauseDaemon,
   pauseTask,
   plugRepo,
@@ -41,12 +45,19 @@ import {
 import { alertaGithubApp, etapasGithubApp, linhasGithubApp, progressoGithubApp } from "./github-app.js";
 import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
+import { fonteDoFormulario, opcoesDeCredenciais } from "./projeto-config.js";
 import { iniciarProjetos } from "./projetos-tela.js";
 import { linhasRepositorios, mensagemTarefasAtivas } from "./repositorios.js";
 import {
+  camposDaFonteNaCriacao,
+  comandoDoTexto,
+  corpoProjetoGitlab,
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
+  mensagemCriacao,
+  opcoesDePessoas,
+  pessoasDoFormulario,
   sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
@@ -937,7 +948,10 @@ function showPage(page) {
     loadGithubApp();
     loadRepos();
   }
-  if (current === "repositorios" && previous !== "repositorios") loadCatalogoGithub();
+  if (current === "repositorios" && previous !== "repositorios") {
+    loadCatalogoGithub();
+    carregarCredenciaisGitlab();
+  }
   if (current === "projetos" && previous !== "projetos")
     iniciarProjetos(document.getElementById("projetos-config")).catch((erro) => console.error(erro));
   if (current !== "repositorios") pararAtualizacaoCatalogo();
@@ -1218,13 +1232,91 @@ function alternarFormulario(botao, formulario) {
   if (!formulario.hidden) formulario.querySelector("input")?.focus();
 }
 
+/** Esquemas das Fontes (Jira, GitHub Issues, GitLab Issues), lidos uma vez para montar o formulário de criação. */
+let esquemasFontes = null;
+async function esquemasDasFontes() {
+  esquemasFontes ??= await getIntegracoesFontes();
+  return esquemasFontes;
+}
+
 /**
- * Formulário para criar o projeto de um repositório (ADR-0016). Nome e prefixo vêm sugeridos; o ensaio começa marcado,
- * então a fábrica não escreve no GitHub até o usuário desligá-lo. O servidor confere o resto (conflitos, regras).
+ * Formulário para criar o projeto de um repositório (ADR-0016, ADR-0022). A Fonte é escolhida, sem valor fixo; a de
+ * GitHub Issues do próprio repositório vem sugerida. Horário comercial é o padrão, e o ensaio começa marcado. O comando
+ * de teste é obrigatório. O servidor confere o resto e responde o que falta no projeto.
  */
 function formularioProjetoGithub(repo) {
   const sugestao = sugerirProjeto(repo.nome);
   const status = el("p", { className: "ajuda", attrs: { role: "status" } });
+  const tipoSel = el("select", { attrs: { name: "tipo", "aria-label": "Fonte de demandas" } });
+  const camposBox = el("div", { className: "campos-fonte" });
+  const poSel = seletorDePessoas("po", "PO (pessoa da Fonte)");
+  const techSel = seletorDePessoas("techLead", "Tech lead (pessoa da Fonte)");
+  let esquemas = [];
+  let credenciais = [];
+
+  /** Desenha os campos da Fonte escolhida; no GitHub Issues, o prefixo e o dono vêm sugeridos. */
+  const desenharCampos = () => {
+    const tipo = tipoSel.value;
+    const esquema = esquemas.find((e) => e.tipo === tipo);
+    // A lista de pessoas é da Fonte escolhida: trocar a Fonte a descarta.
+    preencherSeletorDePessoas(poSel, []);
+    preencherSeletorDePessoas(techSel, []);
+    camposBox.replaceChildren(
+      ...camposDaFonteNaCriacao(tipo, esquema?.campos ?? []).map((c) => {
+        // Credencial escolhida pelo nome no cofre (ticket 03): o projeto guarda só o nome.
+        if (c.tipo === "segredo")
+          return el(
+            "label",
+            { className: "campo" },
+            el("span", { text: c.rotulo }),
+            el(
+              "select",
+              { attrs: { name: `f_${c.campo}`, "aria-label": c.rotulo } },
+              opcoesDeCredenciais(credenciais).map((o) => el("option", { attrs: { value: o.valor }, text: o.texto })),
+            ),
+          );
+        const valor =
+          tipo === "github" && c.campo === "project"
+            ? sugestao.prefixo
+            : tipo === "github" && c.campo === "assignee"
+              ? repo.dono
+              : "";
+        return el(
+          "label",
+          { className: "campo" },
+          el("span", { text: c.rotulo }),
+          el("input", {
+            attrs: {
+              name: `f_${c.campo}`,
+              autocomplete: "off",
+              value: valor,
+              ...(c.obrigatorio ? { required: "" } : {}),
+              ...(c.tipo === "lista" ? { placeholder: "separadas por vírgula" } : {}),
+            },
+          }),
+        );
+      }),
+    );
+  };
+
+  const rotuloDaFonte = (e) => (e.tipo === "github" ? "GitHub Issues do mesmo repositório (sugerido)" : e.rotulo);
+  Promise.all([esquemasDasFontes(), getSegredos().catch(() => [])])
+    .then(([lista, cofre]) => {
+      credenciais = cofre;
+      // GitLab Issues não entra aqui: o projeto de GitLab é criado por caminho, no formulário próprio da página.
+      esquemas = lista
+        .filter((e) => e.tipo !== "gitlab")
+        .sort((a, b) => (a.tipo === "github" ? -1 : b.tipo === "github" ? 1 : 0));
+      tipoSel.replaceChildren(
+        ...esquemas.map((e) => el("option", { attrs: { value: e.tipo }, text: rotuloDaFonte(e) })),
+      );
+      desenharCampos();
+    })
+    .catch((err) => {
+      status.textContent = err instanceof Error ? err.message : String(err);
+    });
+  tipoSel.addEventListener("change", desenharCampos);
+
   const form = el(
     "form",
     { className: "form-projeto", attrs: { hidden: "" } },
@@ -1237,30 +1329,47 @@ function formularioProjetoGithub(repo) {
           name: "nome",
           required: "",
           value: sugestao.nome,
-          pattern: "[a-z][a-z0-9-]{1,39}",
+          pattern: "[a-z][a-z0-9\\-]{1,39}",
           autocomplete: "off",
         },
       }),
     ),
+    el("label", { className: "campo" }, el("span", { text: "Fonte de demandas" }), tipoSel),
+    camposBox,
+    el(
+      "div",
+      { className: "acoes" },
+      el("button", {
+        type: "button",
+        className: "secundario",
+        text: "Buscar pessoas na Fonte",
+        onClick: () => buscarPessoasDoFormulario(),
+      }),
+    ),
+    el("label", { className: "campo" }, el("span", { text: "PO" }), poSel),
+    el("label", { className: "campo" }, el("span", { text: "Tech lead" }), techSel),
     el(
       "label",
       { className: "campo" },
-      el("span", { text: "Prefixo das chaves (ex.: SF-12)" }),
-      el("input", {
-        attrs: {
-          name: "prefixo",
-          required: "",
-          value: sugestao.prefixo,
-          pattern: "[A-Za-z][A-Za-z0-9]{1,9}",
-          autocomplete: "off",
-        },
-      }),
+      el("span", { text: "Comando de teste (ex.: npm test)" }),
+      el("input", { attrs: { name: "comandoTeste", autocomplete: "off" } }),
+    ),
+    el(
+      "label",
+      { className: "campo" },
+      el("span", { text: "Horário de atividade" }),
+      el(
+        "select",
+        { attrs: { name: "horario" } },
+        el("option", { attrs: { value: "business-hours" }, text: "Horário comercial (padrão)" }),
+        el("option", { attrs: { value: "always" }, text: "Sempre ativo" }),
+      ),
     ),
     el(
       "label",
       { className: "ajuda" },
       el("input", { attrs: { type: "checkbox", name: "ensaio", checked: "" } }),
-      " Ensaio: a fábrica não escreve no GitHub até você desligar",
+      " Ensaio: a fábrica não escreve na Fonte nem no GitHub até você desligar",
     ),
     el(
       "div",
@@ -1280,23 +1389,139 @@ function formularioProjetoGithub(repo) {
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const dados = new FormData(form);
+    const tipo = tipoSel.value;
+    const esquema = esquemas.find((e) => e.tipo === tipo);
+    const valores = Object.fromEntries(
+      (esquema?.campos ?? []).map((c) => [c.campo, String(dados.get(`f_${c.campo}`) ?? "")]),
+    );
     status.textContent = "Criando o projeto…";
     try {
       const criado = await criarProjetoGithub({
         repoId: repo.id,
         nome: String(dados.get("nome") ?? "").trim(),
-        prefixo: String(dados.get("prefixo") ?? "").trim(),
+        fonte: fonteDoFormulario(tipo, camposDaFonteNaCriacao(tipo, esquema?.campos ?? []), valores),
+        horario: String(dados.get("horario") ?? "business-hours"),
         ensaio: dados.get("ensaio") === "on",
+        comandoTeste: comandoDoTexto(dados.get("comandoTeste")),
+        pessoas: pessoasDoFormulario(String(dados.get("po") ?? ""), String(dados.get("techLead") ?? "")),
       });
-      $("repos-gh-status").textContent = `Projeto ${criado.projeto} criado para ${criado.repo}${
-        criado.ensaio ? ", em ensaio" : ""
-      }. Agora dá para importar as issues.`;
+      $("repos-gh-status").textContent = mensagemCriacao(criado);
       await loadCatalogoGithub();
     } catch (err) {
       status.textContent = err instanceof Error ? err.message : String(err);
     }
   });
+  /** Consulta as pessoas da Fonte escolhida no formulário e preenche PO e tech lead. Só lê: nada é gravado. */
+  async function buscarPessoasDoFormulario() {
+    const tipo = tipoSel.value;
+    const dados = new FormData(form);
+    const esquema = esquemas.find((e) => e.tipo === tipo);
+    const valores = Object.fromEntries(
+      (esquema?.campos ?? []).map((c) => [c.campo, String(dados.get(`f_${c.campo}`) ?? "")]),
+    );
+    const fonte = fonteDoFormulario(tipo, camposDaFonteNaCriacao(tipo, esquema?.campos ?? []), valores);
+    const consulta =
+      tipo === "github"
+        ? { tipo: "github", repoId: repo.id }
+        : {
+            tipo: "jira",
+            baseUrl: fonte.baseUrl ?? "",
+            email: fonte.email ?? "",
+            credencial: fonte.credential ?? "",
+            projeto: fonte.project ?? "",
+          };
+    status.textContent = "Consultando pessoas na Fonte…";
+    try {
+      const pessoas = await listarPessoasDaFonte(consulta);
+      preencherSeletorDePessoas(poSel, pessoas);
+      preencherSeletorDePessoas(techSel, pessoas);
+      status.textContent =
+        pessoas.length === 0 ? "A Fonte não tem pessoas para este projeto." : `${pessoas.length} pessoa(s) na Fonte.`;
+    } catch (err) {
+      status.textContent = err instanceof Error ? err.message : String(err);
+    }
+  }
   return form;
+}
+
+/** Seletor de PO ou tech lead, começando com "sem pessoa"; a lista vem da Fonte depois (ticket 06). */
+function seletorDePessoas(name, rotulo) {
+  return el("select", { attrs: { name, "aria-label": rotulo } }, ...opcoesDePessoas([]).map(opcaoDoSeletor));
+}
+
+/** Troca as opções de um seletor de pessoas pela lista da Fonte. */
+function preencherSeletorDePessoas(seletor, pessoas) {
+  seletor.replaceChildren(...opcoesDePessoas(pessoas).map(opcaoDoSeletor));
+}
+
+const opcaoDoSeletor = (o) => el("option", { attrs: { value: o.valor }, text: o.texto });
+
+/** Preenche o seletor de credenciais do formulário GitLab com o cofre: o projeto guarda só o nome (ticket 03). */
+async function carregarCredenciaisGitlab() {
+  const seletor = $("repos-gl-credencial");
+  const status = $("repos-gl-status");
+  try {
+    const cofre = await getSegredos();
+    const atual = seletor.value;
+    seletor.replaceChildren(...cofre.map((c) => el("option", { attrs: { value: c.nome }, text: c.nome })));
+    if (cofre.some((c) => c.nome === atual)) seletor.value = atual;
+    status.textContent = cofre.length === 0 ? "Cadastre o token do GitLab no cofre de credenciais primeiro." : "";
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Consulta as pessoas do projeto GitLab informado no formulário e preenche PO e tech lead. Só lê: nada é gravado. */
+async function buscarPessoasGitlab() {
+  const status = $("repos-gl-pessoas-status");
+  const dados = new FormData($("repos-gl-form"));
+  const campo = (nome) => String(dados.get(nome) ?? "").trim();
+  status.textContent = "Consultando pessoas na Fonte…";
+  try {
+    const pessoas = await listarPessoasDaFonte({
+      tipo: "gitlab",
+      caminho: campo("caminho"),
+      servidor: campo("servidor"),
+      credencial: campo("credencial"),
+    });
+    preencherSeletorDePessoas($("repos-gl-po"), pessoas);
+    preencherSeletorDePessoas($("repos-gl-tech-lead"), pessoas);
+    status.textContent =
+      pessoas.length === 0 ? "A Fonte não tem pessoas para este projeto." : `${pessoas.length} pessoa(s) na Fonte.`;
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Cria o projeto com o repositório GitLab informado por caminho; o servidor confere o caminho com o token antes. */
+async function criarProjetoGitlabPeloFormulario(ev) {
+  ev.preventDefault();
+  const form = ev.currentTarget;
+  const status = $("repos-gl-status");
+  const dados = new FormData(form);
+  const campo = (nome) => String(dados.get(nome) ?? "");
+  status.textContent = "Conferindo o repositório no GitLab…";
+  try {
+    const criado = await criarProjetoGitlab(
+      corpoProjetoGitlab({
+        nome: campo("nome"),
+        servidor: campo("servidor"),
+        caminho: campo("caminho"),
+        credencial: campo("credencial"),
+        prefixo: campo("prefixo"),
+        dono: campo("dono"),
+        comandoTeste: campo("comandoTeste"),
+        horario: campo("horario") || "business-hours",
+        ensaio: dados.get("ensaio") === "on",
+        pessoas: pessoasDoFormulario(campo("po"), campo("techLead")),
+      }),
+    );
+    form.reset();
+    await carregarCredenciaisGitlab();
+    status.textContent = mensagemCriacao(criado);
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
 }
 
 /** Pede a importação; a fila roda em segundo plano, e o redesenho acompanha pelo polling. */
@@ -1448,6 +1673,8 @@ for (const button of document.querySelectorAll("[data-modo]"))
 
 $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDaemon : pauseDaemon));
 $("buscar").addEventListener("click", () => run(pollSource));
+$("repos-gl-form").addEventListener("submit", criarProjetoGitlabPeloFormulario);
+$("repos-gl-buscar-pessoas").addEventListener("click", buscarPessoasGitlab);
 $("atualizar-elegiveis").addEventListener("click", refreshQueue);
 $("fechar-detalhe").addEventListener("click", () => {
   location.hash = `#/${detailReturn}`;

@@ -19,35 +19,63 @@ const referencia = {
 
 const padroes = padroesDe(referencia);
 
-describe("montarProjetoGithub: o projeto novo a partir do padrão", () => {
-  it("herda modelos e estados do projeto de referência, com o dono como PO", () => {
-    const config = montarProjetoGithub({ padroes, repo: "dono/novo", nome: "novo", prefixo: "NV", ensaio: true });
-    expect(config).toMatchObject({
+/** Projeto novo com a Fonte GitHub Issues do próprio repositório, em ensaio, horário comercial. */
+const novo = (sobrescrita: Partial<Parameters<typeof montarProjetoGithub>[0]> = {}) =>
+  montarProjetoGithub({
+    padroes,
+    repo: "dono/novo",
+    caminho: "/dados/repositorios/novo",
+    nome: "novo",
+    fonte: { type: "github", project: "NV", assignee: "dono" },
+    horario: "business-hours",
+    ensaio: true,
+    comandoTeste: ["npm", "test"],
+    ...sobrescrita,
+  });
+
+describe("montarProjetoGithub: o projeto novo a partir do padrão e do que o usuário escolheu", () => {
+  it("herda modelos e estados do projeto de referência, sem pessoas: PO e tech lead ficam como pendência", () => {
+    expect(novo()).toMatchObject({
       name: "novo",
       dryRun: true,
+      activity: "business-hours",
       roles: referencia.roles,
       statuses: referencia.statuses,
-      people: [{ id: "dono", role: "po" }],
+      people: [],
       source: { type: "github", project: "NV", repo: "dono/novo", assignee: "dono", maxActive: 1 },
+      repositories: [{ path: "/dados/repositorios/novo", prefix: "NV", test: { command: ["npm", "test"] } }],
     });
   });
 
-  it("sem ensaio, o projeto sai com dryRun desligado", () => {
-    expect(montarProjetoGithub({ padroes, repo: "dono/novo", nome: "novo", prefixo: "NV", ensaio: false }).dryRun).toBe(
-      false,
-    );
+  it("a Fonte escolhida vale: Jira com a chave do projeto, sem GitHub Issues", () => {
+    const config = novo({
+      fonte: { type: "jira", project: "proj", assignee: "accountid-1", baseUrl: "https://empresa.atlassian.net" },
+    });
+    expect(config.source).toMatchObject({ type: "jira", project: "PROJ", assignee: "accountid-1" });
+    expect(config.repositories?.[0]?.prefix).toBe("PROJ");
+  });
+
+  it("GitLab mantém o caminho do próprio projeto, que pode ser outro repositório", () => {
+    const config = novo({ fonte: { type: "gitlab", project: "GL", repo: "grupo/app", assignee: "fulano" } });
+    expect(config.source).toMatchObject({ type: "gitlab", repo: "grupo/app" });
+  });
+
+  it("sem ensaio, o projeto sai com dryRun desligado; horário sempre ativo quando escolhido", () => {
+    expect(novo({ ensaio: false, horario: "always" })).toMatchObject({ dryRun: false, activity: "always" });
   });
 
   it("nome inválido é recusado com a regra em português", () => {
-    expect(() =>
-      montarProjetoGithub({ padroes, repo: "dono/x", nome: "Com Espaço", prefixo: "NV", ensaio: true }),
-    ).toThrow(/nome: use minúsculas/);
+    expect(() => novo({ nome: "Com Espaço" })).toThrow(/nome: use minúsculas/);
   });
 
   it("prefixo inválido é recusado", () => {
-    expect(() => montarProjetoGithub({ padroes, repo: "dono/x", nome: "novo", prefixo: "1A", ensaio: true })).toThrow(
+    expect(() => novo({ fonte: { type: "github", project: "1A", assignee: "dono" } })).toThrow(
       /prefixo: use de 2 a 10/,
     );
+  });
+
+  it("comando de teste vazio não recusa a criação: o projeto nasce sem comando, com a pendência", () => {
+    expect(novo({ comandoTeste: [] }).repositories?.[0]?.test.command).toEqual([]);
   });
 });
 
@@ -59,28 +87,38 @@ describe("sugerirProjeto: nome e prefixo iniciais", () => {
   it("sugestões passam na validação do projeto", () => {
     for (const repo of ["dono/Meu.Projeto", "dono/1-api", "dono/a", "dono/x_y_z_w_v"]) {
       const { nome, prefixo } = sugerirProjeto(repo);
-      expect(() => montarProjetoGithub({ padroes, repo, nome, prefixo, ensaio: true })).not.toThrow();
+      expect(() => novo({ repo, nome, fonte: { type: "github", project: prefixo, assignee: "dono" } })).not.toThrow();
     }
   });
 });
 
 describe("conflitoProjeto: o que impede um projeto novo", () => {
   const existentes = [referencia];
+  const github = { nome: "novo", prefixo: "NV", fonteTipo: "github", fonteRepo: "dono/novo" };
+
   it("sem conflito, devolve undefined", () => {
-    expect(conflitoProjeto({ nome: "novo", prefixo: "NV", repo: "dono/novo" }, existentes)).toBeUndefined();
+    expect(conflitoProjeto(github, existentes)).toBeUndefined();
   });
 
   it("nome igual já existe", () => {
-    expect(conflitoProjeto({ nome: "sf", prefixo: "XX", repo: "dono/outro" }, existentes)).toMatch(
+    expect(conflitoProjeto({ ...github, nome: "sf", prefixo: "XX", fonteRepo: "dono/outro" }, existentes)).toMatch(
       /já existe um projeto/,
     );
   });
 
   it("prefixo igual, sem diferenciar caixa, colidiria nas chaves dos cards", () => {
-    expect(conflitoProjeto({ nome: "novo", prefixo: "sf", repo: "dono/outro" }, existentes)).toMatch(/prefixo SF/);
+    expect(conflitoProjeto({ ...github, prefixo: "sf", fonteRepo: "dono/outro" }, existentes)).toMatch(/prefixo SF/);
   });
 
-  it("o mesmo repositório não pode ter dois projetos", () => {
-    expect(conflitoProjeto({ nome: "novo", prefixo: "NV", repo: "DONO/SF" }, existentes)).toMatch(/já é monitorado/);
+  it("a mesma Fonte de issues no mesmo repositório não pode ter dois projetos, sem diferenciar caixa", () => {
+    expect(conflitoProjeto({ ...github, fonteRepo: "DONO/SF" }, existentes)).toMatch(/já tem a Fonte github/);
+  });
+
+  it("o mesmo repositório com outra Fonte (Jira) é permitido", () => {
+    expect(conflitoProjeto({ nome: "novo", prefixo: "NV", fonteTipo: "jira" }, existentes)).toBeUndefined();
+  });
+
+  it("GitHub Issues e GitLab Issues no mesmo repositório não são a mesma Fonte", () => {
+    expect(conflitoProjeto({ ...github, fonteTipo: "gitlab", fonteRepo: "dono/sf" }, existentes)).toBeUndefined();
   });
 });

@@ -77,15 +77,25 @@ export function pessoasDoFormulario(linhas) {
  * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[] }} opcoes
  */
 /**
+ * Provedores permitidos a partir do campo de texto: separados por vírgula, sem vazios nem repetidos (ticket 08).
+ * @param {string} texto
+ * @returns {string[]}
+ */
+export function provedoresDoFormulario(texto) {
+  return [...new Set(deTexto(texto))];
+}
+
+/**
  * Configuração inteira a partir do formulário, sobre a atual (o que a página não edita fica como está).
  * @param {Record<string, any>} atual
- * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[], telegram?: "full" | "minimal" }} campos
+ * @param {{ fonte: object, perfis: object[], pessoas: object[], dryRun: boolean, repositorios?: object[], telegram?: "full" | "minimal", provedores?: string[] }} campos
  * @returns {Record<string, any>}
  */
 export function configDoFormulario(atual, opcoes) {
-  const { fonte, perfis, pessoas, dryRun, repositorios, telegram, etapas, skills, mcpServers } = opcoes;
+  const { fonte, perfis, pessoas, dryRun, repositorios, telegram, etapas, skills, mcpServers, provedores } = opcoes;
   const nova = { ...atual, source: fonte, profiles: perfis, people: pessoas, dryRun };
   if (repositorios !== undefined) nova.repositories = repositorios;
+  if (provedores !== undefined) nova.allowedProviders = provedores;
   // Nível de conteúdo no Telegram (fatia 09): o bloco guarda o que a página não edita, como outros campos dele.
   if (telegram !== undefined) nova.telegram = { ...(atual.telegram ?? {}), content: telegram };
   // Agentes das etapas: a chave presente com `undefined` remove o que estava gravado; ausente, mantém.
@@ -160,6 +170,27 @@ export function etapasDoFormulario(linhas) {
 }
 
 /**
+ * Texto e ações da seção Estado conforme o estado do projeto (ticket 09). Só ativo pausa; só pausado retoma. Pura, para
+ * ser testada em Node.
+ * @param {"incompleto" | "ativo" | "pausado"} estado
+ * @returns {{ texto: string, pausar: boolean, retomar: boolean }}
+ */
+export function acoesDoEstado(estado) {
+  if (estado === "ativo") return { texto: "Ativo: a fábrica executa este projeto.", pausar: true, retomar: false };
+  if (estado === "pausado")
+    return {
+      texto: "Pausado: a fábrica não executa este projeto até você retomá-lo. A configuração foi preservada.",
+      pausar: false,
+      retomar: true,
+    };
+  return {
+    texto: "Incompleto: a fábrica não executa este projeto até completar o que falta.",
+    pausar: false,
+    retomar: false,
+  };
+}
+
+/**
  * Estado da configuração de projeto em modo leitura (fatia 02): o formulário fica travado até "Editar". Pura, para
  * ser testada em Node; a tela só aplica o resultado.
  * @param {boolean} editando
@@ -174,7 +205,10 @@ export function estadoDoFormulario(editando) {
  * @param {{ quando: string, autor?: string, campos: string[] }[]} alteracoes
  */
 export function resumoHistorico(alteracoes) {
-  return alteracoes.map((a) => `${new Date(a.quando).toLocaleString("pt-BR")}: ${a.campos.join(", ")}`);
+  const quem = (autor) => (autor === "usuario" ? "usuário" : autor);
+  return alteracoes.map(
+    (a) => `${new Date(a.quando).toLocaleString("pt-BR")} (${quem(a.autor)}): ${a.campos.join(", ")}`,
+  );
 }
 
 /**
@@ -195,4 +229,31 @@ export function repositoriosDoFormulario(original, linhas) {
         .filter(Boolean);
       return { ...anterior, path, prefix: String(l.prefix ?? "").trim(), test: { ...(anterior.test ?? {}), command } };
     });
+}
+
+/**
+ * Opções do seletor de credencial (ticket 03): "sem credencial" e os nomes cadastrados no cofre. Um nome salvo que não
+ * está mais no cofre continua na lista, marcado, para não sumir do formulário ao salvar.
+ * @param {{ nome: string }[]} credenciais
+ * @param {string} [atual]
+ * @returns {{ valor: string, texto: string }[]}
+ */
+export function opcoesDeCredenciais(credenciais, atual = "") {
+  const nomes = credenciais.map((c) => c.nome);
+  const naoCadastrada = atual !== "" && !nomes.includes(atual);
+  return [
+    { valor: "", texto: "sem credencial" },
+    ...nomes.map((nome) => ({ valor: nome, texto: nome })),
+    ...(naoCadastrada ? [{ valor: atual, texto: `${atual} (não cadastrada)` }] : []),
+  ];
+}
+
+/**
+ * Linha da lista do cofre: nome e data da última gravação. O valor nunca entra aqui, porque a API não o devolve.
+ * @param {{ nome: string, atualizadoEm: string }} credencial
+ */
+export function linhaDaCredencial(credencial) {
+  const data = new Date(credencial.atualizadoEm);
+  const quando = Number.isNaN(data.getTime()) ? "" : ` · atualizada em ${data.toLocaleString("pt-BR")}`;
+  return `${credencial.nome}${quando}`;
 }

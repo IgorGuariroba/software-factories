@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { sugerirProjeto as sugerirNoServidor } from "../src/projetos-github.js";
 import {
+  camposDaFonteNaCriacao,
+  comandoDoTexto,
+  corpoProjetoGitlab,
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
+  mensagemCriacao,
+  opcoesDePessoas,
+  pessoasDoFormulario,
   sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
@@ -150,5 +156,112 @@ describe("sugerirProjeto: a sugestão da tela é a mesma do servidor", () => {
 
   it("sugere as iniciais das palavras como prefixo", () => {
     expect(sugerirProjeto("dono/software-factories")).toEqual({ nome: "software-factories", prefixo: "SF" });
+  });
+});
+
+describe("criação de projeto: comando de teste, campos da Fonte e texto de conclusão", () => {
+  it("comando digitado vira lista de argumentos, sem vazios", () => {
+    expect(comandoDoTexto("  npm   test ")).toEqual(["npm", "test"]);
+    expect(comandoDoTexto("")).toEqual([]);
+  });
+
+  it("no GitHub Issues o repositório não aparece no formulário, porque vem do catálogo", () => {
+    const campos = [{ campo: "project" }, { campo: "repo" }, { campo: "assignee" }];
+    expect(camposDaFonteNaCriacao("github", campos).map((c) => c.campo)).toEqual(["project", "assignee"]);
+    expect(camposDaFonteNaCriacao("gitlab", campos).map((c) => c.campo)).toEqual(["project", "repo", "assignee"]);
+  });
+
+  it("a conclusão diz o modo, o horário e o que falta quando o projeto está incompleto", () => {
+    expect(
+      mensagemCriacao({
+        projeto: "novo",
+        repo: "dono/novo",
+        ensaio: true,
+        horario: "business-hours",
+        estado: "incompleto",
+        pendencias: ["falta uma pessoa no perfil PO", "falta uma pessoa no perfil tech lead"],
+      }),
+    ).toBe(
+      "Projeto novo criado para dono/novo, em ensaio, horário comercial. Incompleto: falta falta uma pessoa no perfil PO; falta uma pessoa no perfil tech lead.",
+    );
+    expect(
+      mensagemCriacao({
+        projeto: "novo",
+        repo: "dono/novo",
+        ensaio: false,
+        horario: "always",
+        estado: "ativo",
+        pendencias: [],
+      }),
+    ).toBe("Projeto novo criado para dono/novo, execução real, sempre ativo. Ativo.");
+  });
+});
+
+describe("corpoProjetoGitlab: o corpo da criação por caminho a partir do formulário (ticket 04)", () => {
+  const campos = {
+    nome: " app-gitlab ",
+    servidor: "",
+    caminho: " grupo/projeto ",
+    credencial: "gitlab-token",
+    prefixo: " GL ",
+    dono: " fulano ",
+    comandoTeste: "  npm   test ",
+    horario: "business-hours",
+    ensaio: true,
+  };
+
+  it("apara os campos, quebra o comando de teste em argumentos e monta a Fonte GitLab Issues", () => {
+    expect(corpoProjetoGitlab(campos)).toEqual({
+      nome: "app-gitlab",
+      caminho: "grupo/projeto",
+      servidor: "",
+      fonte: { project: "GL", assignee: "fulano", credential: "gitlab-token" },
+      comandoTeste: ["npm", "test"],
+      horario: "business-hours",
+      ensaio: true,
+    });
+  });
+
+  it("mantém o servidor digitado, para o servidor conferir", () => {
+    expect(corpoProjetoGitlab({ ...campos, servidor: " https://gitlab.empresa.com " }).servidor).toBe(
+      "https://gitlab.empresa.com",
+    );
+  });
+});
+
+describe("escolha de PO e tech lead no formulário (ticket 06)", () => {
+  it("o seletor começa com 'sem pessoa' e mostra o nome com o identificador quando há nome", () => {
+    expect(
+      opcoesDePessoas([
+        { id: "ana", nome: "Ana Souza" },
+        { id: "bruno", nome: "bruno" },
+      ]),
+    ).toEqual([
+      { valor: "", texto: "sem pessoa por enquanto (pendência)" },
+      { valor: "ana", texto: "Ana Souza (ana)" },
+      { valor: "bruno", texto: "bruno" },
+    ]);
+  });
+
+  it("campo vazio não entra na escolha, e a criação não consulta a Fonte por isso", () => {
+    expect(pessoasDoFormulario("", "")).toEqual({});
+    expect(pessoasDoFormulario("ana", "")).toEqual({ po: "ana" });
+    expect(pessoasDoFormulario("ana", "bruno")).toEqual({ po: "ana", techLead: "bruno" });
+  });
+
+  it("o corpo do GitLab leva as escolhas só quando há", () => {
+    const base = {
+      nome: "app",
+      caminho: "g/p",
+      servidor: "",
+      prefixo: "AP",
+      dono: "ana",
+      credencial: "gitlab-token",
+      comandoTeste: "npm test",
+      horario: "business-hours",
+      ensaio: true,
+    };
+    expect(corpoProjetoGitlab(base)).not.toHaveProperty("pessoas");
+    expect(corpoProjetoGitlab({ ...base, pessoas: { po: "ana" } })).toMatchObject({ pessoas: { po: "ana" } });
   });
 });

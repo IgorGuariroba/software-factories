@@ -106,6 +106,36 @@ describe("Telegram salvo pela interface é ligado no startup, com o token do cof
     expect(criados).toEqual([{ token: "123456:TOKEN-DO-COFRE", chat: "987654" }]);
   });
 
+  it("trocar o valor da credencial do bot religa a interface na hora, com o novo token", async () => {
+    const criados: { token: string; chat: string }[] = [];
+    f = await startTestFactory({
+      criarInterfaceTelegram: (token, chat) => {
+        criados.push({ token, chat });
+        return new FakeTelegram();
+      },
+    });
+    await api(f, "PUT", "/segredos/telegram-bot", { valor: "123456:TOKEN-ANTIGO" });
+    await api(f, "PUT", "/telegram/configuracao", { chat: "987654", credential: "telegram-bot", usuario: "111" });
+    criados.length = 0;
+
+    await api(f, "PUT", "/segredos/telegram-bot", { valor: "123456:TOKEN-NOVO" });
+
+    expect(criados).toEqual([{ token: "123456:TOKEN-NOVO", chat: "987654" }]);
+  });
+
+  it("o cofre não devolve o valor da credencial, nem ao gravar nem ao listar", async () => {
+    f = await startTestFactory({});
+
+    const gravado = await api<Record<string, unknown>>(f, "PUT", "/segredos/telegram-bot", {
+      valor: "123456:TOKEN-QUE-NAO-VOLTA",
+    });
+    const listado = await api<{ nome: string }[]>(f, "GET", "/segredos");
+
+    expect(JSON.stringify(gravado)).not.toContain("TOKEN-QUE-NAO-VOLTA");
+    expect(JSON.stringify(listado)).not.toContain("TOKEN-QUE-NAO-VOLTA");
+    expect(listado.map((s) => s.nome)).toEqual(["telegram-bot"]);
+  });
+
   it("sem usuário autorizado, a configuração do Telegram é recusada", async () => {
     f = await startTestFactory({});
     await api(f, "PUT", "/segredos/telegram-bot", { valor: "123456:T" });
