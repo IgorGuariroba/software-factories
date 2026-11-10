@@ -1970,6 +1970,31 @@ export async function startFactory(opts: {
    * que já existe, nas duas pontas (antes e depois do clone). O clone sai antes da gravação: se a clonagem falhar,
    * nada fica salvo pela metade.
    */
+  /** Projetos já existentes: os ativos na memória e os salvos pela interface (incluindo os ainda não carregados). */
+  const salvosDe = (state: FactoryState) =>
+    Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
+      // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
+      const lido = ProjectConfig.safeParse(JSON.parse(t));
+      return lido.success ? [lido.data] : [];
+    });
+
+  /**
+   * Conflito do projeto novo com o que já existe: nome, prefixo ou a mesma Fonte de issues no mesmo repositório. É
+   * conferido antes de qualquer chamada ao provedor, para que a recusa seja imediata e não dependa da rede.
+   */
+  async function conflitoAgora(config: ProjectConfig): Promise<string | undefined> {
+    const existentes = [...projects.values()].map((p) => p.config);
+    return conflitoProjeto(
+      {
+        nome: config.name,
+        prefixo: config.source.project,
+        fonteTipo: config.source.type,
+        fonteRepo: "repo" in config.source ? config.source.repo : undefined,
+      },
+      [...existentes, ...salvosDe(await readState())],
+    );
+  }
+
   async function criarProjetoClonado(projeto: {
     config: ProjectConfig;
     destino: string;
@@ -1988,15 +2013,7 @@ export async function startFactory(opts: {
         },
         existentes,
       );
-    const salvosDe = (state: FactoryState) =>
-      Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
-        // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
-        const lido = ProjectConfig.safeParse(JSON.parse(t));
-        return lido.success ? [lido.data] : [];
-      });
     const existentesAgora = () => [...projects.values()].map((p) => p.config);
-    const conflitoAntes = conflitoDe([...existentesAgora(), ...salvosDe(await readState())]);
-    if (conflitoAntes) return { status: 409, body: { error: conflitoAntes } };
 
     try {
       await projeto.clonar();
@@ -2077,6 +2094,8 @@ export async function startFactory(opts: {
     }
     const erroFonte = await erroDaFonte(config.source);
     if (erroFonte) return { status: 400, body: { error: erroFonte } };
+    const conflito = await conflitoAgora(config);
+    if (conflito) return { status: 409, body: { error: conflito } };
 
     const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
     return criarProjetoClonado({
@@ -2146,6 +2165,8 @@ export async function startFactory(opts: {
     }
     const erroFonte = await erroDaFonte(config.source);
     if (erroFonte) return { status: 400, body: { error: erroFonte } };
+    const conflito = await conflitoAgora(config);
+    if (conflito) return { status: 409, body: { error: conflito } };
 
     const token = (await segredos.get(credencial)) ?? "";
     const caminho = corpo.caminho.trim();

@@ -194,4 +194,37 @@ describe("POST /projetos/gitlab: criar projeto por caminho completo, com o token
     expect(res.status).toBe(400);
     expect(String(res.body?.error)).toContain("POST /projetos/gitlab");
   });
+
+  it("o mesmo repositório com a mesma Fonte GitLab é recusado com o nome do projeto que já a usa, antes de consultar o GitLab", async () => {
+    factory = await subirFabrica();
+    expect((await chamada(factory, "POST", "/projetos/gitlab", corpo())).status).toBe(201);
+    const chamadasAntes = chamadasGitlab.length;
+    const res = await chamada(
+      factory,
+      "POST",
+      "/projetos/gitlab",
+      corpo({ nome: "outro", fonte: { project: "OU", assignee: "fulano", credential: "gitlab-token" } }),
+    );
+    expect(res.status).toBe(409);
+    expect(String(res.body?.error)).toContain("grupo/projeto já tem a Fonte gitlab de issues no projeto app-gitlab");
+    expect(chamadasGitlab.length).toBe(chamadasAntes);
+    expect(clonadas).toHaveLength(1);
+  });
+
+  it("o prefixo de um projeto criado por caminho fica reservado para os seguintes", async () => {
+    factory = await subirFabrica();
+    expect((await chamada(factory, "POST", "/projetos/gitlab", corpo())).status).toBe(201);
+    const res = await chamada(
+      factory,
+      "POST",
+      "/projetos/gitlab",
+      corpo({
+        nome: "outro",
+        caminho: "grupo/outro",
+        fonte: { project: "gl", assignee: "fulano", credential: "gitlab-token" },
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(String(res.body?.error)).toContain("o prefixo GL já é usado pelo projeto app-gitlab");
+  });
 });
