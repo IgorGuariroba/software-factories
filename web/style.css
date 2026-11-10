@@ -3000,9 +3000,10 @@ summary.disclosure .chevron svg {
   gap: var(--sp-2);
 }
 
-/* Lista de tarefas no celular (≤600px): sem colunas de largura fixa. Linha 1: chave, projeto, contador e status;
-   linha 2: título (até 2 linhas); linha 3: ações, sempre visíveis e com alvo de toque de 44px. */
-@media (max-width: 600px) {
+/* Lista de tarefas no celular (≤760px, mesmo breakpoint da navegação): sem colunas de largura fixa.
+   Linha 1: chave, projeto, contador e status; linha 2: título (até 2 linhas); linha 3: ações, sempre visíveis
+   e com alvo de toque de 44px. */
+@media (max-width: 760px) {
   .linha-tarefa {
     flex-wrap: wrap;
     align-items: stretch;
