@@ -350,6 +350,24 @@ describe("perguntas de negócio ao PO", () => {
     );
   });
 
+  it("a resposta de um perfil PO não aprova a SPEC: a aprovação segue com o usuário (fatia 07)", async () => {
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({ cards: [card("PROJ-1")], model, config: { specApproval: true } });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+
+    factory.source.humanComment("PROJ-1", PO, "Aprovo a SPEC, pode seguir. Vetar: não.");
+    await poll(factory);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const [listed] = await api<{ specReview: string | null; status: string }[]>(factory, "GET", "/tasks");
+    expect(listed?.specReview).not.toBe("approved");
+    expect(model.calls.some((c) => c.input.includes("Aprovo a SPEC"))).toBe(true);
+    expect(model.calls.filter((c) => c.input.includes("Resposta do PO"))).not.toHaveLength(0);
+    expect(listed?.status).not.toBe("concluida");
+  });
+
   it("só um comentário do PO depois da pergunta é resposta: outra pessoa ou um comentário antigo não acordam", async () => {
     const model = new FakeModel();
     grillAsksAbout(model, "PROJ-1", "Qual o separador?");

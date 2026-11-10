@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   camposDaFonte,
   configDoFormulario,
+  estadoDoFormulario,
   fonteDoFormulario,
   perfisDoFormulario,
   pessoasDoFormulario,
@@ -164,5 +165,15 @@ describe("página de configuração de projeto: conversão do formulário", () =
     ]);
     expect(pessoas[0]).toMatchObject({ canal: "teams" });
     expect(pessoas[1]).not.toHaveProperty("canal");
+  });
+});
+
+describe("modo leitura da configuração de projeto (fatia 02)", () => {
+  it("ao abrir, o formulário está travado e só 'Editar' aparece", () => {
+    expect(estadoDoFormulario(false)).toEqual({ formularioTravado: true, editarVisivel: true, cancelarVisivel: false });
+  });
+
+  it("editando, o formulário fica liberado e aparece 'Cancelar edição' no lugar de 'Editar'", () => {
+    expect(estadoDoFormulario(true)).toEqual({ formularioTravado: false, editarVisivel: false, cancelarVisivel: true });
   });
 });

@@ -4,6 +4,7 @@ import { api } from "./api.js";
 import {
   camposDaFonte,
   configDoFormulario,
+  estadoDoFormulario,
   fonteDoFormulario,
   perfisDoFormulario,
   pessoasDoFormulario,
@@ -262,15 +263,17 @@ export async function iniciarProjetos(raiz) {
       ]),
     ];
     // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
-    const formulario = el("fieldset", { class: "projeto-config-form", disabled: "" }, secoes);
+    const formulario = el("fieldset", { class: "projeto-config-form" }, secoes);
     const editar = el("button", { type: "button", texto: "Editar configuração" });
     const cancelar = el("button", { type: "button", texto: "Cancelar edição" });
-    cancelar.hidden = true;
-    editar.addEventListener("click", () => {
-      formulario.disabled = false;
-      editar.hidden = true;
-      cancelar.hidden = false;
-    });
+    const aplicarEstado = (editando) => {
+      const estado = estadoDoFormulario(editando);
+      formulario.disabled = estado.formularioTravado;
+      editar.hidden = !estado.editarVisivel;
+      cancelar.hidden = !estado.cancelarVisivel;
+    };
+    aplicarEstado(false);
+    editar.addEventListener("click", () => aplicarEstado(true));
     cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
     corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario);
   }

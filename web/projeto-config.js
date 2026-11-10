@@ -91,6 +91,16 @@ export function configDoFormulario(atual, { fonte, perfis, pessoas, dryRun, repo
 }
 
 /**
+ * Estado da configuração de projeto em modo leitura (fatia 02): o formulário fica travado até "Editar". Pura, para
+ * ser testada em Node; a tela só aplica o resultado.
+ * @param {boolean} editando
+ * @returns {{ formularioTravado: boolean, editarVisivel: boolean, cancelarVisivel: boolean }}
+ */
+export function estadoDoFormulario(editando) {
+  return { formularioTravado: !editando, editarVisivel: !editando, cancelarVisivel: editando };
+}
+
+/**
  * Uma linha por alteração do histórico: quando, e quais campos mudaram (sem valores).
  * @param {{ quando: string, autor?: string, campos: string[] }[]} alteracoes
  */
