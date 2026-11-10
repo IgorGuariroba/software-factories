@@ -6,6 +6,7 @@ Este repositório implementa a Fábrica de Software: um daemon com API HTTP e we
 
 - Antes de alterar código, leia `CONTRIBUTING.md` para convenções e testes.
 - Ao alterar conceitos ou fluxo de trabalho, consulte `GLOSSARY.md` e as decisões pertinentes em `docs/adr/`.
+- Pacotes em `src/packages/` são módulos profundos: leia `src/packages/README.md` antes de criar ou importar um.
 
 ## Subir o daemon
 

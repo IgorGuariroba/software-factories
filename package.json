@@ -14,7 +14,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "pr:finish": "bash scripts/pr-finish.sh",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint:boundaries": "depcruise src/packages"
   },
   "dependencies": {
     "@earendil-works/chord": "^1.5.0",
@@ -28,7 +29,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",
+    "@swc/core": "^1.16.22",
     "@types/node": "^26.6.6",
+    "dependency-cruiser": "^18.7.2",
     "lucide-static": "^1.70.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
