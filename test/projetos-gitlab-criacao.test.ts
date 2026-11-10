@@ -4,6 +4,13 @@ import { api, startTestFactory, type TestFactory } from "./harness.js";
 
 /** GitLab falso: o token `glpat-ok` vê `grupo/projeto` em gitlab.com e em gitlab.empresa.com; os outros são recusados. */
 const chamadasGitlab: { host: string; token: string | null }[] = [];
+/** Quando verdadeiro, a lista de membros do projeto não responde (GitLab fora do ar nessa consulta). */
+let membrosFora = false;
+/** Membros do projeto: quem pode ser PO ou tech lead na Fonte GitLab Issues. */
+const membros = [
+  { id: 11, username: "ana", name: "Ana Souza" },
+  { id: 12, username: "bruno", name: "Bruno Lima" },
+];
 const gitlabFalso = (async (url: string, init?: RequestInit) => {
   const alvo = new URL(url);
   const token = new Headers(init?.headers).get("PRIVATE-TOKEN");
@@ -11,6 +18,10 @@ const gitlabFalso = (async (url: string, init?: RequestInit) => {
   if (token === "glpat-expirado") return new Response("{}", { status: 401 });
   if (token === "glpat-ok" && alvo.pathname === "/api/v4/projects/grupo%2Fprojeto") {
     return new Response(JSON.stringify({ path_with_namespace: "grupo/projeto" }), { status: 200 });
+  }
+  if (token === "glpat-ok" && alvo.pathname === "/api/v4/projects/grupo%2Fprojeto/members/all") {
+    if (membrosFora) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify(alvo.searchParams.get("page") === "1" ? membros : []), { status: 200 });
   }
   return new Response('{"message":"404 Project Not Found"}', { status: 404 });
 }) as unknown as typeof fetch;
@@ -54,6 +65,7 @@ afterEach(async () => {
   factory = undefined;
   chamadasGitlab.length = 0;
   clonadas.length = 0;
+  membrosFora = false;
 });
 
 describe("POST /projetos/gitlab: criar projeto por caminho completo, com o token do cofre", () => {
@@ -226,5 +238,97 @@ describe("POST /projetos/gitlab: criar projeto por caminho completo, com o token
     );
     expect(res.status).toBe(409);
     expect(String(res.body?.error)).toContain("o prefixo GL já é usado pelo projeto app-gitlab");
+  });
+
+  it("PO e tech lead escolhidos na lista da Fonte são gravados com o perfil certo, sem padrão pelo dono do repositório", async () => {
+    factory = await subirFabrica();
+    const criado = await chamada(
+      factory,
+      "POST",
+      "/projetos/gitlab",
+      corpo({ pessoas: { po: "ana", techLead: "bruno" } }),
+    );
+    expect(criado.status).toBe(201);
+    expect(criado.body).toMatchObject({ estado: "ativo", pendencias: [] });
+    const configuracao = await api<{
+      people: { id: string; perfis: string[]; identidades: Record<string, string>; name?: string }[];
+    }>(factory, "GET", "/projetos/app-gitlab/configuracao");
+    expect(configuracao.people).toEqual([
+      { id: "ana", perfis: ["PO"], name: "Ana Souza", identidades: { gitlab: "ana" } },
+      { id: "bruno", perfis: ["Tech Lead"], name: "Bruno Lima", identidades: { gitlab: "bruno" } },
+    ]);
+  });
+
+  it("sem escolha de PO e tech lead, a Fonte não é consultada e o projeto nasce incompleto com as duas pendências", async () => {
+    factory = await subirFabrica();
+    membrosFora = true;
+    const criado = await chamada(factory, "POST", "/projetos/gitlab", corpo());
+    expect(criado.status).toBe(201);
+    expect(criado.body).toMatchObject({ estado: "incompleto" });
+    expect(criado.body?.pendencias).toEqual(["falta uma pessoa no perfil PO", "falta uma pessoa no perfil tech lead"]);
+  });
+
+  it("pessoa escolhida que a Fonte não conhece é recusada com 400, e nada é gravado", async () => {
+    factory = await subirFabrica();
+    const res = await chamada(factory, "POST", "/projetos/gitlab", corpo({ pessoas: { po: "fantasma" } }));
+    expect(res.status).toBe(400);
+    expect(String(res.body?.error)).toContain("PO: fantasma não existe na Fonte GitLab Issues");
+    expect(clonadas).toHaveLength(0);
+    expect((await chamada(factory, "GET", "/projetos/app-gitlab/configuracao")).status).toBe(404);
+  });
+
+  it("Fonte fora do ar na conferência de pessoas: 502 com a causa, nada é gravado nem clonado", async () => {
+    factory = await subirFabrica();
+    membrosFora = true;
+    const res = await chamada(factory, "POST", "/projetos/gitlab", corpo({ pessoas: { techLead: "bruno" } }));
+    expect(res.status).toBe(502);
+    expect(String(res.body?.error)).toContain("não foi possível consultar as pessoas na Fonte GitLab Issues");
+    expect(String(res.body?.error)).toContain("o projeto não foi salvo");
+    expect(clonadas).toHaveLength(0);
+    expect((await chamada(factory, "GET", "/projetos/app-gitlab/configuracao")).status).toBe(404);
+  });
+
+  it("a lista de pessoas da Fonte para o formulário vem do GitLab com o token do cofre", async () => {
+    factory = await subirFabrica();
+    const lista = await chamada(factory, "POST", "/projetos/pessoas-da-fonte", {
+      tipo: "gitlab",
+      caminho: "grupo/projeto",
+      servidor: "",
+      credencial: "gitlab-token",
+    });
+    expect(lista.status).toBe(200);
+    expect(lista.body).toEqual([
+      { id: "ana", nome: "Ana Souza" },
+      { id: "bruno", nome: "Bruno Lima" },
+    ]);
+  });
+
+  it("a lista de pessoas recusa credencial que não está no cofre e servidor que não é URL https", async () => {
+    factory = await subirFabrica();
+    const semCredencial = await chamada(factory, "POST", "/projetos/pessoas-da-fonte", {
+      tipo: "gitlab",
+      caminho: "grupo/projeto",
+      credencial: "outro-token",
+    });
+    expect(semCredencial.status).toBe(400);
+    const servidorRuim = await chamada(factory, "POST", "/projetos/pessoas-da-fonte", {
+      tipo: "gitlab",
+      caminho: "grupo/projeto",
+      servidor: "http://gitlab.empresa.com",
+      credencial: "gitlab-token",
+    });
+    expect(servidorRuim.status).toBe(400);
+  });
+
+  it("a lista de pessoas com a Fonte fora do ar responde 502 com a causa", async () => {
+    factory = await subirFabrica();
+    membrosFora = true;
+    const res = await chamada(factory, "POST", "/projetos/pessoas-da-fonte", {
+      tipo: "gitlab",
+      caminho: "grupo/projeto",
+      credencial: "gitlab-token",
+    });
+    expect(res.status).toBe(502);
+    expect(String(res.body?.error)).toContain("não foi possível consultar as pessoas na Fonte GitLab Issues");
   });
 });

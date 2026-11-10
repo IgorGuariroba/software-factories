@@ -129,7 +129,7 @@ export const camposDaFonteNaCriacao = (tipo, campos) =>
 /**
  * Corpo de `POST /projetos/gitlab` a partir dos campos do formulário (ticket 04). O servidor vazio quer dizer gitlab.com;
  * a Fonte é GitLab Issues, com o prefixo e o usuário dono das issues. O servidor confere o caminho com o token.
- * @param {{ nome: string, servidor: string, caminho: string, credencial: string, prefixo: string, dono: string, comandoTeste: string, horario: string, ensaio: boolean }} campos
+ * @param {{ nome: string, servidor: string, caminho: string, credencial: string, prefixo: string, dono: string, comandoTeste: string, horario: string, ensaio: boolean, pessoas?: { po?: string, techLead?: string } }} campos
  */
 export const corpoProjetoGitlab = (campos) => ({
   nome: campos.nome.trim(),
@@ -139,7 +139,33 @@ export const corpoProjetoGitlab = (campos) => ({
   comandoTeste: comandoDoTexto(campos.comandoTeste),
   horario: campos.horario,
   ensaio: campos.ensaio,
+  ...(campos.pessoas ? { pessoas: campos.pessoas } : {}),
 });
+
+/**
+ * Opções de um seletor de PO ou tech lead (ticket 06): a primeira é "sem pessoa por enquanto", que deixa o projeto
+ * incompleto; as demais são as pessoas da lista da Fonte.
+ * @param {{ id: string, nome: string }[]} pessoas
+ */
+export function opcoesDePessoas(pessoas) {
+  return [
+    { valor: "", texto: "sem pessoa por enquanto (pendência)" },
+    ...pessoas.map((p) => ({ valor: p.id, texto: p.nome && p.nome !== p.id ? `${p.nome} (${p.id})` : p.id })),
+  ];
+}
+
+/**
+ * Escolhas de PO e tech lead do formulário. Campo vazio não entra no corpo, e a criação não consulta a Fonte por isso.
+ * @param {string} po
+ * @param {string} techLead
+ * @returns {{ po?: string, techLead?: string }}
+ */
+export function pessoasDoFormulario(po, techLead) {
+  const escolhas = {};
+  if (po) escolhas.po = po;
+  if (techLead) escolhas.techLead = techLead;
+  return escolhas;
+}
 
 /**
  * Texto de conclusão da criação: o que foi criado, em que modo e horário, e, se incompleto, o que falta.

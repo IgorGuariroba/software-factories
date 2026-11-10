@@ -8,6 +8,8 @@ import {
   filtrarCatalogo,
   mensagemCatalogo,
   mensagemCriacao,
+  opcoesDePessoas,
+  pessoasDoFormulario,
   sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
@@ -224,5 +226,42 @@ describe("corpoProjetoGitlab: o corpo da criação por caminho a partir do formu
     expect(corpoProjetoGitlab({ ...campos, servidor: " https://gitlab.empresa.com " }).servidor).toBe(
       "https://gitlab.empresa.com",
     );
+  });
+});
+
+describe("escolha de PO e tech lead no formulário (ticket 06)", () => {
+  it("o seletor começa com 'sem pessoa' e mostra o nome com o identificador quando há nome", () => {
+    expect(
+      opcoesDePessoas([
+        { id: "ana", nome: "Ana Souza" },
+        { id: "bruno", nome: "bruno" },
+      ]),
+    ).toEqual([
+      { valor: "", texto: "sem pessoa por enquanto (pendência)" },
+      { valor: "ana", texto: "Ana Souza (ana)" },
+      { valor: "bruno", texto: "bruno" },
+    ]);
+  });
+
+  it("campo vazio não entra na escolha, e a criação não consulta a Fonte por isso", () => {
+    expect(pessoasDoFormulario("", "")).toEqual({});
+    expect(pessoasDoFormulario("ana", "")).toEqual({ po: "ana" });
+    expect(pessoasDoFormulario("ana", "bruno")).toEqual({ po: "ana", techLead: "bruno" });
+  });
+
+  it("o corpo do GitLab leva as escolhas só quando há", () => {
+    const base = {
+      nome: "app",
+      caminho: "g/p",
+      servidor: "",
+      prefixo: "AP",
+      dono: "ana",
+      credencial: "gitlab-token",
+      comandoTeste: "npm test",
+      horario: "business-hours",
+      ensaio: true,
+    };
+    expect(corpoProjetoGitlab(base)).not.toHaveProperty("pessoas");
+    expect(corpoProjetoGitlab({ ...base, pessoas: { po: "ana" } })).toMatchObject({ pessoas: { po: "ana" } });
   });
 });

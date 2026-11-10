@@ -98,8 +98,16 @@ import {
   validarPerfis,
 } from "./packages/profiles/index.js";
 import { createSecretStore } from "./packages/secret-store/index.js";
+import {
+  conferirEscolhasPessoas,
+  type EscolhasPessoas,
+  listarPessoasGitlab,
+  listarPessoasJira,
+  type PessoaDaFonte,
+  pessoasDeAssignees,
+} from "./pessoas-fonte.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
-import { conflitoProjeto, montarProjetoGithub, padroesDe } from "./projetos-github.js";
+import { conflitoProjeto, montarProjetoGithub, padroesDe, pessoasDoProjeto } from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
@@ -1995,6 +2003,135 @@ export async function startFactory(opts: {
     );
   }
 
+  /** Escolhas de PO e tech lead do corpo da criação: texto vazio ou ausente vira "não escolhida". */
+  function lerEscolhasPessoas(bruto: unknown): EscolhasPessoas | undefined {
+    if (typeof bruto !== "object" || bruto === null || Array.isArray(bruto)) return undefined;
+    const { po, techLead } = bruto as { po?: unknown; techLead?: unknown };
+    const texto = (valor: unknown) => (typeof valor === "string" && valor.trim() !== "" ? valor.trim() : undefined);
+    return { po: texto(po), techLead: texto(techLead) };
+  }
+
+  /**
+   * Lista de pessoas para escolher PO e tech lead no formulário de criação (ticket 06). Só consulta; nada é gravado. O
+   * corpo diz de qual Fonte se trata: `gitlab` (caminho e servidor, com o token do cofre), `github` (repositório do
+   * catálogo do App) ou `jira` (baseUrl, email, projeto e credencial).
+   */
+  async function listarPessoasParaCriacao(bruto: unknown): Promise<{ status: number; body: unknown }> {
+    const corpo = (bruto ?? {}) as Record<string, unknown>;
+    const texto = (valor: unknown) => (typeof valor === "string" ? valor.trim() : "");
+    try {
+      if (corpo.tipo === "gitlab") {
+        const credencial = texto(corpo.credencial);
+        if (credencial === "" || !(await segredos.has(credencial)))
+          return { status: 400, body: { error: "informe a credencial do token do GitLab, cadastrada no cofre" } };
+        let host: string;
+        try {
+          host = hostDoServidor(texto(corpo.servidor));
+        } catch (err) {
+          return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
+        }
+        const lista = await listarPessoasDoGitlab(host, texto(corpo.caminho), credencial);
+        return { status: 200, body: lista };
+      }
+      if (corpo.tipo === "jira") {
+        const credencial = texto(corpo.credencial);
+        if (credencial === "" || !(await segredos.has(credencial)) || !texto(corpo.baseUrl) || !texto(corpo.email))
+          return { status: 400, body: { error: "a Fonte Jira precisa de credencial do cofre, baseUrl e email" } };
+        const lista = await listarPessoasDoJira(
+          texto(corpo.baseUrl),
+          texto(corpo.email),
+          credencial,
+          texto(corpo.projeto),
+        );
+        return { status: 200, body: lista };
+      }
+      if (corpo.tipo === "github") {
+        if (!Number.isInteger(corpo.repoId)) return { status: 400, body: { error: "informe repoId do repositório" } };
+        const app = await appChecker.status();
+        if (!app.configurado || app.erro)
+          return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
+        const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
+        if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
+        return { status: 200, body: await listarPessoasDoGithub(repo.nome, repo.instalacaoId) };
+      }
+    } catch (err) {
+      const motivo = err instanceof Error ? err.message : "falha ao consultar a Fonte";
+      return { status: 502, body: { error: motivo } };
+    }
+    return { status: 400, body: { error: "tipo: use gitlab, github ou jira" } };
+  }
+
+  /** Lista de pessoas do GitLab do projeto, com o token do cofre. Falha de rede ou de resposta lança o erro. */
+  async function listarPessoasDoGitlab(host: string, caminho: string, credencial: string): Promise<PessoaDaFonte[]> {
+    return listarPessoasGitlab({
+      host,
+      caminho,
+      token: (await segredos.get(credencial)) ?? "",
+      fetch: opts.fetchGitlab ?? fetch,
+    });
+  }
+
+  /** Lista de pessoas do Jira (usuários atribuíveis ao projeto), com o token do cofre. */
+  async function listarPessoasDoJira(
+    baseUrl: string,
+    email: string,
+    credencial: string,
+    projeto: string,
+  ): Promise<PessoaDaFonte[]> {
+    return listarPessoasJira({
+      baseUrl,
+      email,
+      token: (await segredos.get(credencial)) ?? "",
+      projeto,
+      fetch: opts.fetchFonte ?? fetch,
+    });
+  }
+
+  /** Lista de responsáveis possíveis do repositório do GitHub App, pelo token da instalação. */
+  async function listarPessoasDoGithub(repo: string, instalacaoId: number): Promise<PessoaDaFonte[]> {
+    return pessoasDeAssignees(await appChecker.responsaveisPossiveis(repo, instalacaoId));
+  }
+
+  /**
+   * Escolhas de PO e tech lead conferidas na Fonte antes de gravar (ticket 06). Sem escolha, não há consulta e o projeto
+   * nasce incompleto. Fonte fora do ar responde 502; pessoa que a Fonte não conhece responde 400. Nos dois casos nada
+   * é gravado.
+   */
+  async function conferirEscolhas(
+    fonte: ProjectConfig["source"],
+    escolhas: EscolhasPessoas | undefined,
+    instalacaoId?: number,
+  ): Promise<{ erro?: { status: number; body: unknown }; lista: PessoaDaFonte[] }> {
+    if (escolhas?.po === undefined && escolhas?.techLead === undefined) return { lista: [] };
+    if (fonte.type === "jira" && (!fonte.credential || !fonte.baseUrl || !fonte.email))
+      return {
+        erro: {
+          status: 400,
+          body: { error: "para escolher PO e tech lead, a Fonte Jira precisa de credencial, baseUrl e email" },
+        },
+        lista: [],
+      };
+    let lista: PessoaDaFonte[];
+    try {
+      if (fonte.type === "gitlab")
+        lista = await listarPessoasDoGitlab(fonte.hostname ?? SERVIDOR_PADRAO, fonte.repo, fonte.credential ?? "");
+      else if (fonte.type === "jira")
+        lista = await listarPessoasDoJira(
+          fonte.baseUrl ?? "",
+          fonte.email ?? "",
+          fonte.credential ?? "",
+          fonte.project,
+        );
+      else if (instalacaoId === undefined) throw new Error("repositório sem instalação do GitHub App");
+      else lista = await listarPessoasDoGithub(fonte.repo, instalacaoId);
+    } catch (err) {
+      const motivo = err instanceof Error ? err.message : "falha ao consultar a Fonte";
+      return { erro: { status: 502, body: { error: `${motivo}; o projeto não foi salvo` } }, lista: [] };
+    }
+    const erro = conferirEscolhasPessoas(escolhas, lista, fonte.type);
+    return erro ? { erro: { status: 400, body: { error: erro } }, lista } : { lista };
+  }
+
   async function criarProjetoClonado(projeto: {
     config: ProjectConfig;
     destino: string;
@@ -2066,6 +2203,7 @@ export async function startFactory(opts: {
     horario: "always" | "business-hours";
     ensaio: boolean;
     comandoTeste: string[];
+    pessoas?: EscolhasPessoas;
   }): Promise<{ status: number; body: unknown }> {
     if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
     if (corpo.fonte.type === "gitlab")
@@ -2096,6 +2234,9 @@ export async function startFactory(opts: {
     if (erroFonte) return { status: 400, body: { error: erroFonte } };
     const conflito = await conflitoAgora(config);
     if (conflito) return { status: 409, body: { error: conflito } };
+    const pessoas = await conferirEscolhas(config.source, corpo.pessoas, repo.instalacaoId);
+    if (pessoas.erro) return pessoas.erro;
+    config = { ...config, ...pessoasDoProjeto(corpo.pessoas, config.source.type, pessoas.lista) };
 
     const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
     return criarProjetoClonado({
@@ -2129,6 +2270,7 @@ export async function startFactory(opts: {
     horario: "always" | "business-hours";
     ensaio: boolean;
     comandoTeste: string[];
+    pessoas?: EscolhasPessoas;
   }): Promise<{ status: number; body: unknown }> {
     if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
     const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
@@ -2177,6 +2319,9 @@ export async function startFactory(opts: {
       fetch: opts.fetchGitlab ?? fetch,
     });
     if (erroRepo) return { status: 400, body: { error: erroRepo } };
+    const pessoas = await conferirEscolhas(config.source, corpo.pessoas);
+    if (pessoas.erro) return pessoas.erro;
+    config = { ...config, ...pessoasDoProjeto(corpo.pessoas, "gitlab", pessoas.lista) };
 
     const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
     return criarProjetoClonado({
@@ -3139,6 +3284,7 @@ export async function startFactory(opts: {
               horario?: unknown;
               ensaio?: unknown;
               comandoTeste?: unknown;
+              pessoas?: unknown;
             }
           | undefined;
         if (
@@ -3163,6 +3309,7 @@ export async function startFactory(opts: {
           horario: body.horario === "always" ? "always" : "business-hours",
           ensaio: body.ensaio !== false,
           comandoTeste: comando,
+          pessoas: lerEscolhasPessoas(body.pessoas),
         });
         return json(res, result.status, result.body);
       }
@@ -3177,6 +3324,7 @@ export async function startFactory(opts: {
               horario?: unknown;
               ensaio?: unknown;
               comandoTeste?: unknown;
+              pessoas?: unknown;
             }
           | undefined;
         if (
@@ -3204,7 +3352,13 @@ export async function startFactory(opts: {
           horario: body.horario === "always" ? "always" : "business-hours",
           ensaio: body.ensaio !== false,
           comandoTeste: comando,
+          pessoas: lerEscolhasPessoas(body.pessoas),
         });
+        return json(res, result.status, result.body);
+      }
+      if (route === "POST /projetos/pessoas-da-fonte") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const result = await listarPessoasParaCriacao(await readBody(req));
         return json(res, result.status, result.body);
       }
       if (route === "POST /github/importar") {

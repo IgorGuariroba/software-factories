@@ -139,6 +139,8 @@ export interface GitHubAppChecker {
   status(): Promise<GitHubAppStatus>;
   /** Issues abertas de um repositório, por todas as páginas, com o token da instalação (leitura; PRs vêm junto). */
   issuesAbertas(repo: string, instalacaoId: number): Promise<RawIssue[]>;
+  /** Logins que podem ser atribuídos a issues do repositório, por todas as páginas (token da instalação). */
+  responsaveisPossiveis(repo: string, instalacaoId: number): Promise<{ login: string }[]>;
   /**
    * Clona `repo` (`dono/nome`) em `destino` com o token da instalação, que vai só no cabeçalho do git (pelo ambiente,
    * nunca na linha de comando nem em `.git/config`). Refaz o clone se `destino` já existir: o diretório é gerenciado.
@@ -284,6 +286,14 @@ export function createGitHubAppChecker(opts: {
         await rm(destino, { recursive: true, force: true });
         throw new Error(`não foi possível clonar ${repo} pelo GitHub App`);
       }
+    },
+    async responsaveisPossiveis(repo, instalacaoId) {
+      const token = await tokenDaInstalacao(instalacaoId);
+      return todasAsPaginas(
+        (caminho) => chamar(caminho, token),
+        `/repos/${repo}/assignees`,
+        (corpo) => corpo as { login: string }[],
+      );
     },
     async issuesAbertas(repo, instalacaoId) {
       const token = await tokenDaInstalacao(instalacaoId);

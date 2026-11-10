@@ -136,6 +136,18 @@
                 <span>Prefixo das chaves</span>
                 <input name="prefixo" required placeholder="ex.: GL" autocomplete="off">
               </label>
+              <div class="acoes">
+                <button type="button" id="repos-gl-buscar-pessoas" class="secundario">Buscar pessoas na Fonte</button>
+              </div>
+              <label class="campo">
+                <span>PO (pessoa da Fonte)</span>
+                <select name="po" id="repos-gl-po" aria-describedby="repos-gl-pessoas-status"></select>
+              </label>
+              <label class="campo">
+                <span>Tech lead (pessoa da Fonte)</span>
+                <select name="techLead" id="repos-gl-tech-lead"></select>
+              </label>
+              <p id="repos-gl-pessoas-status" class="ajuda" role="status"></p>
               <label class="campo">
                 <span>Comando de teste (ex.: npm test)</span>
                 <input name="comandoTeste" required autocomplete="off">

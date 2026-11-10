@@ -30,6 +30,9 @@ const githubFalso = (async (url: string) => {
       ],
     });
   }
+  if (caminho === "/repos/IgorGuariroba/novo-repo/assignees") {
+    return json([{ login: "IgorGuariroba" }, { login: "colega" }]);
+  }
   if (caminho === "/repos/IgorGuariroba/novo-repo/issues") {
     return json([{ id: 7001, number: 1, title: "Primeira do repo novo", body: "", state: "open", labels: [] }]);
   }
@@ -323,5 +326,43 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     const res = await chamada(factory, "POST", "/projetos/github", corpo());
     expect(res.status).toBe(409);
     expect(String(res.body?.error)).toContain("GitHub App não configurado");
+  });
+
+  it("PO e tech lead escolhidos entre os responsáveis do repositório são gravados; quem não existe é recusado sem gravar", async () => {
+    factory = await subirFabrica();
+    const recusado = await chamada(factory, "POST", "/projetos/github", corpo({ pessoas: { po: "fantasma" } }));
+    expect(recusado.status).toBe(400);
+    expect(String(recusado.body?.error)).toContain("PO: fantasma não existe na Fonte GitHub Issues");
+    expect((await chamada(factory, "GET", "/projetos/novo-repo/configuracao")).status).toBe(404);
+
+    const criado = await chamada(
+      factory,
+      "POST",
+      "/projetos/github",
+      corpo({ pessoas: { po: "IgorGuariroba", techLead: "colega" } }),
+    );
+    expect(criado.status).toBe(201);
+    expect(criado.body).toMatchObject({ estado: "ativo", pendencias: [] });
+    const configuracao = await api<{ people: { id: string; perfis: string[]; name?: string }[] }>(
+      factory,
+      "GET",
+      "/projetos/novo-repo/configuracao",
+    );
+    expect(configuracao.people).toEqual([
+      { id: "IgorGuariroba", perfis: ["PO"], name: "IgorGuariroba", identidades: { github: "IgorGuariroba" } },
+      { id: "colega", perfis: ["Tech Lead"], name: "colega", identidades: { github: "colega" } },
+    ]);
+  });
+
+  it("a lista de responsáveis do formulário vem do repositório do App; repositório fora do catálogo responde 404", async () => {
+    factory = await subirFabrica();
+    const lista = await chamada(factory, "POST", "/projetos/pessoas-da-fonte", { tipo: "github", repoId: 77 });
+    expect(lista.status).toBe(200);
+    expect(lista.body).toEqual([
+      { id: "IgorGuariroba", nome: "IgorGuariroba" },
+      { id: "colega", nome: "colega" },
+    ]);
+    const fora = await chamada(factory, "POST", "/projetos/pessoas-da-fonte", { tipo: "github", repoId: 999 });
+    expect(fora.status).toBe(404);
   });
 });

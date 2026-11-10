@@ -1,4 +1,6 @@
 import { ProjectConfig } from "./config.js";
+import { PERFIS_PRONTOS } from "./packages/profiles/index.js";
+import type { EscolhasPessoas, PessoaDaFonte } from "./pessoas-fonte.js";
 
 /**
  * Projetos criados pela página Repositórios (ADR-0016, ADR-0022). Funções puras: o daemon confere o App, clona o
@@ -44,10 +46,43 @@ export function sugerirProjeto(repo: string): { nome: string; prefixo: string } 
 const FONTES_DE_ISSUES: readonly string[] = ["github", "gitlab"];
 
 /**
+ * PO e tech lead escolhidos na criação, com os perfis prontos (PO e Tech Lead). O identificador vai também na integração
+ * da Fonte (`identidades`), que é o que a Fonte consulta. Sem escolha, a lista fica vazia e o projeto nasce incompleto.
+ * Nunca há padrão pelo dono do repositório (ADR-0022).
+ */
+export function pessoasDoProjeto(
+  escolhas: EscolhasPessoas | undefined,
+  fonte: "github" | "gitlab" | "jira",
+  lista: PessoaDaFonte[] = [],
+): Pick<ProjectConfig, "people" | "profiles"> {
+  const perfilDe = (nome: string) => PERFIS_PRONTOS.find((p) => p.papel === nome)?.nome ?? nome;
+  const papeis: [string | undefined, string][] = [
+    [escolhas?.po, "po"],
+    [escolhas?.techLead, "tech_lead"],
+  ];
+  const pessoas = new Map<string, { id: string; perfis: string[]; name?: string }>();
+  for (const [id, papel] of papeis) {
+    if (id === undefined) continue;
+    const atual = pessoas.get(id) ?? { id, perfis: [], name: lista.find((p) => p.id === id)?.nome };
+    atual.perfis.push(perfilDe(papel));
+    pessoas.set(id, atual);
+  }
+  return {
+    people: [...pessoas.values()].map((p) => ({
+      id: p.id,
+      perfis: p.perfis,
+      ...(p.name ? { name: p.name } : {}),
+      identidades: { [fonte]: p.id },
+    })),
+    profiles: PERFIS_PRONTOS,
+  };
+}
+
+/**
  * Configuração de um projeto novo criado pela interface, com um repositório do GitHub App clonado pela fábrica em
  * `caminho` (diretório gerenciado; o usuário não informa caminho). A Fonte é a escolhida no formulário, sem valor
- * fixo; no GitHub, o repositório dela é o do App. O projeto nasce sem pessoas: PO e tech lead são pendências até o
- * usuário informá-los. Lança erro com a mensagem em português se algum campo for inválido.
+ * fixo; no GitHub, o repositório dela é o do App. PO e tech lead vêm das escolhas da lista da Fonte; sem escolha, são
+ * pendências. Lança erro com a mensagem em português se algum campo for inválido.
  */
 export function montarProjetoGithub(opts: {
   padroes: PadroesProjeto;
@@ -63,6 +98,10 @@ export function montarProjetoGithub(opts: {
   ensaio: boolean;
   /** Comando de teste do repositório, em argv (sem shell). */
   comandoTeste: string[];
+  /** PO e tech lead escolhidos na lista da Fonte, já conferidos. */
+  pessoas?: EscolhasPessoas;
+  /** Lista da Fonte, para o nome de exibição das pessoas escolhidas. */
+  listaPessoas?: PessoaDaFonte[];
 }): ProjectConfig {
   if (!NOME_PROJETO.test(opts.nome)) {
     throw new Error("nome: use minúsculas, números e hífen, começando por letra (2 a 40 caracteres)");
@@ -87,7 +126,7 @@ export function montarProjetoGithub(opts: {
     source: fonte,
     statuses: opts.padroes.statuses,
     roles: opts.padroes.roles,
-    people: [],
+    ...pessoasDoProjeto(opts.pessoas, tipo, opts.listaPessoas),
     repositories: [{ path: opts.caminho, prefix: prefixo, test: { command: opts.comandoTeste } }],
   });
   if (!parsed.success) throw new Error(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));

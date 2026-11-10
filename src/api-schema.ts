@@ -502,14 +502,21 @@ export const API_SCHEMA = {
     "/projetos/github": {
       post: {
         summary:
-          "Cria um projeto a partir de um repositório do catálogo do GitHub App (corpo: { repoId, nome, fonte: { type: github|gitlab|jira, project, ...campos da Fonte }, comandoTeste: string[], horario?: business-hours|always, ensaio? }). A fábrica clona o repositório em diretório gerenciado; o projeto nasce incompleto se faltar PO, tech lead ou outro item (ADR-0022). Responde 201 com estado e pendencias; 502 se a clonagem falhar, sem gravar nada",
+          "Cria um projeto a partir de um repositório do catálogo do GitHub App (corpo: { repoId, nome, fonte: { type: github|gitlab|jira, project, ...campos da Fonte }, comandoTeste: string[], horario?: business-hours|always, ensaio?, pessoas?: { po?, techLead? } com os identificadores da lista de /projetos/pessoas-da-fonte }). A fábrica clona o repositório em diretório gerenciado; o projeto nasce incompleto se faltar PO, tech lead ou outro item (ADR-0022). Responde 201 com estado e pendencias; 502 se a clonagem falhar, sem gravar nada",
         responses: ok,
       },
     },
     "/projetos/gitlab": {
       post: {
         summary:
-          "Cria um projeto a partir de um repositório GitLab por caminho completo (corpo: { nome, caminho: grupo/projeto, servidor?: URL https (vazio para gitlab.com), fonte: { project, assignee, credential, ignoreLabels? }, comandoTeste: string[], horario?, ensaio? }). O token do cofre é conferido no caminho antes de salvar; a fábrica clona o repositório em diretório gerenciado. Responde 201 com estado e pendencias; 400 se o caminho ou o token não servirem, sem gravar nada",
+          "Cria um projeto a partir de um repositório GitLab por caminho completo (corpo: { nome, caminho: grupo/projeto, servidor?: URL https (vazio para gitlab.com), fonte: { project, assignee, credential, ignoreLabels? }, comandoTeste: string[], horario?, ensaio?, pessoas?: { po?, techLead? } com os identificadores da lista de /projetos/pessoas-da-fonte }). O token do cofre é conferido no caminho antes de salvar; a fábrica clona o repositório em diretório gerenciado. Responde 201 com estado e pendencias; 400 se o caminho ou o token não servirem, sem gravar nada",
+        responses: ok,
+      },
+    },
+    "/projetos/pessoas-da-fonte": {
+      post: {
+        summary:
+          "Lista as pessoas da Fonte para escolher PO e tech lead na criação, sem gravar nada (corpo: { tipo: gitlab, caminho, servidor?, credencial } | { tipo: github, repoId } | { tipo: jira, baseUrl, email, projeto, credencial }). Responde [{ id, nome }]; 502 se a Fonte não responder",
         responses: ok,
       },
     },

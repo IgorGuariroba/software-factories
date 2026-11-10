@@ -30,6 +30,7 @@ import {
   getTrace,
   getTriagePreview,
   importarRepoGithub,
+  listarPessoasDaFonte,
   pauseDaemon,
   pauseTask,
   plugRepo,
@@ -55,6 +56,8 @@ import {
   filtrarCatalogo,
   mensagemCatalogo,
   mensagemCriacao,
+  opcoesDePessoas,
+  pessoasDoFormulario,
   sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
@@ -1246,6 +1249,8 @@ function formularioProjetoGithub(repo) {
   const status = el("p", { className: "ajuda", attrs: { role: "status" } });
   const tipoSel = el("select", { attrs: { name: "tipo", "aria-label": "Fonte de demandas" } });
   const camposBox = el("div", { className: "campos-fonte" });
+  const poSel = seletorDePessoas("po", "PO (pessoa da Fonte)");
+  const techSel = seletorDePessoas("techLead", "Tech lead (pessoa da Fonte)");
   let esquemas = [];
   let credenciais = [];
 
@@ -1253,6 +1258,9 @@ function formularioProjetoGithub(repo) {
   const desenharCampos = () => {
     const tipo = tipoSel.value;
     const esquema = esquemas.find((e) => e.tipo === tipo);
+    // A lista de pessoas é da Fonte escolhida: trocar a Fonte a descarta.
+    preencherSeletorDePessoas(poSel, []);
+    preencherSeletorDePessoas(techSel, []);
     camposBox.replaceChildren(
       ...camposDaFonteNaCriacao(tipo, esquema?.campos ?? []).map((c) => {
         // Credencial escolhida pelo nome no cofre (ticket 03): o projeto guarda só o nome.
@@ -1329,6 +1337,18 @@ function formularioProjetoGithub(repo) {
     el("label", { className: "campo" }, el("span", { text: "Fonte de demandas" }), tipoSel),
     camposBox,
     el(
+      "div",
+      { className: "acoes" },
+      el("button", {
+        type: "button",
+        className: "secundario",
+        text: "Buscar pessoas na Fonte",
+        onClick: () => buscarPessoasDoFormulario(),
+      }),
+    ),
+    el("label", { className: "campo" }, el("span", { text: "PO" }), poSel),
+    el("label", { className: "campo" }, el("span", { text: "Tech lead" }), techSel),
+    el(
       "label",
       { className: "campo" },
       el("span", { text: "Comando de teste (ex.: npm test)" }),
@@ -1383,6 +1403,7 @@ function formularioProjetoGithub(repo) {
         horario: String(dados.get("horario") ?? "business-hours"),
         ensaio: dados.get("ensaio") === "on",
         comandoTeste: comandoDoTexto(dados.get("comandoTeste")),
+        pessoas: pessoasDoFormulario(String(dados.get("po") ?? ""), String(dados.get("techLead") ?? "")),
       });
       $("repos-gh-status").textContent = mensagemCriacao(criado);
       await loadCatalogoGithub();
@@ -1390,8 +1411,50 @@ function formularioProjetoGithub(repo) {
       status.textContent = err instanceof Error ? err.message : String(err);
     }
   });
+  /** Consulta as pessoas da Fonte escolhida no formulário e preenche PO e tech lead. Só lê: nada é gravado. */
+  async function buscarPessoasDoFormulario() {
+    const tipo = tipoSel.value;
+    const dados = new FormData(form);
+    const esquema = esquemas.find((e) => e.tipo === tipo);
+    const valores = Object.fromEntries(
+      (esquema?.campos ?? []).map((c) => [c.campo, String(dados.get(`f_${c.campo}`) ?? "")]),
+    );
+    const fonte = fonteDoFormulario(tipo, camposDaFonteNaCriacao(tipo, esquema?.campos ?? []), valores);
+    const consulta =
+      tipo === "github"
+        ? { tipo: "github", repoId: repo.id }
+        : {
+            tipo: "jira",
+            baseUrl: fonte.baseUrl ?? "",
+            email: fonte.email ?? "",
+            credencial: fonte.credential ?? "",
+            projeto: fonte.project ?? "",
+          };
+    status.textContent = "Consultando pessoas na Fonte…";
+    try {
+      const pessoas = await listarPessoasDaFonte(consulta);
+      preencherSeletorDePessoas(poSel, pessoas);
+      preencherSeletorDePessoas(techSel, pessoas);
+      status.textContent =
+        pessoas.length === 0 ? "A Fonte não tem pessoas para este projeto." : `${pessoas.length} pessoa(s) na Fonte.`;
+    } catch (err) {
+      status.textContent = err instanceof Error ? err.message : String(err);
+    }
+  }
   return form;
 }
+
+/** Seletor de PO ou tech lead, começando com "sem pessoa"; a lista vem da Fonte depois (ticket 06). */
+function seletorDePessoas(name, rotulo) {
+  return el("select", { attrs: { name, "aria-label": rotulo } }, ...opcoesDePessoas([]).map(opcaoDoSeletor));
+}
+
+/** Troca as opções de um seletor de pessoas pela lista da Fonte. */
+function preencherSeletorDePessoas(seletor, pessoas) {
+  seletor.replaceChildren(...opcoesDePessoas(pessoas).map(opcaoDoSeletor));
+}
+
+const opcaoDoSeletor = (o) => el("option", { attrs: { value: o.valor }, text: o.texto });
 
 /** Preenche o seletor de credenciais do formulário GitLab com o cofre: o projeto guarda só o nome (ticket 03). */
 async function carregarCredenciaisGitlab() {
@@ -1403,6 +1466,28 @@ async function carregarCredenciaisGitlab() {
     seletor.replaceChildren(...cofre.map((c) => el("option", { attrs: { value: c.nome }, text: c.nome })));
     if (cofre.some((c) => c.nome === atual)) seletor.value = atual;
     status.textContent = cofre.length === 0 ? "Cadastre o token do GitLab no cofre de credenciais primeiro." : "";
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Consulta as pessoas do projeto GitLab informado no formulário e preenche PO e tech lead. Só lê: nada é gravado. */
+async function buscarPessoasGitlab() {
+  const status = $("repos-gl-pessoas-status");
+  const dados = new FormData($("repos-gl-form"));
+  const campo = (nome) => String(dados.get(nome) ?? "").trim();
+  status.textContent = "Consultando pessoas na Fonte…";
+  try {
+    const pessoas = await listarPessoasDaFonte({
+      tipo: "gitlab",
+      caminho: campo("caminho"),
+      servidor: campo("servidor"),
+      credencial: campo("credencial"),
+    });
+    preencherSeletorDePessoas($("repos-gl-po"), pessoas);
+    preencherSeletorDePessoas($("repos-gl-tech-lead"), pessoas);
+    status.textContent =
+      pessoas.length === 0 ? "A Fonte não tem pessoas para este projeto." : `${pessoas.length} pessoa(s) na Fonte.`;
   } catch (err) {
     status.textContent = err instanceof Error ? err.message : String(err);
   }
@@ -1428,6 +1513,7 @@ async function criarProjetoGitlabPeloFormulario(ev) {
         comandoTeste: campo("comandoTeste"),
         horario: campo("horario") || "business-hours",
         ensaio: dados.get("ensaio") === "on",
+        pessoas: pessoasDoFormulario(campo("po"), campo("techLead")),
       }),
     );
     form.reset();
@@ -1588,6 +1674,7 @@ for (const button of document.querySelectorAll("[data-modo]"))
 $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDaemon : pauseDaemon));
 $("buscar").addEventListener("click", () => run(pollSource));
 $("repos-gl-form").addEventListener("submit", criarProjetoGitlabPeloFormulario);
+$("repos-gl-buscar-pessoas").addEventListener("click", buscarPessoasGitlab);
 $("atualizar-elegiveis").addEventListener("click", refreshQueue);
 $("fechar-detalhe").addEventListener("click", () => {
   location.hash = `#/${detailReturn}`;

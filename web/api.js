@@ -46,6 +46,8 @@ export const getGithubRepos = () => api("GET", "/github/repos");
 export const importarRepoGithub = (repoId) => api("POST", "/github/importar", { repoId });
 export const criarProjetoGithub = (corpo) => api("POST", "/projetos/github", corpo);
 export const criarProjetoGitlab = (corpo) => api("POST", "/projetos/gitlab", corpo);
+/** Pessoas da Fonte para escolher PO e tech lead na criação (ticket 06). Só consulta: nada é gravado. */
+export const listarPessoasDaFonte = (corpo) => api("POST", "/projetos/pessoas-da-fonte", corpo);
 export const getIntegracoesFontes = () => api("GET", "/integracoes/fontes");
 
 /** Credenciais do cofre: nome e data de cada uma, nunca o valor (ADR-0018). */
