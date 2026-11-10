@@ -571,6 +571,18 @@ export const API_SCHEMA = {
         responses: ok,
       },
     },
+    "/projetos/{nome}/remocao": {
+      post: {
+        summary:
+          'Remove a configuração do projeto, com confirmação (corpo "confirmar" igual ao nome). Com Tarefa em andamento, 409 e nada muda. O histórico das Tarefas fica, e o prefixo segue reservado enquanto ele existir; o nome nunca volta a ser usado',
+        responses: {
+          ...ok,
+          "400": { description: "Confirmação ausente ou diferente do nome do projeto" },
+          "404": { description: "Projeto inexistente" },
+          "409": { description: "Há Tarefas em andamento no projeto; tarefasEmAndamento traz as ids" },
+        },
+      },
+    },
     "/projetos/{nome}/retomada": {
       post: {
         summary: "Retoma um projeto pausado, revalidando a configuração: com pendências, 409 e segue pausado",

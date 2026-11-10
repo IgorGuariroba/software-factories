@@ -322,6 +322,11 @@ export type FactoryState = {
   projetosPausados?: string[];
   /** Projetos que trocaram a Fonte ou o repositório e aguardam a confirmação da configuração nova (ticket 10). */
   projetosAguardandoConfirmacao?: string[];
+  /**
+   * Projetos removidos pelo usuário (ticket 11), por nome. O nome fica reservado para sempre (o YAML não o semeia de novo
+   * e as chaves das Tarefas não se misturam); o prefixo fica reservado enquanto houver Tarefas do projeto no histórico.
+   */
+  projetosRemovidos?: Record<string, { prefixo: string; quando: string }>;
   /** Última sincronização com o GitHub por projeto (ISO 8601): a próxima consulta de alterações parte daqui. */
   sincronizadoEm?: Record<string, string>;
   /** Quando a fábrica recebeu a última entrega do webhook (ISO 8601). Ausente = nenhuma ainda. Só para o painel do App. */

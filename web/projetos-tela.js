@@ -386,6 +386,34 @@ export async function iniciarProjetos(raiz) {
           : pendencias.map((p) => el("li", { texto: p })),
       ),
     ]);
+    // Remoção (ticket 11): pede confirmação explícita; a fábrica recusa se houver Tarefa em andamento.
+    const remocaoBox = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Remover projeto" }),
+      el("p", {
+        texto: `Apaga a configuração do projeto. O histórico das tarefas concluídas fica, e o prefixo ${atual.source.project} segue reservado enquanto esse histórico existir. Não há como desfazer.`,
+      }),
+    ]);
+    const remover = el("button", { type: "button", texto: "Remover projeto" });
+    remover.addEventListener("click", async () => {
+      if (!window.confirm(`Remover o projeto ${nome}? A configuração some e não volta sozinha.`)) return;
+      try {
+        const resposta = await api("POST", `/projetos/${encodeURIComponent(nome)}/remocao`, { confirmar: nome });
+        const reservado = resposta.prefixoReservado
+          ? ` O prefixo ${resposta.prefixoReservado} segue reservado pelo histórico.`
+          : "";
+        [...seletor.options].find((o) => o.value === nome)?.remove();
+        mensagem.textContent = `Projeto ${nome} removido.${reservado}`;
+        if (seletor.options.length > 0) {
+          seletor.value = seletor.options[0].value;
+          await carregar();
+        } else {
+          corpo.replaceChildren(el("p", { texto: "Nenhum projeto configurado." }));
+        }
+      } catch (erro) {
+        mensagem.textContent = erro.message;
+      }
+    });
+    remocaoBox.append(el("div", { class: "linha" }, [remover]));
     // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
     const formulario = el("fieldset", { class: "projeto-config-form" }, secoes);
     const editar = el("button", { type: "button", texto: "Editar configuração" });
@@ -399,7 +427,7 @@ export async function iniciarProjetos(raiz) {
     aplicarEstado(false);
     editar.addEventListener("click", () => aplicarEstado(true));
     cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
-    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario, situacaoBox);
+    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario, situacaoBox, remocaoBox);
   }
 
   seletor.addEventListener("change", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));

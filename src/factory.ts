@@ -109,7 +109,14 @@ import {
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { aguardandoConfirmacao, comConfirmacaoPendente, trocouFonteOuRepositorio } from "./projeto-fonte.js";
 import { projetoPausado } from "./projeto-pausa.js";
-import { conflitoProjeto, montarProjetoGithub, padroesDe, pessoasDoProjeto } from "./projetos-github.js";
+import { projetosReservados, semProjeto } from "./projeto-remocao.js";
+import {
+  conflitoProjeto,
+  montarProjetoGithub,
+  padroesDe,
+  pessoasDoProjeto,
+  type ReservaDeProjeto,
+} from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
@@ -1384,14 +1391,21 @@ export async function startFactory(opts: {
   // ADR-0017: o YAML só semeia o estado; depois da primeira execução, a configuração guardada é a que vale.
   await harness.commit(async (tx) => {
     const state = await tx.doc(StateDoc);
+    // Projeto removido pela interface (ticket 11) não volta do YAML: o nome fica reservado.
+    const removidos = state.projetosRemovidos ?? {};
     state.projetos = semearConfiguracoes(
       state.projetos ?? {},
-      opts.projects.map((p) => p.config),
+      opts.projects.map((p) => p.config).filter((config) => !(config.name in removidos)),
     );
   }, context);
   for (const p of opts.projects) {
     const guardada = lerConfiguracao((await readState()).projetos?.[p.config.name]);
     if (guardada) aplicarConfiguracao(guardada);
+  }
+  for (const nome of Object.keys((await readState()).projetosRemovidos ?? {})) {
+    projects.delete(nome);
+    bases.delete(nome);
+    criadosPelaInterface.delete(nome);
   }
 
   // Projetos criados pela UI voltam com o estado. Um nome que o YAML já usa não é sobrescrito (o YAML manda).
@@ -2022,6 +2036,7 @@ export async function startFactory(opts: {
         fonteRepo: "repo" in config.source ? config.source.repo : undefined,
       },
       [...existentes, ...salvosDe(await readState())],
+      projetosReservados(await readState()),
     );
   }
 
@@ -2162,7 +2177,7 @@ export async function startFactory(opts: {
     ajustarEstado?: (state: FactoryState) => void;
   }): Promise<{ status: number; body: unknown }> {
     const { config, destino } = projeto;
-    const conflitoDe = (existentes: ProjectConfig[]) =>
+    const conflitoDe = (existentes: ProjectConfig[], reservados: ReservaDeProjeto[]) =>
       conflitoProjeto(
         {
           nome: config.name,
@@ -2171,6 +2186,7 @@ export async function startFactory(opts: {
           fonteRepo: "repo" in config.source ? config.source.repo : undefined,
         },
         existentes,
+        reservados,
       );
     const existentesAgora = () => [...projects.values()].map((p) => p.config);
 
@@ -2184,7 +2200,7 @@ export async function startFactory(opts: {
     let registrar = false;
     await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
-      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)]);
+      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)], projetosReservados(state));
       if (conflito) {
         resposta = { status: 409, body: { error: conflito } };
         return;
@@ -3208,6 +3224,49 @@ export async function startFactory(opts: {
           pendencias,
           aguardandoConfirmacao: false,
         });
+      }
+      const remocaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/remocao$/);
+      if (remocaoMatch && req.method === "POST") {
+        const nome = decodeURIComponent(remocaoMatch[1] ?? "");
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const corpo = (await readBody(req)) as { confirmar?: unknown } | undefined;
+        if (!(await readState()).projetos?.[nome]) return json(res, 404, { error: `projeto ${nome} não existe` });
+        // Remover é irreversível: o nome do projeto precisa ser repetido no corpo, como confirmação explícita.
+        if (corpo?.confirmar !== nome)
+          return json(res, 400, { error: `confirme a remoção enviando "confirmar" com o nome do projeto: ${nome}` });
+        let emAndamento: string[] = [];
+        let removido = false;
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          if (!state.projetos?.[nome]) return;
+          // Com Tarefa em andamento, nada muda: a remoção só sai quando o projeto não tem nenhuma (ticket 11).
+          emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
+          if (emAndamento.length > 0) return;
+          const guardada = lerConfiguracao(state.projetos[nome]);
+          removido = true;
+          state.projetos = semProjeto(state.projetos, nome);
+          state.projetosGitHub = semProjeto(state.projetosGitHub, nome);
+          state.repos = semProjeto(state.repos, nome);
+          state.sincronizadoEm = semProjeto(state.sincronizadoEm, nome);
+          state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
+          state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
+          state.projetosRemovidos = {
+            ...state.projetosRemovidos,
+            [nome]: { prefixo: guardada?.source.project ?? "", quando: new Date(clock.now()).toISOString() },
+          };
+          // Dentro do commit: nenhuma Tarefa nova entra no projeto entre a gravação e a saída da memória.
+          projects.delete(nome);
+          bases.delete(nome);
+          criadosPelaInterface.delete(nome);
+        }, context);
+        if (emAndamento.length > 0)
+          return json(res, 409, {
+            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para remover o projeto`,
+            tarefasEmAndamento: emAndamento,
+          });
+        if (!removido) return json(res, 404, { error: `projeto ${nome} não existe` });
+        const reserva = projetosReservados(await readState()).find((r) => r.nome === nome);
+        return json(res, 200, { removido: nome, prefixoReservado: reserva?.prefixo ?? null });
       }
       if (route === "GET /telegram/configuracao") {
         const salvo = (await readState()).telegramConfig;

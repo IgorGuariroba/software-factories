@@ -133,6 +133,12 @@ export function montarProjetoGithub(opts: {
   return parsed.data;
 }
 
+/** Projeto removido que ainda reserva nome e, se tiver histórico de Tarefas, o prefixo (ticket 11). */
+export interface ReservaDeProjeto {
+  nome: string;
+  prefixo?: string;
+}
+
 /**
  * Conflito com o que já existe: o mesmo nome, o mesmo prefixo (sem diferenciar caixa, pois as chaves dos cards
  * colidiriam), ou a mesma Fonte de issues (GitHub ou GitLab) no mesmo repositório. Um repositório usado por Fontes
@@ -141,7 +147,14 @@ export function montarProjetoGithub(opts: {
 export function conflitoProjeto(
   novo: { nome: string; prefixo: string; fonteTipo: string; fonteRepo?: string },
   existentes: ProjectConfig[],
+  reservados: ReservaDeProjeto[] = [],
 ): string | undefined {
+  for (const r of reservados) {
+    if (r.nome === novo.nome) return `o nome ${r.nome} pertence a um projeto removido e não pode ser reutilizado`;
+    if (r.prefixo && r.prefixo.toUpperCase() === novo.prefixo.toUpperCase()) {
+      return `o prefixo ${r.prefixo} está reservado pelo projeto removido ${r.nome}, que tem histórico de tarefas`;
+    }
+  }
   for (const p of existentes) {
     if (p.name === novo.nome) return `já existe um projeto chamado ${novo.nome}`;
     if (p.source.project.toUpperCase() === novo.prefixo.toUpperCase()) {
