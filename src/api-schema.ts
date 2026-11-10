@@ -499,6 +499,13 @@ export const API_SCHEMA = {
         responses: ok,
       },
     },
+    "/projetos/github": {
+      post: {
+        summary:
+          "Cria um projeto de repositório do GitHub App a partir do catálogo (corpo: { repoId, nome, prefixo, ensaio? }). Modelos e estados vêm do primeiro projeto do YAML; ensaio é o padrão. Responde 201",
+        responses: ok,
+      },
+    },
     "/github/importar": {
       post: {
         summary:

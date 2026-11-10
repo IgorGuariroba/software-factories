@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { sugerirProjeto as sugerirNoServidor } from "../src/projetos-github.js";
 import {
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
+  sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
   visibilidade,
@@ -43,10 +45,15 @@ describe("visibilidade: público ou privado", () => {
 });
 
 describe("estadoImportacao: o que o botão faz em cada caso", () => {
-  it("sem projeto no YAML, não importa e diz como resolver", () => {
+  it("sem projeto, não importa e oferece criar o projeto", () => {
     const estado = estadoImportacao(repo({ plugado: null }));
-    expect(estado).toMatchObject({ rotulo: "Sem projeto", podeImportar: false, tom: "atencao" });
-    expect(estado.ajuda).toContain("YAML");
+    expect(estado).toMatchObject({
+      rotulo: "Sem projeto",
+      podeImportar: false,
+      criarProjeto: true,
+      rotuloBotao: "Criar projeto",
+      tom: "atencao",
+    });
   });
 
   it("repositório desplugado não importa", () => {
@@ -115,5 +122,24 @@ describe("mensagemCatalogo e andamento", () => {
   it("detecta importação em andamento, para a tela continuar consultando", () => {
     expect(temImportacaoEmAndamento([repo(), repo({ importacao: { status: "importando" } })])).toBe(true);
     expect(temImportacaoEmAndamento([repo({ importacao: { status: "ok" } })])).toBe(false);
+  });
+});
+
+describe("sugerirProjeto: a sugestão da tela é a mesma do servidor", () => {
+  it("nome e prefixo coincidem com src/projetos-github.ts para repositórios variados", () => {
+    for (const repo of [
+      "dono/software-factories",
+      "dono/Meu.Projeto",
+      "dono/1-api",
+      "dono/a",
+      "dono/x_y_z_w_v",
+      "d/--ab--",
+    ]) {
+      expect(sugerirProjeto(repo)).toEqual(sugerirNoServidor(repo));
+    }
+  });
+
+  it("sugere as iniciais das palavras como prefixo", () => {
+    expect(sugerirProjeto("dono/software-factories")).toEqual({ nome: "software-factories", prefixo: "SF" });
   });
 });

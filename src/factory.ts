@@ -20,7 +20,7 @@ import { synchronizeBase } from "./base-sync.js";
 import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
 import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
-import type { CardState, ProjectConfig } from "./config.js";
+import { type CardState, ProjectConfig } from "./config.js";
 import { runDelivery } from "./delivery-stage.js";
 import type { DemandSource } from "./demand-source.js";
 import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
@@ -69,6 +69,7 @@ import { createImplementationExtension, runImplementation, StageBlocked } from "
 import { aplicarImportacao } from "./importacao-issues.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
+import { conflitoProjeto, montarProjetoGithub, padroesDe } from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
@@ -347,6 +348,10 @@ export async function startFactory(opts: {
    * não está configurado. `fetch` é injetado nos testes.
    */
   githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
+  /** Cria a Fonte de um projeto de repositório GitHub criado pela UI (o mesmo que o daemon usa para os do YAML). */
+  createSource?: (config: ProjectConfig) => DemandSource;
+  /** Diretório do conhecimento de um projeto criado pela UI (`knowledge.md`, ADR-0010). */
+  knowledgeDirFor?: (name: string) => string;
   /** Agrupamento de avisos em rajada (ver `AvisoLote`). Padrão: 10 s de silêncio. Zero desliga o agrupamento. */
   avisos?: { janelaMs?: number };
 }): Promise<RunningFactory> {
@@ -368,52 +373,52 @@ export async function startFactory(opts: {
   const retroSettings = { ...opts.retro };
   let events!: DurableEventLog;
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
-  const projects = new Map(
-    opts.projects.map((p) => {
-      // Execução e SLAs usam o mesmo calendário efetivo, inclusive feriados legais.
-      if (p.config.activity === "business-hours") {
-        p = { ...p, config: { ...p.config, calendar: { ...p.config.calendar, legalHolidays: true } } };
-      }
-      const codeHost = p.codeHost ?? gitCodeHost;
-      const writer: EffectWriter = createEffectWriter({
-        ...p,
-        events: eventRecorder,
-        transitionLimit: TRANSITION_LIMIT,
-        codeHost,
-        // Branch da fábrica é a que ela criou, registrada no estado durável de uma Tarefa deste projeto; não um padrão
-        // de nome, nem uma branch adotada do remoto (que pode ser de uma pessoa).
-        isFactoryBranch: async (branch) =>
-          (await readState()).tasks.some(
-            (t) =>
-              t.project === p.config.name &&
-              t.implementation?.branch === branch &&
-              t.implementation.branchOrigin === "criada",
-          ),
-        isReviewedBranch: async (cardKey, cwd, draft) => {
-          const task = (await readState()).tasks.find((t) => t.project === p.config.name && t.key === cardKey);
-          const progress = task?.implementation;
-          if (
-            !progress ||
-            (await realpath(progress.worktree).catch(() => null)) !== cwd ||
-            progress.branch !== draft.branch ||
-            task.review?.status !== "aprovado"
-          )
-            return false;
-          if (p.config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== p.config.dryRun))
-            return false;
-          const base = progress.defaultBranch ?? (await defaultBranch(cwd));
-          return (
-            draft.base === base &&
-            (await git(cwd, ["rev-parse", "HEAD"])).trim() === task.review.head &&
-            task.review.head === progress.head
-          );
-        },
-        retro: retroSettings,
-      });
-      const channel: Channel = createCardCommentChannel({ source: p.source, writer });
-      return [p.config.name, { ...p, codeHost, writer, channel }] as const;
-    }),
-  );
+  /** Monta o que o daemon precisa de um projeto (escritor, canal, código). Usado no startup e ao criar um projeto. */
+  function montarProjeto(p: FactoryProject) {
+    // Execução e SLAs usam o mesmo calendário efetivo, inclusive feriados legais.
+    if (p.config.activity === "business-hours") {
+      p = { ...p, config: { ...p.config, calendar: { ...p.config.calendar, legalHolidays: true } } };
+    }
+    const codeHost = p.codeHost ?? gitCodeHost;
+    const writer: EffectWriter = createEffectWriter({
+      ...p,
+      events: eventRecorder,
+      transitionLimit: TRANSITION_LIMIT,
+      codeHost,
+      // Branch da fábrica é a que ela criou, registrada no estado durável de uma Tarefa deste projeto; não um padrão
+      // de nome, nem uma branch adotada do remoto (que pode ser de uma pessoa).
+      isFactoryBranch: async (branch) =>
+        (await readState()).tasks.some(
+          (t) =>
+            t.project === p.config.name &&
+            t.implementation?.branch === branch &&
+            t.implementation.branchOrigin === "criada",
+        ),
+      isReviewedBranch: async (cardKey, cwd, draft) => {
+        const task = (await readState()).tasks.find((t) => t.project === p.config.name && t.key === cardKey);
+        const progress = task?.implementation;
+        if (
+          !progress ||
+          (await realpath(progress.worktree).catch(() => null)) !== cwd ||
+          progress.branch !== draft.branch ||
+          task.review?.status !== "aprovado"
+        )
+          return false;
+        if (p.config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== p.config.dryRun))
+          return false;
+        const base = progress.defaultBranch ?? (await defaultBranch(cwd));
+        return (
+          draft.base === base &&
+          (await git(cwd, ["rev-parse", "HEAD"])).trim() === task.review.head &&
+          task.review.head === progress.head
+        );
+      },
+      retro: retroSettings,
+    });
+    const channel: Channel = createCardCommentChannel({ source: p.source, writer });
+    return { ...p, codeHost, writer, channel };
+  }
+  const projects = new Map(opts.projects.map((p) => [p.config.name, montarProjeto(p)] as const));
   // Os clones da fábrica ficam ao lado do estado durável, nunca na cópia de trabalho do usuário.
   const implementationDeps = {
     worktreesRoot: join(dirname(resolvePath(opts.statePath)), "worktrees"),
@@ -1158,6 +1163,35 @@ export async function startFactory(opts: {
 
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
+
+  /** Registra um projeto criado pela UI no processo, com a Fonte e o conhecimento do mesmo jeito que os do YAML. */
+  function registrarProjeto(config: ProjectConfig): void {
+    if (!opts.createSource) throw new Error("este daemon não cria a Fonte de projetos da interface");
+    const knowledgeDir = opts.knowledgeDirFor?.(config.name);
+    projects.set(
+      config.name,
+      montarProjeto({
+        config,
+        source: opts.createSource(config),
+        ...(knowledgeDir ? { knowledgeDir } : {}),
+      }),
+    );
+  }
+
+  // Projetos criados pela UI voltam com o estado. Um nome que o YAML já usa não é sobrescrito (o YAML manda).
+  for (const [nome, salvo] of Object.entries((await readState()).projetosGitHub ?? {})) {
+    if (projects.has(nome)) continue;
+    const lido = ProjectConfig.safeParse(JSON.parse(salvo));
+    if (!lido.success) {
+      console.error(`[fábrica] projeto ${nome} salvo pela interface está inválido e não foi carregado`);
+      continue;
+    }
+    if (!opts.createSource) {
+      console.error(`[fábrica] projeto ${nome} salvo pela interface não carregado: este daemon não cria Fontes`);
+      continue;
+    }
+    registrarProjeto(lido.data);
+  }
   retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
   if (!retroSettings.repo)
     console.warn(
@@ -1706,6 +1740,70 @@ export async function startFactory(opts: {
         };
       }, context);
     }
+  }
+
+  /**
+   * Cria um projeto de repositório do catálogo do App (ADR-0016). Modelos e estados vêm do primeiro projeto do YAML, e o
+   * projeto nasce em ensaio por padrão. Nome, prefixo e repositório não podem repetir o que já existe.
+   */
+  async function criarProjetoGithub(corpo: {
+    repoId: number;
+    nome: string;
+    prefixo: string;
+    ensaio: boolean;
+  }): Promise<{ status: number; body: unknown }> {
+    if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
+    const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
+    if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
+    const app = await appChecker.status();
+    if (!app.configurado || app.erro) return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
+    const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
+    if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
+
+    let config: ProjectConfig;
+    try {
+      config = montarProjetoGithub({
+        padroes: padroesDe(referencia.config),
+        repo: repo.nome,
+        nome: corpo.nome,
+        prefixo: corpo.prefixo,
+        ensaio: corpo.ensaio,
+      });
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
+    }
+
+    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
+    let registrar = false;
+    await harness.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
+      const salvos = Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
+        const lido = ProjectConfig.safeParse(JSON.parse(t));
+        return lido.success ? [lido.data] : [];
+      });
+      const existentes = [...projects.values()].map((p) => p.config).concat(salvos);
+      const conflito = conflitoProjeto(
+        { nome: config.name, prefixo: config.source.project, repo: repo.nome },
+        existentes,
+      );
+      if (conflito) {
+        resposta = { status: 409, body: { error: conflito } };
+        return;
+      }
+      state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
+      state.repos = {
+        ...state.repos,
+        [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
+      };
+      registrar = true;
+      resposta = {
+        status: 201,
+        body: { projeto: config.name, repo: repo.nome, prefixo: config.source.project, ensaio: config.dryRun },
+      };
+    }, context);
+    if (registrar) registrarProjeto(config);
+    return resposta;
   }
 
   /**
@@ -2417,6 +2515,21 @@ export async function startFactory(opts: {
       if (route === "GET /repos") return json(res, 200, await listRepos());
       if (route === "GET /github-app") return json(res, 200, await githubAppPanel());
       if (route === "GET /github/repos") return json(res, 200, await githubReposCatalog());
+      if (route === "POST /projetos/github") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as
+          | { repoId?: unknown; nome?: unknown; prefixo?: unknown; ensaio?: unknown }
+          | undefined;
+        if (!Number.isInteger(body?.repoId) || typeof body?.nome !== "string" || typeof body?.prefixo !== "string")
+          return json(res, 400, { error: "informe repoId, nome e prefixo do projeto" });
+        const result = await criarProjetoGithub({
+          repoId: body.repoId as number,
+          nome: body.nome.trim(),
+          prefixo: body.prefixo.trim().toUpperCase(),
+          ensaio: body.ensaio !== false,
+        });
+        return json(res, result.status, result.body);
+      }
       if (route === "POST /github/importar") {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { repoId?: unknown } | undefined;

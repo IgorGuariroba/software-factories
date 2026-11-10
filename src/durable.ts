@@ -322,6 +322,12 @@ export type FactoryState = {
    * antigos: nenhum repositório importado ainda.
    */
   importacoes?: Record<string, ImportacaoRepo>;
+  /**
+   * Projetos de repositório GitHub criados pela página Repositórios (ADR-0016), por nome. Entram na fábrica junto com os
+   * do YAML no startup; um nome igual ao de um YAML é recusado na criação, então o YAML nunca é sobrescrito.
+   * Guardado como JSON (o estado precisa ser compatível com JSON); no startup cada um passa de novo pelo schema.
+   */
+  projetosGitHub?: Record<string, string>;
 };
 
 /**

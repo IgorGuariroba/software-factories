@@ -12,6 +12,28 @@ export function filtrarCatalogo(repos, termo) {
   return repos.filter((r) => r.nome.toLowerCase().includes(busca) || r.dono.toLowerCase().includes(busca));
 }
 
+/**
+ * Nome e prefixo sugeridos para o formulário de projeto. Espelha `sugerirProjeto` de src/projetos-github.ts: um teste
+ * (test/web-repositorios-github.test.ts) garante que os dois continuam iguais.
+ * @param {string} repo `dono/nome`
+ */
+export function sugerirProjeto(repo) {
+  const base = (repo.split("/")[1] ?? repo).toLowerCase();
+  let nome = base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!/^[a-z]/.test(nome)) nome = `p-${nome}`;
+  nome = nome.slice(0, 40).replace(/-+$/, "");
+  if (nome.length < 2) nome = `${nome}-projeto`;
+  const palavras = base.split(/[^a-z0-9]+/).filter(Boolean);
+  let prefixo = palavras
+    .map((p) => p[0] ?? "")
+    .join("")
+    .toUpperCase()
+    .slice(0, 4);
+  if (prefixo.length < 2) prefixo = `${base.replace(/[^a-z0-9]/g, "")}XX`.slice(0, 2).toUpperCase();
+  if (!/^[A-Z]/.test(prefixo)) prefixo = `P${prefixo}`.slice(0, 4);
+  return { nome, prefixo };
+}
+
 /** Público ou privado, como o GitHub mostra. */
 export const visibilidade = (repo) => (repo.privado ? "Privado" : "Público");
 
@@ -26,7 +48,9 @@ export function estadoImportacao(repo) {
       rotulo: "Sem projeto",
       tom: "atencao",
       podeImportar: false,
-      ajuda: "Configure um projeto com este repositório no YAML para importar.",
+      criarProjeto: true,
+      rotuloBotao: "Criar projeto",
+      ajuda: "Crie um projeto para este repositório para poder importar as issues.",
     };
   }
   if (repo.plugado.status === "desativado") {

@@ -76,6 +76,9 @@ export async function startDaemon(opts: {
     teams: opts.teams,
     management: opts.management,
     retro: opts.retro,
+    // Projetos criados pela interface (ADR-0016) usam a mesma Fonte e o mesmo lugar de conhecimento dos do YAML.
+    createSource: (config) => sourceFor(opts.sources, config),
+    knowledgeDirFor: (name) => join(opts.configDir, name),
     // O conhecimento de cada projeto fica ao lado da config: <configDir>/<projeto>/knowledge.md (ADR-0010).
     projects: configs.map((config) => ({
       config,
