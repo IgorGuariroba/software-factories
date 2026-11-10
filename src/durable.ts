@@ -352,6 +352,8 @@ export type ImportacaoRepo = {
   /** Mensagem do último erro, sem token nem chave. Limpa quando a próxima importação dá certo. */
   ultimoErro?: string;
   installationId?: number;
+  /** O que a última importação concluída fez com as issues abertas. */
+  ultimoResultado?: { criadas: number; vinculadas: number; atualizadas: number; ignoradas: number };
 };
 
 /** Estado do repositório de um projeto monitorado, mudado por desplugue ou por eventos da instalação do App. */

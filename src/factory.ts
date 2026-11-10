@@ -24,6 +24,7 @@ import type { CardState, ProjectConfig } from "./config.js";
 import { runDelivery } from "./delivery-stage.js";
 import type { DemandSource } from "./demand-source.js";
 import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
+import type { ImportacaoRepo } from "./durable.js";
 import {
   copyOutOfCommit,
   createTarefaTask,
@@ -65,6 +66,7 @@ import {
   type WebhookProject,
 } from "./github-webhook.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
+import { aplicarImportacao } from "./importacao-issues.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
@@ -163,7 +165,10 @@ export interface GitHubReposCatalog {
   configurado: boolean;
   erro?: string;
   consultadoEm: string;
-  repos: (CatalogoRepo & { plugado: { projeto: string; status: "ativo" | "desativado" } | null })[];
+  repos: (CatalogoRepo & {
+    plugado: { projeto: string; status: "ativo" | "desativado" } | null;
+    importacao: ImportacaoRepo | null;
+  })[];
 }
 
 export interface RunningFactory {
@@ -180,6 +185,8 @@ export interface RunningFactory {
   githubAppPanel(): Promise<GitHubAppPanel>;
   /** Catálogo dos repositórios que o App acessa, com o plugue atual de cada um. */
   githubReposCatalog(): Promise<GitHubReposCatalog>;
+  /** Pede a importação das issues abertas de um repositório do App; responde na hora, a leitura roda na fila. */
+  importarRepo(repoId: number): Promise<{ status: number; body: unknown }>;
   /** URL local do receptor do webhook, quando ele está ligado. */
   webhookUrl?: string;
   close(): Promise<void>;
@@ -1612,6 +1619,7 @@ export async function startFactory(opts: {
   async function githubReposCatalog(): Promise<GitHubReposCatalog> {
     const app = await appChecker.status();
     const plugados = new Map((await listRepos()).map((r) => [r.repo.toLowerCase(), r]));
+    const importacoes = (await readState()).importacoes ?? {};
     const repos = app.configurado && !app.erro ? catalogoDoApp(app) : [];
     return {
       configurado: app.configurado,
@@ -1622,9 +1630,127 @@ export async function startFactory(opts: {
         return {
           ...r,
           plugado: plugado ? { projeto: plugado.project, status: plugado.status } : null,
+          importacao: importacoes[String(r.id)] ?? null,
         };
       }),
     };
+  }
+
+  /**
+   * Fila de importações (Fase 3): uma por vez, em ordem, separada da fila de buscas. Cada item relê o estado antes de
+   * rodar, para não repetir um repositório que já terminou.
+   */
+  let importando: Promise<void> = Promise.resolve();
+  function enfileirarImportacao(repoId: number): void {
+    importando = importando
+      .then(() => executarImportacao(repoId))
+      .catch((err) => console.error("[fábrica] importação falhou:", redactSecrets(String(err))));
+  }
+
+  /** Lê as issues abertas do repositório e aplica tudo numa só escrita: se a leitura falhar, nada muda. */
+  async function executarImportacao(repoId: number): Promise<void> {
+    const registro = (await readState()).importacoes?.[String(repoId)];
+    if (registro?.status !== "importando") return;
+    const repo = registro.repo;
+    try {
+      const app = await appChecker.status();
+      if (!app.configurado || app.erro) throw new Error(app.erro ?? "GitHub App não configurado");
+      const atual = catalogoDoApp(app).find((r) => r.id === repoId);
+      if (!atual) throw new Error(`${repo} não está mais no catálogo do App`);
+      const project = projectByRepo(atual.nome);
+      if (!project) throw new Error(`nenhum projeto monitora ${atual.nome}`);
+      const issues = await appChecker.issuesAbertas(atual.nome, atual.instalacaoId);
+      let effects: WebhookEffect[] = [];
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        const projeto = webhookProjects().find((p) => p.name === project);
+        if (!projeto) throw new Error(`projeto ${project} não está carregado`);
+        const aplicado = aplicarImportacao({
+          state,
+          project: projeto,
+          repoId,
+          repo: atual.nome,
+          installationId: atual.instalacaoId,
+          issues,
+          newRef: newTaskRef,
+        });
+        effects = aplicado.effects;
+        state.importacoes = {
+          ...state.importacoes,
+          [String(repoId)]: {
+            repoId,
+            repo: atual.nome,
+            status: "ok",
+            ultimaImportacaoEm: new Date(clock.now()).toISOString(),
+            installationId: atual.instalacaoId,
+            ultimoResultado: aplicado.resultado,
+          },
+        };
+      }, context);
+      await runWebhookEffects(effects);
+    } catch (err) {
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        const anterior = state.importacoes?.[String(repoId)];
+        state.importacoes = {
+          ...state.importacoes,
+          [String(repoId)]: {
+            repoId,
+            repo,
+            ...(anterior?.installationId !== undefined ? { installationId: anterior.installationId } : {}),
+            status: "erro",
+            ...(anterior?.ultimaImportacaoEm ? { ultimaImportacaoEm: anterior.ultimaImportacaoEm } : {}),
+            ...(anterior?.ultimoResultado ? { ultimoResultado: anterior.ultimoResultado } : {}),
+            ultimoErro: redactSecrets(err instanceof Error ? err.message : "falha desconhecida"),
+          },
+        };
+      }, context);
+    }
+  }
+
+  /**
+   * Pedido de importação. Só aceita repositório do catálogo do App com projeto configurado e ativo. Já em importação,
+   * responde o registro atual sem enfileirar outra vez.
+   */
+  async function importarRepo(repoId: number): Promise<{ status: number; body: unknown }> {
+    const app = await appChecker.status();
+    if (!app.configurado || app.erro) return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
+    const repo = catalogoDoApp(app).find((r) => r.id === repoId);
+    if (!repo) return { status: 404, body: { error: `repositório ${repoId} não está no catálogo do App` } };
+    const project = projectByRepo(repo.nome);
+    if (!project) {
+      return {
+        status: 409,
+        body: { error: `nenhum projeto monitora ${repo.nome}; configure o projeto no YAML primeiro` },
+      };
+    }
+    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "importação não registrada" } };
+    let enfileirar = false;
+    await harness.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      if (repoDesativado(state, project)) {
+        resposta = { status: 409, body: { error: `o repositório ${repo.nome} está desplugado` } };
+        return;
+      }
+      const atual = state.importacoes?.[String(repoId)];
+      if (atual?.status === "importando") {
+        resposta = { status: 202, body: atual };
+        return;
+      }
+      const registro = {
+        repoId,
+        repo: repo.nome,
+        status: "importando" as const,
+        installationId: repo.instalacaoId,
+        ...(atual?.ultimaImportacaoEm ? { ultimaImportacaoEm: atual.ultimaImportacaoEm } : {}),
+        ...(atual?.ultimoResultado ? { ultimoResultado: atual.ultimoResultado } : {}),
+      };
+      state.importacoes = { ...state.importacoes, [String(repoId)]: registro };
+      resposta = { status: 202, body: registro };
+      enfileirar = true;
+    }, context);
+    if (enfileirar) enfileirarImportacao(repoId);
+    return resposta;
   }
 
   async function githubAppPanel(): Promise<GitHubAppPanel> {
@@ -2291,6 +2417,14 @@ export async function startFactory(opts: {
       if (route === "GET /repos") return json(res, 200, await listRepos());
       if (route === "GET /github-app") return json(res, 200, await githubAppPanel());
       if (route === "GET /github/repos") return json(res, 200, await githubReposCatalog());
+      if (route === "POST /github/importar") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as { repoId?: unknown } | undefined;
+        if (!Number.isInteger(body?.repoId) || (body?.repoId as number) <= 0)
+          return json(res, 400, { error: "informe repoId, o id numérico do repositório no GitHub" });
+        const result = await importarRepo(body?.repoId as number);
+        return json(res, result.status, result.body);
+      }
       if (route === "POST /repos/plugar" || route === "POST /repos/desplugar") {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { repo?: unknown; force?: unknown } | undefined;
@@ -2354,6 +2488,15 @@ export async function startFactory(opts: {
   void serializedTask(reconcileRepos).catch((err) =>
     console.error("[fábrica] sincronização de startup falhou:", redactSecrets(String(err))),
   );
+  // Importações que o daemon deixou em `importando` (ele caiu no meio) voltam para a fila; a escrita é uma só, então
+  // rodar de novo não duplica nada.
+  void readState()
+    .then((state) => {
+      for (const registro of Object.values(state.importacoes ?? {})) {
+        if (registro.status === "importando") enfileirarImportacao(registro.repoId);
+      }
+    })
+    .catch((err) => console.error("[fábrica] retomada das importações falhou:", redactSecrets(String(err))));
   // O timer pula o tick se ainda houver busca pendente, para não acumular buscas com a Fonte lenta.
   const pollTimer =
     opts.pollIntervalMs &&
@@ -2414,6 +2557,7 @@ export async function startFactory(opts: {
     unplugRepo,
     githubAppPanel,
     githubReposCatalog,
+    importarRepo,
     close: async () => {
       closing = true;
       await avisos.flush();

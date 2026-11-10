@@ -267,7 +267,7 @@ export function applyIssueDelivery(opts: {
 }
 
 /** Uma issue vira Tarefa só se está aberta, num estado elegível, fora dos épicos e dentro das chaves permitidas. */
-function isEligible(config: ProjectConfig, cardState: CardState, issue: RawIssue): boolean {
+export function isEligible(config: ProjectConfig, cardState: CardState, issue: RawIssue): boolean {
   if (config.source.type !== "github") return false;
   if (issue.state !== "open") return false;
   if (!ELIGIBLE.has(cardState)) return false;
