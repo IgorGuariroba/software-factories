@@ -148,7 +148,7 @@ describe("Fonte Jira: criação de comentário", () => {
     const { id } = await source.addComment("PROJ-1", "Título\n\nnovo");
 
     expect(id).not.toBe(older);
-    expect((await source.listComments("PROJ-1")).find((c) => c.id === id)?.body).toBe("Título\n\nnovo");
+    expect((await source.listComments("PROJ-1")).find((c) => c.id === id)?.body).toBe("Título\nnovo");
   });
 
   it("sem id na resposta e sem comentário correspondente, lança erro em vez de inventar um id", async () => {

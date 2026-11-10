@@ -432,7 +432,18 @@ export class JiraDemandSource implements DemandSource {
     const viaRest = await this.restComment("POST", `issue/${encodeURIComponent(key)}/comment`, body);
     if (viaRest?.id) return { id: viaRest.id };
     if (!viaRest) {
-      const args = ["jira", "workitem", "comment", "create", "--key", key, "--body", body, "--json"];
+      // O acli aceita ADF no corpo: assim a menção vira nó `mention`, e não texto literal (ADR-0020).
+      const args = [
+        "jira",
+        "workitem",
+        "comment",
+        "create",
+        "--key",
+        key,
+        "--body",
+        JSON.stringify(textToAdf(body)),
+        "--json",
+      ];
       const stdout = (await this.run(args, command, key)) ?? "";
       let parsed: unknown;
       try {
@@ -457,7 +468,18 @@ export class JiraDemandSource implements DemandSource {
   async editComment(key: string, commentId: string, body: string): Promise<void> {
     const path = `issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(commentId)}`;
     if (await this.restComment("PUT", path, body)) return;
-    const args = ["jira", "workitem", "comment", "update", "--key", key, "--id", commentId, "--body", body];
+    const args = [
+      "jira",
+      "workitem",
+      "comment",
+      "update",
+      "--key",
+      key,
+      "--id",
+      commentId,
+      "--body",
+      JSON.stringify(textToAdf(body)),
+    ];
     await this.run(args, `jira workitem comment update --key ${key} --id ${commentId}`, key);
   }
 
