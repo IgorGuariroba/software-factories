@@ -113,14 +113,23 @@ export async function iniciarProjetos(raiz) {
   );
   desenharCofre();
 
+  // Duas áreas com rótulo: o que vale para o usuário inteiro, e o que é de cada projeto (o seletor fica só nela).
   raiz.replaceChildren(
+    mensagem,
+    el("h3", { class: "grupo-titulo", texto: "Globais ao usuário" }),
+    el("p", { class: "grupo-descricao", texto: "Valem para todos os projetos: cofre de credenciais e Telegram." }),
     cofreBox,
     telegramBox,
+    el("h3", { class: "grupo-titulo", texto: "Por projeto" }),
+    el("p", {
+      class: "grupo-descricao",
+      texto:
+        "Fonte, pessoas, repositórios, provedores, ensaio, conteúdo no Telegram, estado e remoção de cada projeto.",
+    }),
     el("div", { class: "projeto-config-topo" }, [
       el("label", { for: "projeto-config-nome", texto: "Projeto " }),
       seletor,
     ]),
-    mensagem,
     corpo,
   );
   desenharTelegram(telegramBox, () => mensagem, seletorDeCredencial);

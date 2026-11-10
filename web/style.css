@@ -1964,6 +1964,19 @@ details[open] > summary.disclosure .chevron {
   font-weight: 700;
   letter-spacing: 0.07em;
 }
+/* Rótulos de área na página de Projetos: globais ao usuário e por projeto (mesmo tom da legenda da barra lateral). */
+.grupo-titulo {
+  margin: 28px 0 2px;
+  color: var(--suave);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.grupo-descricao {
+  margin: 0 0 12px;
+  color: var(--suave);
+}
 .navegacao-principal a {
   padding: 10px 12px;
   border-radius: var(--r-controle);
