@@ -107,6 +107,7 @@ import {
   pessoasDeAssignees,
 } from "./pessoas-fonte.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
+import { projetoPausado } from "./projeto-pausa.js";
 import { conflitoProjeto, montarProjetoGithub, padroesDe, pessoasDoProjeto } from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
@@ -188,6 +189,10 @@ export interface FactoryCommands {
   /** Veta, dentro do prazo, a Tarefa de um card que já estava em andamento: ela fica `vetada` e não age mais no card. */
   veto(id: string): Promise<VetoResult>;
   setDaemonPaused(paused: boolean): Promise<void>;
+  /** Pausa um projeto ativo (ticket 09): nada novo começa nele até a retomada. */
+  pausarProjeto(nome: string): Promise<void>;
+  /** Retoma um projeto pausado; as Tarefas que a pausa parou voltam para a fila. */
+  retomarProjeto(nome: string): Promise<void>;
   reorder(ids: string[]): Promise<void>;
   /** Responde localmente sem publicar na Fonte; false se a pergunta não está disponível. */
   answerQuestion?(id: string, n: number, answer: string): Promise<boolean>;
@@ -1469,7 +1474,13 @@ export async function startFactory(opts: {
     const notice = await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
       const task = state.tasks.find((t) => t.id === id);
-      if (state.daemonPaused || !task || task.pauseRequested || !["ativa", "aguardando-humano"].includes(task.status))
+      if (
+        state.daemonPaused ||
+        !task ||
+        task.pauseRequested ||
+        projetoPausado(state, task.project) ||
+        !["ativa", "aguardando-humano"].includes(task.status)
+      )
         return undefined;
       const q = task.questions?.find((item) => item.n === n);
       if (q?.teamsNotice?.status !== "pending" || q.answer !== null) return undefined;
@@ -1553,6 +1564,8 @@ export async function startFactory(opts: {
     for (const { config, source } of projects.values()) {
       // Repositório desativado não entra na busca: nenhuma Tarefa nova dele (ADR-0015).
       if (repoDesativado(state, config.name)) continue;
+      // Projeto pausado pelo usuário não busca cards novos (ticket 09).
+      if (projetoPausado(state, config.name)) continue;
       // Projeto criado pela UI e incompleto não executa: a interface mostra o que falta (ADR-0022).
       if (pendenciasBloqueantes(config.name).length > 0) continue;
       const cards = await source.listAssignedCards(config.source.assignee);
@@ -1630,6 +1643,8 @@ export async function startFactory(opts: {
       if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
       // Repositório desativado: a Tarefa espera o replugue ou o desplugue (ADR-0015).
       if (repoDesativado(state, task.project)) continue;
+      // Projeto pausado: a Tarefa espera a retomada, sem começar (ticket 09).
+      if (projetoPausado(state, task.project)) continue;
       // Projeto criado pela UI e incompleto não executa nenhuma ação (ADR-0022): a Tarefa espera o projeto ficar pronto.
       if (pendenciasBloqueantes(task.project).length > 0) continue;
       const project = projects.get(task.project);
@@ -2362,6 +2377,10 @@ export async function startFactory(opts: {
         resposta = { status: 409, body: { error: `o repositório ${repo.nome} está desplugado` } };
         return;
       }
+      if (projetoPausado(state, project)) {
+        resposta = { status: 409, body: { error: `projeto ${project} pausado: retome-o para importar` } };
+        return;
+      }
       const atual = state.importacoes?.[String(repoId)];
       if (atual?.status === "importando") {
         resposta = { status: 202, body: atual };
@@ -2565,6 +2584,19 @@ export async function startFactory(opts: {
       if (gate !== null) await harness.abortTask(gate as TaskId, context);
       return result;
     },
+    pausarProjeto: (nome: string) =>
+      harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        state.projetosPausados = [...new Set([...(state.projetosPausados ?? []), nome])];
+      }, context),
+    retomarProjeto: (nome: string) =>
+      harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
+        // Como no daemon: as Tarefas paradas só pela pausa do projeto voltam para a fila; as pausadas pelo usuário não.
+        for (const t of state.tasks)
+          if (t.project === nome && t.status === "pausada" && !t.pauseRequested) t.status = "enfileirada";
+      }, context),
     setDaemonPaused: (paused: boolean) =>
       harness.commit(async (tx) => {
         const state = await tx.doc(StateDoc);
@@ -2970,6 +3002,7 @@ export async function startFactory(opts: {
             const currentQuestion = current?.questions?.find((item) => item.n === n);
             if (
               currentState.daemonPaused ||
+              (current && projetoPausado(currentState, current.project)) ||
               current?.status !== "aguardando-humano" ||
               current.pauseRequested ||
               currentQuestion?.publication !== "draft" ||
@@ -3125,7 +3158,28 @@ export async function startFactory(opts: {
         const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
         if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
         const pendencias = pendenciasDeConfiguracao(guardada);
-        return json(res, 200, { estado: estadoDoProjeto(pendencias), pendencias });
+        const pausado = projetoPausado(await readState(), nome);
+        return json(res, 200, { estado: estadoDoProjeto(pendencias, pausado), pendencias });
+      }
+      const pausaMatch = url.pathname.match(/^\/projetos\/([^/]+)\/(pausa|retomada)$/);
+      if (pausaMatch && req.method === "POST") {
+        const nome = decodeURIComponent(pausaMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        const pendencias = pendenciasDeConfiguracao(guardada);
+        if (pausaMatch[2] === "pausa") {
+          // Só um projeto ativo se pausa: um incompleto já não executa (ADR-0022).
+          if (pendencias.length > 0)
+            return json(res, 409, { error: `projeto ${nome} incompleto: ${pendencias.join("; ")}` });
+          await commands.pausarProjeto(nome);
+        } else {
+          // Retomar revalida a configuração: volta a ativo só sem pendências; senão segue pausado com o que falta.
+          if (pendencias.length > 0)
+            return json(res, 409, { error: `projeto ${nome} incompleto: ${pendencias.join("; ")}` });
+          await commands.retomarProjeto(nome);
+        }
+        const pausado = projetoPausado(await readState(), nome);
+        return json(res, 200, { estado: estadoDoProjeto(pendencias, pausado), pendencias });
       }
       if (route === "GET /telegram/configuracao") {
         const salvo = (await readState()).telegramConfig;

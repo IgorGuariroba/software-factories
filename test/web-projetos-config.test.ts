@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  acoesDoEstado,
   camposDaFonte,
   configDoFormulario,
   estadoDoFormulario,
@@ -217,5 +218,17 @@ describe("provedores permitidos na página de projeto (ticket 08)", () => {
     const base = { fonte: { type: "jira" }, perfis: [], pessoas: [], dryRun: false };
     expect(configDoFormulario(atual, { ...base, provedores: ["openai"] }).allowedProviders).toEqual(["openai"]);
     expect(configDoFormulario(atual, base).allowedProviders).toEqual(["anthropic"]);
+  });
+});
+
+describe("página de configuração de projeto: pausa e retomada (ticket 09)", () => {
+  it("só ativo pausa e só pausado retoma; incompleto não tem nenhuma das duas ações", () => {
+    expect(acoesDoEstado("ativo")).toMatchObject({ pausar: true, retomar: false });
+    expect(acoesDoEstado("pausado")).toMatchObject({ pausar: false, retomar: true });
+    expect(acoesDoEstado("incompleto")).toMatchObject({ pausar: false, retomar: false });
+  });
+
+  it("o texto do estado diz que a configuração foi preservada quando pausado", () => {
+    expect(acoesDoEstado("pausado").texto).toContain("preservada");
   });
 });

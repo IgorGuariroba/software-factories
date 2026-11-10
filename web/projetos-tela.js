@@ -3,6 +3,7 @@
 import { api, getSegredos } from "./api.js";
 import { desenharEtapasAgente } from "./etapas-agente-tela.js";
 import {
+  acoesDoEstado,
   camposDaFonte,
   configDoFormulario,
   estadoDoFormulario,
@@ -250,6 +251,33 @@ export async function iniciarProjetos(raiz) {
       el("option", { valor: "minimal", texto: "mínimo" }),
     ]);
     conteudoTelegram.value = atual.telegram?.content ?? "full";
+    // Pausa e retomada (ticket 09): a configuração fica como está; o estado vem da API depois de cada ação.
+    const acoes = acoesDoEstado(situacao.estado);
+    const pausar = el("button", { type: "button", texto: "Pausar projeto" });
+    const retomar = el("button", { type: "button", texto: "Retomar projeto" });
+    pausar.hidden = !acoes.pausar;
+    retomar.hidden = !acoes.retomar;
+    const aplicarPausa = async (chamar, sucesso) => {
+      try {
+        const resposta = await chamar();
+        mensagem.textContent = resposta.estado === "pausado" ? sucesso.pausado : sucesso.ativo;
+        await carregar();
+      } catch (erro) {
+        mensagem.textContent = erro.message;
+      }
+    };
+    pausar.addEventListener("click", () =>
+      aplicarPausa(() => api("POST", `/projetos/${encodeURIComponent(nome)}/pausa`), {
+        pausado: "Projeto pausado. A configuração foi preservada.",
+        ativo: "Projeto ativo.",
+      }),
+    );
+    retomar.addEventListener("click", () =>
+      aplicarPausa(() => api("POST", `/projetos/${encodeURIComponent(nome)}/retomada`), {
+        pausado: "Projeto ainda pausado.",
+        ativo: "Projeto retomado e ativo.",
+      }),
+    );
     const salvar = el("button", { type: "button", texto: "Salvar configuração" });
     salvar.addEventListener("click", async () => {
       try {
@@ -321,23 +349,6 @@ export async function iniciarProjetos(raiz) {
         salvar,
       ]),
       el("section", { class: "bloco" }, [
-        el("h3", { texto: "Estado" }),
-        el("p", {
-          texto:
-            situacao.estado === "ativo"
-              ? "Ativo: a fábrica executa este projeto."
-              : "Incompleto: a fábrica não executa este projeto até completar o que falta.",
-        }),
-        el("h3", { texto: "Pendências" }),
-        el(
-          "ul",
-          {},
-          pendencias.length === 0
-            ? [el("li", { texto: "Nenhuma pendência." })]
-            : pendencias.map((p) => el("li", { texto: p })),
-        ),
-      ]),
-      el("section", { class: "bloco" }, [
         el("h3", { texto: "Histórico de alterações" }),
         el(
           "ul",
@@ -348,6 +359,20 @@ export async function iniciarProjetos(raiz) {
         ),
       ]),
     ];
+    // Estado fica fora do formulário travado: pausar e retomar não são edições da configuração (ticket 09).
+    const situacaoBox = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Estado" }),
+      el("p", { texto: acoesDoEstado(situacao.estado).texto }),
+      el("div", { class: "linha" }, [pausar, retomar]),
+      el("h3", { texto: "Pendências" }),
+      el(
+        "ul",
+        {},
+        pendencias.length === 0
+          ? [el("li", { texto: "Nenhuma pendência." })]
+          : pendencias.map((p) => el("li", { texto: p })),
+      ),
+    ]);
     // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
     const formulario = el("fieldset", { class: "projeto-config-form" }, secoes);
     const editar = el("button", { type: "button", texto: "Editar configuração" });
@@ -361,7 +386,7 @@ export async function iniciarProjetos(raiz) {
     aplicarEstado(false);
     editar.addEventListener("click", () => aplicarEstado(true));
     cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
-    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario);
+    corpo.replaceChildren(el("div", { class: "linha" }, [editar, cancelar]), formulario, situacaoBox);
   }
 
   seletor.addEventListener("change", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));

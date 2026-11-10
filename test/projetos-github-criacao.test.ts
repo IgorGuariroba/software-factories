@@ -272,7 +272,7 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
       assignee: "IgorGuariroba",
     };
     factory = await subirFabrica({ createSource: () => new MemoryDemandSource([card]) });
-    await chamada(factory, "POST", "/projetos/github", corpo());
+    await chamada(factory, "POST", "/projetos/github", corpo({ horario: "always" }));
     const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
     const completo = {
       ...atual,

@@ -2,9 +2,10 @@ import type { ProjectConfig } from "../../../config.js";
 import { canalDaPessoa, identidadeTeams, pessoasDoPapel } from "../../profiles/index.js";
 
 /**
- * Estado do projeto como a interface mostra. `incompleto` não executa; `ativo` executa. `pausado` entra na fatia 09.
+ * Estado do projeto como a interface mostra. `incompleto` não executa; `ativo` executa; `pausado` não executa até o
+ * usuário retomar (ticket 09).
  */
-export type EstadoProjeto = "incompleto" | "ativo";
+export type EstadoProjeto = "incompleto" | "ativo" | "pausado";
 
 /**
  * O que falta para o projeto ficar ativo (ADR-0022). Só avisos: a configuração salva mesmo incompleta, e a interface
@@ -26,7 +27,11 @@ export function pendenciasDeConfiguracao(config: ProjectConfig): string[] {
   return pendencias;
 }
 
-/** Estado do projeto a partir das pendências: sem nenhuma, ativo. */
-export function estadoDoProjeto(pendencias: string[]): EstadoProjeto {
+/**
+ * Estado do projeto a partir das pendências: sem nenhuma, ativo. Um projeto pausado segue pausado até ser retomado, e
+ * a retomada só o devolve a ativo se ainda não houver pendências.
+ */
+export function estadoDoProjeto(pendencias: string[], pausado = false): EstadoProjeto {
+  if (pausado) return "pausado";
   return pendencias.length === 0 ? "ativo" : "incompleto";
 }

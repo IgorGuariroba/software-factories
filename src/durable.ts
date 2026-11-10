@@ -12,6 +12,7 @@ import type { QuestionRef } from "./channel.js";
 import type { CardState, FormatCommand, TestCommand } from "./config.js";
 import type { EncaminhamentoTecnico } from "./encaminhamento-tecnico.js";
 import type { FactoryEvent } from "./events.js";
+import { projetoPausado } from "./projeto-pausa.js";
 import { repoDesativado } from "./repositorios.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import type { TriageResult } from "./triage.js";
@@ -317,6 +318,8 @@ export type FactoryState = {
    * YAML manda). Só guarda o que mudou em runtime: desativação e a instalação de origem.
    */
   repos?: Record<string, RepoBinding>;
+  /** Projetos pausados pelo usuário (ticket 09): nada novo começa neles e as Tarefas param no próximo passo. */
+  projetosPausados?: string[];
   /** Última sincronização com o GitHub por projeto (ISO 8601): a próxima consulta de alterações parte daqui. */
   sincronizadoEm?: Record<string, string>;
   /** Quando a fábrica recebeu a última entrega do webhook (ISO 8601). Ausente = nenhuma ainda. Só para o painel do App. */
@@ -702,7 +705,8 @@ export function createTarefaTask(steps: TarefaSteps) {
         !state.daemonPaused &&
         !queued.pauseRequested &&
         availableAt <= runtime.now() &&
-        !repoDesativado(state, queued.project)
+        !repoDesativado(state, queued.project) &&
+        !projetoPausado(state, queued.project)
       ) {
         // A SPEC lê o card a partir daqui: uma mudança que chegar depois marca o escopo de novo.
         if (step === "spec") queued.specDirty = false;
@@ -712,7 +716,12 @@ export function createTarefaTask(steps: TarefaSteps) {
       }
       const gate = await tx.createTask(GateTask, {}, { ownership: { kind: "task", taskId: task.id } });
       queued.status =
-        availableAt > runtime.now() && !state.daemonPaused && !queued.pauseRequested ? "enfileirada" : "pausada";
+        availableAt > runtime.now() &&
+        !state.daemonPaused &&
+        !queued.pauseRequested &&
+        !projetoPausado(state, queued.project)
+          ? "enfileirada"
+          : "pausada";
       if (availableAt > runtime.now()) queued.notBefore = availableAt;
       queued.gateId = gate;
       gated = true;

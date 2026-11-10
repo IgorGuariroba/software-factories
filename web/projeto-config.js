@@ -170,6 +170,27 @@ export function etapasDoFormulario(linhas) {
 }
 
 /**
+ * Texto e ações da seção Estado conforme o estado do projeto (ticket 09). Só ativo pausa; só pausado retoma. Pura, para
+ * ser testada em Node.
+ * @param {"incompleto" | "ativo" | "pausado"} estado
+ * @returns {{ texto: string, pausar: boolean, retomar: boolean }}
+ */
+export function acoesDoEstado(estado) {
+  if (estado === "ativo") return { texto: "Ativo: a fábrica executa este projeto.", pausar: true, retomar: false };
+  if (estado === "pausado")
+    return {
+      texto: "Pausado: a fábrica não executa este projeto até você retomá-lo. A configuração foi preservada.",
+      pausar: false,
+      retomar: true,
+    };
+  return {
+    texto: "Incompleto: a fábrica não executa este projeto até completar o que falta.",
+    pausar: false,
+    retomar: false,
+  };
+}
+
+/**
  * Estado da configuração de projeto em modo leitura (fatia 02): o formulário fica travado até "Editar". Pura, para
  * ser testada em Node; a tela só aplica o resultado.
  * @param {boolean} editando

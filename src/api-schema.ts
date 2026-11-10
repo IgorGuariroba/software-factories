@@ -551,7 +551,23 @@ export const API_SCHEMA = {
     },
     "/projetos/{nome}/pendencias": { get: { summary: "O que falta na configuração (lista de avisos)", responses: ok } },
     "/projetos/{nome}/estado": {
-      get: { summary: "Estado do projeto (incompleto ou ativo) com a lista do que falta (ADR-0022)", responses: ok },
+      get: {
+        summary: "Estado do projeto (incompleto, ativo ou pausado) com a lista do que falta (ADR-0022)",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/pausa": {
+      post: {
+        summary:
+          "Pausa um projeto ativo: nada novo começa nele, e a Tarefa em andamento para no próximo passo. Incompleto: 409",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/retomada": {
+      post: {
+        summary: "Retoma um projeto pausado, revalidando a configuração: com pendências, 409 e segue pausado",
+        responses: ok,
+      },
     },
     "/segredos": { get: { summary: "Credenciais cadastradas: nome e data, nunca o valor", responses: ok } },
     "/ferramentas": {
