@@ -69,6 +69,12 @@ import {
   type WebhookProject,
 } from "./github-webhook.js";
 import { ESQUEMA_FONTE as ESQUEMA_GITLAB } from "./gitlab-demand-source.js";
+import {
+  clonarRepositorioGitlab,
+  hostDoServidor,
+  SERVIDOR_PADRAO,
+  verificarRepositorioGitlab,
+} from "./gitlab-repositorio.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { aplicarImportacao } from "./importacao-issues.js";
 import { ESQUEMA_FONTE as ESQUEMA_JIRA } from "./jira-demand-source.js";
@@ -391,6 +397,10 @@ export async function startFactory(opts: {
    * injetam um clone local.
    */
   clonarRepositorio?: (opts: { repo: string; instalacaoId: number; destino: string }) => Promise<void>;
+  /** Clona um repositório GitLab de projeto criado pela interface (padrão: `git` com o token do cofre); os testes injetam. */
+  clonarRepositorioGitlab?: (opts: { host: string; caminho: string; token: string; destino: string }) => Promise<void>;
+  /** `fetch` da conferência do caminho GitLab com o token (padrão: o global); os testes injetam. */
+  fetchGitlab?: typeof fetch;
   /** Cria a interface de gestão do Telegram com o token do cofre (fatia 09). Quem chama escolhe a implementação. */
   criarInterfaceTelegram?: (token: string, chat: string) => ManagementInterface;
   /** `fetch` da checagem de conexão com a Fonte antes de salvar a configuração (padrão: o global). */
@@ -1956,9 +1966,81 @@ export async function startFactory(opts: {
   const caminhoDoClone = (nome: string) => join(dirname(resolvePath(opts.statePath)), "repositorios", nome);
 
   /**
+   * Grava um projeto novo cujo repositório a fábrica clona antes. Nome, prefixo e a Fonte de issues não podem repetir o
+   * que já existe, nas duas pontas (antes e depois do clone). O clone sai antes da gravação: se a clonagem falhar,
+   * nada fica salvo pela metade.
+   */
+  async function criarProjetoClonado(projeto: {
+    config: ProjectConfig;
+    destino: string;
+    clonar: () => Promise<void>;
+    /** Dados extras do estado que só um tipo de repositório precisa (ex.: o plugue do catálogo do GitHub App). */
+    ajustarEstado?: (state: FactoryState) => void;
+  }): Promise<{ status: number; body: unknown }> {
+    const { config, destino } = projeto;
+    const conflitoDe = (existentes: ProjectConfig[]) =>
+      conflitoProjeto(
+        {
+          nome: config.name,
+          prefixo: config.source.project,
+          fonteTipo: config.source.type,
+          fonteRepo: "repo" in config.source ? config.source.repo : undefined,
+        },
+        existentes,
+      );
+    const salvosDe = (state: FactoryState) =>
+      Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
+        // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
+        const lido = ProjectConfig.safeParse(JSON.parse(t));
+        return lido.success ? [lido.data] : [];
+      });
+    const existentesAgora = () => [...projects.values()].map((p) => p.config);
+    const conflitoAntes = conflitoDe([...existentesAgora(), ...salvosDe(await readState())]);
+    if (conflitoAntes) return { status: 409, body: { error: conflitoAntes } };
+
+    try {
+      await projeto.clonar();
+    } catch (err) {
+      return { status: 502, body: { error: redactSecrets(err instanceof Error ? err.message : "falha ao clonar") } };
+    }
+
+    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
+    let registrar = false;
+    await harness.commit(async (tx) => {
+      const state = await tx.doc(StateDoc);
+      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)]);
+      if (conflito) {
+        resposta = { status: 409, body: { error: conflito } };
+        return;
+      }
+      state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
+      state.projetos = { ...state.projetos, [config.name]: JSON.stringify(config) };
+      projeto.ajustarEstado?.(state);
+      registrar = true;
+      const pendencias = pendenciasDeConfiguracao(config);
+      resposta = {
+        status: 201,
+        body: {
+          projeto: config.name,
+          repo: "repo" in config.source ? config.source.repo : undefined,
+          prefixo: config.source.project,
+          fonte: config.source.type,
+          horario: config.activity,
+          ensaio: config.dryRun,
+          estado: estadoDoProjeto(pendencias),
+          pendencias,
+        },
+      };
+    }, context);
+    if (registrar) registrarProjeto(config);
+    else await rm(destino, { recursive: true, force: true });
+    return resposta;
+  }
+
+  /**
    * Cria um projeto a partir de um repositório do catálogo do App (ADR-0016, ADR-0022). A Fonte e o horário vêm do
    * formulário; a fábrica clona o repositório em diretório gerenciado antes de gravar, e o projeto nasce incompleto
-   * quando faltam PO, tech lead ou outros itens. Nome, prefixo e a Fonte de issues não podem repetir o que já existe.
+   * quando faltam PO, tech lead ou outros itens.
    */
   async function criarProjetoGithub(corpo: {
     repoId: number;
@@ -1969,6 +2051,8 @@ export async function startFactory(opts: {
     comandoTeste: string[];
   }): Promise<{ status: number; body: unknown }> {
     if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
+    if (corpo.fonte.type === "gitlab")
+      return { status: 400, body: { error: "a Fonte GitLab Issues é criada por caminho: use POST /projetos/gitlab" } };
     const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
     if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
     const app = await appChecker.status();
@@ -1994,72 +2078,91 @@ export async function startFactory(opts: {
     const erroFonte = await erroDaFonte(config.source);
     if (erroFonte) return { status: 400, body: { error: erroFonte } };
 
-    const conflitoDe = (existentes: ProjectConfig[]) =>
-      conflitoProjeto(
-        {
-          nome: config.name,
-          prefixo: config.source.project,
-          fonteTipo: config.source.type,
-          fonteRepo: "repo" in config.source ? config.source.repo : undefined,
-        },
-        existentes,
-      );
-    const salvosDe = (state: FactoryState) =>
-      Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
-        // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
-        const lido = ProjectConfig.safeParse(JSON.parse(t));
-        return lido.success ? [lido.data] : [];
-      });
-    const existentesAgora = () => [...projects.values()].map((p) => p.config);
-    const conflitoAntes = conflitoDe([...existentesAgora(), ...salvosDe(await readState())]);
-    if (conflitoAntes) return { status: 409, body: { error: conflitoAntes } };
-
-    // O clone sai antes da gravação: se a clonagem falhar, nada fica salvo pela metade.
     const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
+    return criarProjetoClonado({
+      config,
+      destino,
+      clonar: () =>
+        (opts.clonarRepositorio ?? ((c) => appChecker.clonar(c.repo, c.instalacaoId, c.destino)))({
+          repo: repo.nome,
+          instalacaoId: repo.instalacaoId,
+          destino,
+        }),
+      ajustarEstado: (state) => {
+        state.repos = {
+          ...state.repos,
+          [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
+        };
+      },
+    });
+  }
+
+  /**
+   * Cria um projeto a partir de um repositório GitLab informado por caminho completo (`grupo/projeto`) no servidor
+   * dado (gitlab.com ou self-hosted). O token vem do cofre pelo nome da credencial, e o caminho é conferido com ele
+   * antes de qualquer gravação: repositório inexistente ou token sem acesso são recusados com a causa.
+   */
+  async function criarProjetoGitlab(corpo: {
+    nome: string;
+    caminho: string;
+    servidor: string;
+    fonte: Record<string, unknown>;
+    horario: "always" | "business-hours";
+    ensaio: boolean;
+    comandoTeste: string[];
+  }): Promise<{ status: number; body: unknown }> {
+    if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
+    const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
+    if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
+    const credencial = corpo.fonte.credential;
+    if (typeof credencial !== "string" || credencial === "")
+      return { status: 400, body: { error: "informe a credencial do token do GitLab (cadastrada no cofre)" } };
+
+    let host: string;
     try {
-      await (opts.clonarRepositorio ?? ((c) => appChecker.clonar(c.repo, c.instalacaoId, c.destino)))({
-        repo: repo.nome,
-        instalacaoId: repo.instalacaoId,
-        destino,
+      host = hostDoServidor(corpo.servidor);
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
+    }
+    let config: ProjectConfig;
+    try {
+      config = montarProjetoGithub({
+        padroes: padroesDe(referencia.config),
+        repo: corpo.caminho.trim(),
+        caminho: caminhoDoClone(corpo.nome),
+        nome: corpo.nome,
+        fonte: {
+          ...corpo.fonte,
+          type: "gitlab",
+          repo: corpo.caminho.trim(),
+          ...(host === SERVIDOR_PADRAO ? {} : { hostname: host }),
+        },
+        horario: corpo.horario,
+        ensaio: corpo.ensaio,
+        comandoTeste: corpo.comandoTeste,
       });
     } catch (err) {
-      return { status: 502, body: { error: redactSecrets(err instanceof Error ? err.message : "falha ao clonar") } };
+      return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
     }
+    const erroFonte = await erroDaFonte(config.source);
+    if (erroFonte) return { status: 400, body: { error: erroFonte } };
 
-    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
-    let registrar = false;
-    await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)]);
-      if (conflito) {
-        resposta = { status: 409, body: { error: conflito } };
-        return;
-      }
-      state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
-      state.projetos = { ...state.projetos, [config.name]: JSON.stringify(config) };
-      state.repos = {
-        ...state.repos,
-        [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
-      };
-      registrar = true;
-      const pendencias = pendenciasDeConfiguracao(config);
-      resposta = {
-        status: 201,
-        body: {
-          projeto: config.name,
-          repo: repo.nome,
-          prefixo: config.source.project,
-          fonte: config.source.type,
-          horario: config.activity,
-          ensaio: config.dryRun,
-          estado: estadoDoProjeto(pendencias),
-          pendencias,
-        },
-      };
-    }, context);
-    if (registrar) registrarProjeto(config);
-    else await rm(destino, { recursive: true, force: true });
-    return resposta;
+    const token = (await segredos.get(credencial)) ?? "";
+    const caminho = corpo.caminho.trim();
+    const erroRepo = await verificarRepositorioGitlab({
+      host,
+      caminho,
+      token,
+      fetch: opts.fetchGitlab ?? fetch,
+    });
+    if (erroRepo) return { status: 400, body: { error: erroRepo } };
+
+    const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
+    return criarProjetoClonado({
+      config,
+      destino,
+      clonar: () => (opts.clonarRepositorioGitlab ?? clonarRepositorioGitlab)({ host, caminho, token, destino }),
+    });
   }
 
   /**
@@ -2922,6 +3025,8 @@ export async function startFactory(opts: {
             });
         }
         const gravado = await segredos.put(nomeSegredo, corpo.valor);
+        // A interface do Telegram lê o token ao ligar: trocar a credencial do bot religa a interface na hora.
+        if ((await readState()).telegramConfig?.credential === nomeSegredo) await reiniciarBridge();
         if (usadoPor.length > 0) {
           await harness.commit(async (tx) => {
             const state = await tx.doc(StateDoc);
@@ -3033,6 +3138,47 @@ export async function startFactory(opts: {
         const result = await criarProjetoGithub({
           repoId: body.repoId as number,
           nome: body.nome.trim(),
+          fonte: body.fonte as Record<string, unknown>,
+          horario: body.horario === "always" ? "always" : "business-hours",
+          ensaio: body.ensaio !== false,
+          comandoTeste: comando,
+        });
+        return json(res, result.status, result.body);
+      }
+      if (route === "POST /projetos/gitlab") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const body = (await readBody(req)) as
+          | {
+              nome?: unknown;
+              caminho?: unknown;
+              servidor?: unknown;
+              fonte?: unknown;
+              horario?: unknown;
+              ensaio?: unknown;
+              comandoTeste?: unknown;
+            }
+          | undefined;
+        if (
+          typeof body?.nome !== "string" ||
+          typeof body?.caminho !== "string" ||
+          typeof body?.fonte !== "object" ||
+          body.fonte === null ||
+          Array.isArray(body.fonte)
+        )
+          return json(res, 400, { error: "informe nome, caminho (grupo/projeto), servidor e a fonte (objeto)" });
+        if (body.servidor !== undefined && typeof body.servidor !== "string")
+          return json(res, 400, { error: "servidor: informe a URL do GitLab como texto" });
+        if (body.horario !== undefined && body.horario !== "business-hours" && body.horario !== "always")
+          return json(res, 400, { error: "horario: use business-hours (horário comercial) ou always (sempre ativo)" });
+        const comando = Array.isArray(body.comandoTeste)
+          ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
+          : [];
+        if (comando.length === 0 || comando.some((item) => item === ""))
+          return json(res, 400, { error: "informe o comando de teste do projeto, como lista de argumentos" });
+        const result = await criarProjetoGitlab({
+          nome: body.nome.trim(),
+          caminho: body.caminho,
+          servidor: body.servidor ?? "",
           fonte: body.fonte as Record<string, unknown>,
           horario: body.horario === "always" ? "always" : "business-hours",
           ensaio: body.ensaio !== false,

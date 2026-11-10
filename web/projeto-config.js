@@ -196,3 +196,30 @@ export function repositoriosDoFormulario(original, linhas) {
       return { ...anterior, path, prefix: String(l.prefix ?? "").trim(), test: { ...(anterior.test ?? {}), command } };
     });
 }
+
+/**
+ * Opções do seletor de credencial (ticket 03): "sem credencial" e os nomes cadastrados no cofre. Um nome salvo que não
+ * está mais no cofre continua na lista, marcado, para não sumir do formulário ao salvar.
+ * @param {{ nome: string }[]} credenciais
+ * @param {string} [atual]
+ * @returns {{ valor: string, texto: string }[]}
+ */
+export function opcoesDeCredenciais(credenciais, atual = "") {
+  const nomes = credenciais.map((c) => c.nome);
+  const naoCadastrada = atual !== "" && !nomes.includes(atual);
+  return [
+    { valor: "", texto: "sem credencial" },
+    ...nomes.map((nome) => ({ valor: nome, texto: nome })),
+    ...(naoCadastrada ? [{ valor: atual, texto: `${atual} (não cadastrada)` }] : []),
+  ];
+}
+
+/**
+ * Linha da lista do cofre: nome e data da última gravação. O valor nunca entra aqui, porque a API não o devolve.
+ * @param {{ nome: string, atualizadoEm: string }} credencial
+ */
+export function linhaDaCredencial(credencial) {
+  const data = new Date(credencial.atualizadoEm);
+  const quando = Number.isNaN(data.getTime()) ? "" : ` · atualizada em ${data.toLocaleString("pt-BR")}`;
+  return `${credencial.nome}${quando}`;
+}

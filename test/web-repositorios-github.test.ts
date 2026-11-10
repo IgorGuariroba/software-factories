@@ -3,6 +3,7 @@ import { sugerirProjeto as sugerirNoServidor } from "../src/projetos-github.js";
 import {
   camposDaFonteNaCriacao,
   comandoDoTexto,
+  corpoProjetoGitlab,
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
@@ -191,5 +192,37 @@ describe("criação de projeto: comando de teste, campos da Fonte e texto de con
         pendencias: [],
       }),
     ).toBe("Projeto novo criado para dono/novo, execução real, sempre ativo. Ativo.");
+  });
+});
+
+describe("corpoProjetoGitlab: o corpo da criação por caminho a partir do formulário (ticket 04)", () => {
+  const campos = {
+    nome: " app-gitlab ",
+    servidor: "",
+    caminho: " grupo/projeto ",
+    credencial: "gitlab-token",
+    prefixo: " GL ",
+    dono: " fulano ",
+    comandoTeste: "  npm   test ",
+    horario: "business-hours",
+    ensaio: true,
+  };
+
+  it("apara os campos, quebra o comando de teste em argumentos e monta a Fonte GitLab Issues", () => {
+    expect(corpoProjetoGitlab(campos)).toEqual({
+      nome: "app-gitlab",
+      caminho: "grupo/projeto",
+      servidor: "",
+      fonte: { project: "GL", assignee: "fulano", credential: "gitlab-token" },
+      comandoTeste: ["npm", "test"],
+      horario: "business-hours",
+      ensaio: true,
+    });
+  });
+
+  it("mantém o servidor digitado, para o servidor conferir", () => {
+    expect(corpoProjetoGitlab({ ...campos, servidor: " https://gitlab.empresa.com " }).servidor).toBe(
+      "https://gitlab.empresa.com",
+    );
   });
 });

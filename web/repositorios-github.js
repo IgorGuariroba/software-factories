@@ -127,6 +127,21 @@ export const camposDaFonteNaCriacao = (tipo, campos) =>
   campos.filter((c) => !(tipo === "github" && c.campo === "repo"));
 
 /**
+ * Corpo de `POST /projetos/gitlab` a partir dos campos do formulário (ticket 04). O servidor vazio quer dizer gitlab.com;
+ * a Fonte é GitLab Issues, com o prefixo e o usuário dono das issues. O servidor confere o caminho com o token.
+ * @param {{ nome: string, servidor: string, caminho: string, credencial: string, prefixo: string, dono: string, comandoTeste: string, horario: string, ensaio: boolean }} campos
+ */
+export const corpoProjetoGitlab = (campos) => ({
+  nome: campos.nome.trim(),
+  caminho: campos.caminho.trim(),
+  servidor: campos.servidor.trim(),
+  fonte: { project: campos.prefixo.trim(), assignee: campos.dono.trim(), credential: campos.credencial },
+  comandoTeste: comandoDoTexto(campos.comandoTeste),
+  horario: campos.horario,
+  ensaio: campos.ensaio,
+});
+
+/**
  * Texto de conclusão da criação: o que foi criado, em que modo e horário, e, se incompleto, o que falta.
  * @param {{ projeto: string, repo: string, ensaio: boolean, horario: string, estado: string, pendencias: string[] }} criado
  */

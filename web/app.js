@@ -8,6 +8,7 @@ import {
   approveSpec,
   cancelTask,
   criarProjetoGithub,
+  criarProjetoGitlab,
   decideTriage,
   enviarMensagemEtapa,
   esquecerMemoriaEtapa,
@@ -22,6 +23,7 @@ import {
   getRepos,
   getRetroPreview,
   getRetroSettings,
+  getSegredos,
   getSpecPreview,
   getTask,
   getTasks,
@@ -42,12 +44,13 @@ import {
 import { alertaGithubApp, etapasGithubApp, linhasGithubApp, progressoGithubApp } from "./github-app.js";
 import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
-import { fonteDoFormulario } from "./projeto-config.js";
+import { fonteDoFormulario, opcoesDeCredenciais } from "./projeto-config.js";
 import { iniciarProjetos } from "./projetos-tela.js";
 import { linhasRepositorios, mensagemTarefasAtivas } from "./repositorios.js";
 import {
   camposDaFonteNaCriacao,
   comandoDoTexto,
+  corpoProjetoGitlab,
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
@@ -942,7 +945,10 @@ function showPage(page) {
     loadGithubApp();
     loadRepos();
   }
-  if (current === "repositorios" && previous !== "repositorios") loadCatalogoGithub();
+  if (current === "repositorios" && previous !== "repositorios") {
+    loadCatalogoGithub();
+    carregarCredenciaisGitlab();
+  }
   if (current === "projetos" && previous !== "projetos")
     iniciarProjetos(document.getElementById("projetos-config")).catch((erro) => console.error(erro));
   if (current !== "repositorios") pararAtualizacaoCatalogo();
@@ -1241,6 +1247,7 @@ function formularioProjetoGithub(repo) {
   const tipoSel = el("select", { attrs: { name: "tipo", "aria-label": "Fonte de demandas" } });
   const camposBox = el("div", { className: "campos-fonte" });
   let esquemas = [];
+  let credenciais = [];
 
   /** Desenha os campos da Fonte escolhida; no GitHub Issues, o prefixo e o dono vêm sugeridos. */
   const desenharCampos = () => {
@@ -1248,6 +1255,18 @@ function formularioProjetoGithub(repo) {
     const esquema = esquemas.find((e) => e.tipo === tipo);
     camposBox.replaceChildren(
       ...camposDaFonteNaCriacao(tipo, esquema?.campos ?? []).map((c) => {
+        // Credencial escolhida pelo nome no cofre (ticket 03): o projeto guarda só o nome.
+        if (c.tipo === "segredo")
+          return el(
+            "label",
+            { className: "campo" },
+            el("span", { text: c.rotulo }),
+            el(
+              "select",
+              { attrs: { name: `f_${c.campo}`, "aria-label": c.rotulo } },
+              opcoesDeCredenciais(credenciais).map((o) => el("option", { attrs: { value: o.valor }, text: o.texto })),
+            ),
+          );
         const valor =
           tipo === "github" && c.campo === "project"
             ? sugestao.prefixo
@@ -1273,9 +1292,13 @@ function formularioProjetoGithub(repo) {
   };
 
   const rotuloDaFonte = (e) => (e.tipo === "github" ? "GitHub Issues do mesmo repositório (sugerido)" : e.rotulo);
-  esquemasDasFontes()
-    .then((lista) => {
-      esquemas = [...lista].sort((a, b) => (a.tipo === "github" ? -1 : b.tipo === "github" ? 1 : 0));
+  Promise.all([esquemasDasFontes(), getSegredos().catch(() => [])])
+    .then(([lista, cofre]) => {
+      credenciais = cofre;
+      // GitLab Issues não entra aqui: o projeto de GitLab é criado por caminho, no formulário próprio da página.
+      esquemas = lista
+        .filter((e) => e.tipo !== "gitlab")
+        .sort((a, b) => (a.tipo === "github" ? -1 : b.tipo === "github" ? 1 : 0));
       tipoSel.replaceChildren(
         ...esquemas.map((e) => el("option", { attrs: { value: e.tipo }, text: rotuloDaFonte(e) })),
       );
@@ -1298,7 +1321,7 @@ function formularioProjetoGithub(repo) {
           name: "nome",
           required: "",
           value: sugestao.nome,
-          pattern: "[a-z][a-z0-9-]{1,39}",
+          pattern: "[a-z][a-z0-9\\-]{1,39}",
           autocomplete: "off",
         },
       }),
@@ -1368,6 +1391,51 @@ function formularioProjetoGithub(repo) {
     }
   });
   return form;
+}
+
+/** Preenche o seletor de credenciais do formulário GitLab com o cofre: o projeto guarda só o nome (ticket 03). */
+async function carregarCredenciaisGitlab() {
+  const seletor = $("repos-gl-credencial");
+  const status = $("repos-gl-status");
+  try {
+    const cofre = await getSegredos();
+    const atual = seletor.value;
+    seletor.replaceChildren(...cofre.map((c) => el("option", { attrs: { value: c.nome }, text: c.nome })));
+    if (cofre.some((c) => c.nome === atual)) seletor.value = atual;
+    status.textContent = cofre.length === 0 ? "Cadastre o token do GitLab no cofre de credenciais primeiro." : "";
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Cria o projeto com o repositório GitLab informado por caminho; o servidor confere o caminho com o token antes. */
+async function criarProjetoGitlabPeloFormulario(ev) {
+  ev.preventDefault();
+  const form = ev.currentTarget;
+  const status = $("repos-gl-status");
+  const dados = new FormData(form);
+  const campo = (nome) => String(dados.get(nome) ?? "");
+  status.textContent = "Conferindo o repositório no GitLab…";
+  try {
+    const criado = await criarProjetoGitlab(
+      corpoProjetoGitlab({
+        nome: campo("nome"),
+        servidor: campo("servidor"),
+        caminho: campo("caminho"),
+        credencial: campo("credencial"),
+        prefixo: campo("prefixo"),
+        dono: campo("dono"),
+        comandoTeste: campo("comandoTeste"),
+        horario: campo("horario") || "business-hours",
+        ensaio: dados.get("ensaio") === "on",
+      }),
+    );
+    form.reset();
+    await carregarCredenciaisGitlab();
+    status.textContent = mensagemCriacao(criado);
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
 }
 
 /** Pede a importação; a fila roda em segundo plano, e o redesenho acompanha pelo polling. */
@@ -1519,6 +1587,7 @@ for (const button of document.querySelectorAll("[data-modo]"))
 
 $("alternar-daemon").addEventListener("click", () => run(daemonPaused ? resumeDaemon : pauseDaemon));
 $("buscar").addEventListener("click", () => run(pollSource));
+$("repos-gl-form").addEventListener("submit", criarProjetoGitlabPeloFormulario);
 $("atualizar-elegiveis").addEventListener("click", refreshQueue);
 $("fechar-detalhe").addEventListener("click", () => {
   location.hash = `#/${detailReturn}`;

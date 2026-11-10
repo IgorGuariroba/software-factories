@@ -4,6 +4,8 @@ import {
   configDoFormulario,
   estadoDoFormulario,
   fonteDoFormulario,
+  linhaDaCredencial,
+  opcoesDeCredenciais,
   perfisDoFormulario,
   pessoasDoFormulario,
   repositoriosDoFormulario,
@@ -175,5 +177,30 @@ describe("modo leitura da configuração de projeto (fatia 02)", () => {
 
   it("editando, o formulário fica liberado e aparece 'Cancelar edição' no lugar de 'Editar'", () => {
     expect(estadoDoFormulario(true)).toEqual({ formularioTravado: false, editarVisivel: false, cancelarVisivel: true });
+  });
+});
+
+describe("cofre de credenciais na página de projeto (ticket 03)", () => {
+  const cofre = [
+    { nome: "jira-token", atualizadoEm: "2026-11-01T10:00:00.000Z" },
+    { nome: "telegram-bot", atualizadoEm: "2026-11-02T10:00:00.000Z" },
+  ];
+
+  it("o seletor oferece sem credencial e os nomes do cofre, sem valor", () => {
+    expect(opcoesDeCredenciais(cofre)).toEqual([
+      { valor: "", texto: "sem credencial" },
+      { valor: "jira-token", texto: "jira-token" },
+      { valor: "telegram-bot", texto: "telegram-bot" },
+    ]);
+  });
+
+  it("um nome salvo que saiu do cofre continua no seletor, marcado como não cadastrado", () => {
+    expect(opcoesDeCredenciais(cofre, "antigo")).toContainEqual({ valor: "antigo", texto: "antigo (não cadastrada)" });
+  });
+
+  it("a linha do cofre traz nome e data, sem o valor", () => {
+    const linha = linhaDaCredencial(cofre[0] as { nome: string; atualizadoEm: string });
+    expect(linha).toMatch(/^jira-token · atualizada em /);
+    expect(linha).not.toMatch(/TOKEN/);
   });
 });

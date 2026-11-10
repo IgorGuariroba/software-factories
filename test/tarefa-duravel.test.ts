@@ -361,6 +361,7 @@ describe("schema da API", () => {
         "/poll",
         "/projetos",
         "/projetos/github",
+        "/projetos/gitlab",
         "/projetos/{nome}/configuracao",
         "/projetos/{nome}/estado",
         "/projetos/{nome}/historico",

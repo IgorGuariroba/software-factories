@@ -1,12 +1,14 @@
 // Tela de configuração de projeto: monta o formulário a partir da API e grava pela API (ADR-0017). Não há regra de
 // negócio aqui: a API valida tudo; esta tela só converte valores (ver projeto-config.js, testado em Node).
-import { api } from "./api.js";
+import { api, getSegredos } from "./api.js";
 import { desenharEtapasAgente } from "./etapas-agente-tela.js";
 import {
   camposDaFonte,
   configDoFormulario,
   estadoDoFormulario,
   fonteDoFormulario,
+  linhaDaCredencial,
+  opcoesDeCredenciais,
   perfisDoFormulario,
   pessoasDoFormulario,
   repositoriosDoFormulario,
@@ -35,10 +37,11 @@ function el(tag, props = {}, filhos = []) {
  * @param {HTMLElement} raiz
  */
 export async function iniciarProjetos(raiz) {
-  const [projetos, fontes, modelos] = await Promise.all([
+  const [projetos, fontes, modelos, segredos] = await Promise.all([
     api("GET", "/projetos"),
     api("GET", "/integracoes/fontes"),
     api("GET", "/perfis/modelos"),
+    getSegredos(),
   ]);
   const mensagem = el("p", { class: "mensagem", role: "status" });
   const seletor = el(
@@ -47,8 +50,69 @@ export async function iniciarProjetos(raiz) {
     projetos.map((p) => el("option", { valor: p.nome, texto: p.nome })),
   );
   const corpo = el("div", { class: "projeto-config-corpo" });
+  const cofreBox = el("section", { class: "bloco" });
   const telegramBox = el("section", { class: "bloco" });
+
+  // Cofre único (ticket 03): credenciais por nome. Os seletores de Fonte e de Canal leem esta lista e são atualizados
+  // quando ela muda; o valor nunca volta para a tela.
+  let credenciais = segredos;
+  const seletoresDeCredencial = new Set();
+  const preencherSeletor = (sel, escolhido) => {
+    sel.replaceChildren(
+      ...opcoesDeCredenciais(credenciais, escolhido).map((o) => el("option", { valor: o.valor, texto: o.texto })),
+    );
+    sel.value = escolhido ?? "";
+  };
+  const seletorDeCredencial = (rotulo, atual = "") => {
+    const sel = el("select", { "aria-label": rotulo });
+    seletoresDeCredencial.add(sel);
+    preencherSeletor(sel, atual);
+    return sel;
+  };
+  const listaCredenciais = el("ul");
+  const desenharCofre = () => {
+    listaCredenciais.replaceChildren(
+      ...(credenciais.length === 0
+        ? [el("li", { texto: "Nenhuma credencial cadastrada." })]
+        : credenciais.map((c) => el("li", { texto: linhaDaCredencial(c) }))),
+    );
+    for (const sel of [...seletoresDeCredencial]) {
+      if (!sel.isConnected) seletoresDeCredencial.delete(sel);
+      else preencherSeletor(sel, sel.value);
+    }
+  };
+  const recarregarCredenciais = async () => {
+    credenciais = await getSegredos();
+    desenharCofre();
+  };
+  const nomeCredencial = el("input", { "aria-label": "Nome da credencial", placeholder: "ex.: jira-token" });
+  const valorCredencial = el("input", { type: "password", "aria-label": "Valor da credencial", autocomplete: "off" });
+  const gravarCredencial = el("button", { type: "button", texto: "Gravar credencial" });
+  gravarCredencial.addEventListener("click", async () => {
+    const nome = nomeCredencial.value.trim();
+    try {
+      await api("PUT", `/segredos/${encodeURIComponent(nome)}`, { valor: valorCredencial.value });
+      valorCredencial.value = "";
+      nomeCredencial.value = "";
+      await recarregarCredenciais();
+      mensagem.textContent = `Credencial ${nome} gravada. O valor não é exibido de novo; os projetos que a usam passam a usar o novo valor.`;
+    } catch (erro) {
+      mensagem.textContent = erro.message;
+    }
+  });
+  cofreBox.replaceChildren(
+    el("h3", { texto: "Credenciais (cofre único)" }),
+    el("p", {
+      texto:
+        "Cadastre a credencial com um nome e escolha-a pelo nome nas Fontes e nos Canais. Para trocar o valor, grave de novo com o mesmo nome.",
+    }),
+    listaCredenciais,
+    el("div", { class: "linha" }, [nomeCredencial, valorCredencial, gravarCredencial]),
+  );
+  desenharCofre();
+
   raiz.replaceChildren(
+    cofreBox,
     telegramBox,
     el("div", { class: "projeto-config-topo" }, [
       el("label", { for: "projeto-config-nome", texto: "Projeto " }),
@@ -57,7 +121,7 @@ export async function iniciarProjetos(raiz) {
     mensagem,
     corpo,
   );
-  desenharTelegram(telegramBox, () => mensagem);
+  desenharTelegram(telegramBox, () => mensagem, seletorDeCredencial);
 
   async function carregar() {
     const nome = seletor.value;
@@ -87,7 +151,11 @@ export async function iniciarProjetos(raiz) {
       inputs.campos = {};
       camposBox.replaceChildren(
         ...camposDaFonte(esquema, valoresAtuais).map((c) => {
-          const input = el("input", { id: `campo-${c.campo}`, valor: c.valor, "aria-label": c.rotulo });
+          // Credencial: escolhida pelo nome no cofre (ticket 03); o projeto guarda só o nome.
+          const input =
+            c.tipo === "segredo"
+              ? seletorDeCredencial(c.rotulo, c.valor)
+              : el("input", { id: `campo-${c.campo}`, valor: c.valor, "aria-label": c.rotulo });
           inputs.campos[c.campo] = { input, tipo: c.tipo, esquema: c };
           return el("label", { class: "campo" }, [el("span", { texto: c.rotulo }), input]);
         }),
@@ -95,21 +163,6 @@ export async function iniciarProjetos(raiz) {
     }
     tipoSel.addEventListener("change", desenharCampos);
     desenharCampos();
-
-    const credencialNome = el("input", { "aria-label": "Nome da credencial no cofre", placeholder: "ex.: jira-token" });
-    const credencialValor = el("input", { type: "password", "aria-label": "Valor da credencial", autocomplete: "off" });
-    const salvarCredencial = el("button", { type: "button", texto: "Salvar credencial" });
-    salvarCredencial.addEventListener("click", async () => {
-      try {
-        await api("PUT", `/segredos/${encodeURIComponent(credencialNome.value.trim())}`, {
-          valor: credencialValor.value,
-        });
-        credencialValor.value = "";
-        mensagem.textContent = "Credencial gravada. O valor não é exibido de novo.";
-      } catch (erro) {
-        mensagem.textContent = erro.message;
-      }
-    });
 
     const perfisLinhas = [];
     const perfisBox = el("div");
@@ -241,8 +294,6 @@ export async function iniciarProjetos(raiz) {
         el("h3", { texto: "Fonte de demandas" }),
         el("label", { class: "campo" }, [el("span", { texto: "Tipo" }), tipoSel]),
         camposBox,
-        el("h4", { texto: "Credencial (valor não é exibido depois de salvo)" }),
-        el("div", { class: "linha" }, [credencialNome, credencialValor, salvarCredencial]),
       ]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Perfis" }), modelosBox, adicionarPerfil, perfisBox]),
       el("section", { class: "bloco" }, [el("h3", { texto: "Pessoas do projeto" }), adicionarPessoa, pessoasBox]),
@@ -304,7 +355,7 @@ export async function iniciarProjetos(raiz) {
  * Seção global do Telegram do usuário (fatia 09): chat, usuário autorizado e a credencial do bot no cofre. Não mostra
  * o token; ele fica no cofre e é lido pela fábrica no startup.
  */
-async function desenharTelegram(box, mensagemDe) {
+async function desenharTelegram(box, mensagemDe, seletorDeCredencial) {
   let salvo = {};
   try {
     salvo = await api("GET", "/telegram/configuracao");
@@ -317,18 +368,14 @@ async function desenharTelegram(box, mensagemDe) {
     "aria-label": "Usuário autorizado",
     placeholder: "id do usuário",
   });
-  const credencial = el("input", {
-    valor: salvo.credential ?? "",
-    "aria-label": "Credencial do bot no cofre",
-    placeholder: "ex.: telegram-bot",
-  });
+  const credencial = seletorDeCredencial("Credencial do bot no cofre", salvo.credential ?? "");
   const salvar = el("button", { type: "button", texto: "Salvar Telegram" });
   salvar.addEventListener("click", async () => {
     try {
       await api("PUT", "/telegram/configuracao", {
         chat: chat.value.trim(),
         usuario: usuario.value.trim(),
-        ...(credencial.value.trim() ? { credential: credencial.value.trim() } : {}),
+        ...(credencial.value ? { credential: credencial.value } : {}),
       });
       mensagemDe().textContent = "Telegram salvo.";
     } catch (erro) {
