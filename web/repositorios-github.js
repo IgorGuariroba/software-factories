@@ -107,6 +107,36 @@ export function mensagemCatalogo(catalogo) {
 /** Há importação em andamento? A tela consulta de novo enquanto houver. */
 export const temImportacaoEmAndamento = (repos) => repos.some((r) => r.importacao?.status === "importando");
 
+/**
+ * Comando de teste digitado (ex.: `npm test`) como lista de argumentos, sem vazios. O servidor exige ao menos um.
+ * @param {string} texto
+ */
+export const comandoDoTexto = (texto) =>
+  String(texto ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+/**
+ * Campos do schema da Fonte que o formulário de criação mostra. No GitHub Issues, o repositório é o do catálogo, então
+ * o campo não aparece.
+ * @param {string} tipo
+ * @param {{ campo: string }[]} campos
+ */
+export const camposDaFonteNaCriacao = (tipo, campos) =>
+  campos.filter((c) => !(tipo === "github" && c.campo === "repo"));
+
+/**
+ * Texto de conclusão da criação: o que foi criado, em que modo e horário, e, se incompleto, o que falta.
+ * @param {{ projeto: string, repo: string, ensaio: boolean, horario: string, estado: string, pendencias: string[] }} criado
+ */
+export function mensagemCriacao(criado) {
+  const modo = criado.ensaio ? "em ensaio" : "execução real";
+  const horario = criado.horario === "always" ? "sempre ativo" : "horário comercial";
+  const situacao = criado.estado === "ativo" ? "Ativo." : `Incompleto: falta ${criado.pendencias.join("; ")}.`;
+  return `Projeto ${criado.projeto} criado para ${criado.repo}, ${modo}, ${horario}. ${situacao}`;
+}
+
 /** Data e hora legíveis em português, a partir do ISO 8601. */
 function formatarInstante(iso) {
   const data = new Date(iso);

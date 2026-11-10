@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { sugerirProjeto as sugerirNoServidor } from "../src/projetos-github.js";
 import {
+  camposDaFonteNaCriacao,
+  comandoDoTexto,
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
+  mensagemCriacao,
   sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
@@ -150,5 +153,43 @@ describe("sugerirProjeto: a sugestão da tela é a mesma do servidor", () => {
 
   it("sugere as iniciais das palavras como prefixo", () => {
     expect(sugerirProjeto("dono/software-factories")).toEqual({ nome: "software-factories", prefixo: "SF" });
+  });
+});
+
+describe("criação de projeto: comando de teste, campos da Fonte e texto de conclusão", () => {
+  it("comando digitado vira lista de argumentos, sem vazios", () => {
+    expect(comandoDoTexto("  npm   test ")).toEqual(["npm", "test"]);
+    expect(comandoDoTexto("")).toEqual([]);
+  });
+
+  it("no GitHub Issues o repositório não aparece no formulário, porque vem do catálogo", () => {
+    const campos = [{ campo: "project" }, { campo: "repo" }, { campo: "assignee" }];
+    expect(camposDaFonteNaCriacao("github", campos).map((c) => c.campo)).toEqual(["project", "assignee"]);
+    expect(camposDaFonteNaCriacao("gitlab", campos).map((c) => c.campo)).toEqual(["project", "repo", "assignee"]);
+  });
+
+  it("a conclusão diz o modo, o horário e o que falta quando o projeto está incompleto", () => {
+    expect(
+      mensagemCriacao({
+        projeto: "novo",
+        repo: "dono/novo",
+        ensaio: true,
+        horario: "business-hours",
+        estado: "incompleto",
+        pendencias: ["falta uma pessoa no perfil PO", "falta uma pessoa no perfil tech lead"],
+      }),
+    ).toBe(
+      "Projeto novo criado para dono/novo, em ensaio, horário comercial. Incompleto: falta falta uma pessoa no perfil PO; falta uma pessoa no perfil tech lead.",
+    );
+    expect(
+      mensagemCriacao({
+        projeto: "novo",
+        repo: "dono/novo",
+        ensaio: false,
+        horario: "always",
+        estado: "ativo",
+        pendencias: [],
+      }),
+    ).toBe("Projeto novo criado para dono/novo, execução real, sempre ativo. Ativo.");
   });
 });

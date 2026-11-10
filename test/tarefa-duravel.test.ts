@@ -362,6 +362,7 @@ describe("schema da API", () => {
         "/projetos",
         "/projetos/github",
         "/projetos/{nome}/configuracao",
+        "/projetos/{nome}/estado",
         "/projetos/{nome}/historico",
         "/projetos/{nome}/pendencias",
         "/queue",

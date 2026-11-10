@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
-import { readFile as readFileFromDisk } from "node:fs/promises";
+import { mkdir, readFile as readFileFromDisk, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { RawIssue } from "./github-demand-source.js";
 import { falhaDeRede, falhaDeResposta } from "./github-falhas.js";
 
@@ -137,10 +139,27 @@ export interface GitHubAppChecker {
   status(): Promise<GitHubAppStatus>;
   /** Issues abertas de um repositório, por todas as páginas, com o token da instalação (leitura; PRs vêm junto). */
   issuesAbertas(repo: string, instalacaoId: number): Promise<RawIssue[]>;
+  /**
+   * Clona `repo` (`dono/nome`) em `destino` com o token da instalação, que vai só no cabeçalho do git (pelo ambiente,
+   * nunca na linha de comando nem em `.git/config`). Refaz o clone se `destino` já existir: o diretório é gerenciado.
+   */
+  clonar(repo: string, instalacaoId: number, destino: string): Promise<void>;
 }
 
 /** Tempo máximo de uma chamada à API: um GitHub travado não segura a fila de importação para sempre. */
 const TIMEOUT_CHAMADA_MS = 30_000;
+
+/** Roda o git com o ambiente dado a mais, sem prompt interativo. Nenhum argumento leva segredo. */
+function rodarGit(args: string[], envExtra: Record<string, string>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      { env: { ...process.env, ...envExtra, GIT_TERMINAL_PROMPT: "0" }, timeout: 300_000 },
+      (err) => (err ? reject(err) : resolve()),
+    );
+  });
+}
 
 /**
  * Consulta o App no GitHub. A chave é lida do arquivo a cada consulta real (não fica em memória entre elas).
@@ -247,6 +266,25 @@ export function createGitHubAppChecker(opts: {
   }
 
   return {
+    async clonar(repo, instalacaoId, destino) {
+      const token = await tokenDaInstalacao(instalacaoId);
+      const url = `https://github.com/${repo}.git`;
+      const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+      await rm(destino, { recursive: true, force: true });
+      await mkdir(dirname(destino), { recursive: true });
+      try {
+        await rodarGit(["clone", "--quiet", "--", url, destino], {
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+          GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+        });
+        // O remoto gravado no clone é o público: o token não fica em disco depois da clonagem.
+        await rodarGit(["-C", destino, "remote", "set-url", "origin", url], {});
+      } catch {
+        await rm(destino, { recursive: true, force: true });
+        throw new Error(`não foi possível clonar ${repo} pelo GitHub App`);
+      }
+    },
     async issuesAbertas(repo, instalacaoId) {
       const token = await tokenDaInstalacao(instalacaoId);
       return todasAsPaginas(

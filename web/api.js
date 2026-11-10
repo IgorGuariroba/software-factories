@@ -45,6 +45,7 @@ export const getGithubApp = () => api("GET", "/github-app");
 export const getGithubRepos = () => api("GET", "/github/repos");
 export const importarRepoGithub = (repoId) => api("POST", "/github/importar", { repoId });
 export const criarProjetoGithub = (corpo) => api("POST", "/projetos/github", corpo);
+export const getIntegracoesFontes = () => api("GET", "/integracoes/fontes");
 export const plugRepo = (repo) => api("POST", "/repos/plugar", { repo });
 export const unplugRepo = (repo, force = false) => api("POST", "/repos/desplugar", { repo, force });
 export const pauseDaemon = () => api("POST", "/daemon/pause");

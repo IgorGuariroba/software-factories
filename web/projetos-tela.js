@@ -62,16 +62,17 @@ export async function iniciarProjetos(raiz) {
   async function carregar() {
     const nome = seletor.value;
     if (!nome) return;
-    const [atual, pendencias, historico, catalogo] = await Promise.all([
+    const [atual, situacao, historico, catalogo] = await Promise.all([
       api("GET", `/projetos/${encodeURIComponent(nome)}/configuracao`),
-      api("GET", `/projetos/${encodeURIComponent(nome)}/pendencias`),
+      api("GET", `/projetos/${encodeURIComponent(nome)}/estado`),
       api("GET", `/projetos/${encodeURIComponent(nome)}/historico`),
       api("GET", "/ferramentas"),
     ]);
-    desenhar(nome, atual, pendencias, historico, catalogo);
+    desenhar(nome, atual, situacao, historico, catalogo);
   }
 
-  function desenhar(nome, atual, pendencias, historico, catalogo) {
+  function desenhar(nome, atual, situacao, historico, catalogo) {
+    const pendencias = situacao.pendencias;
     const tipoSel = el(
       "select",
       { "aria-label": "Tipo da Fonte" },
@@ -252,6 +253,13 @@ export async function iniciarProjetos(raiz) {
         salvar,
       ]),
       el("section", { class: "bloco" }, [
+        el("h3", { texto: "Estado" }),
+        el("p", {
+          texto:
+            situacao.estado === "ativo"
+              ? "Ativo: a fábrica executa este projeto."
+              : "Incompleto: a fábrica não executa este projeto até completar o que falta.",
+        }),
         el("h3", { texto: "Pendências" }),
         el(
           "ul",

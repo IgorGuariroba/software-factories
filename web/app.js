@@ -15,6 +15,7 @@ import {
   getDaemon,
   getGithubApp,
   getGithubRepos,
+  getIntegracoesFontes,
   getQuestionPreview,
   getQueue,
   getReminderPreview,
@@ -41,12 +42,16 @@ import {
 import { alertaGithubApp, etapasGithubApp, linhasGithubApp, progressoGithubApp } from "./github-app.js";
 import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
+import { fonteDoFormulario } from "./projeto-config.js";
 import { iniciarProjetos } from "./projetos-tela.js";
 import { linhasRepositorios, mensagemTarefasAtivas } from "./repositorios.js";
 import {
+  camposDaFonteNaCriacao,
+  comandoDoTexto,
   estadoImportacao,
   filtrarCatalogo,
   mensagemCatalogo,
+  mensagemCriacao,
   sugerirProjeto,
   temImportacaoEmAndamento,
   textoImportacao,
@@ -1218,13 +1223,69 @@ function alternarFormulario(botao, formulario) {
   if (!formulario.hidden) formulario.querySelector("input")?.focus();
 }
 
+/** Esquemas das Fontes (Jira, GitHub Issues, GitLab Issues), lidos uma vez para montar o formulário de criação. */
+let esquemasFontes = null;
+async function esquemasDasFontes() {
+  esquemasFontes ??= await getIntegracoesFontes();
+  return esquemasFontes;
+}
+
 /**
- * Formulário para criar o projeto de um repositório (ADR-0016). Nome e prefixo vêm sugeridos; o ensaio começa marcado,
- * então a fábrica não escreve no GitHub até o usuário desligá-lo. O servidor confere o resto (conflitos, regras).
+ * Formulário para criar o projeto de um repositório (ADR-0016, ADR-0022). A Fonte é escolhida, sem valor fixo; a de
+ * GitHub Issues do próprio repositório vem sugerida. Horário comercial é o padrão, e o ensaio começa marcado. O comando
+ * de teste é obrigatório. O servidor confere o resto e responde o que falta no projeto.
  */
 function formularioProjetoGithub(repo) {
   const sugestao = sugerirProjeto(repo.nome);
   const status = el("p", { className: "ajuda", attrs: { role: "status" } });
+  const tipoSel = el("select", { attrs: { name: "tipo", "aria-label": "Fonte de demandas" } });
+  const camposBox = el("div", { className: "campos-fonte" });
+  let esquemas = [];
+
+  /** Desenha os campos da Fonte escolhida; no GitHub Issues, o prefixo e o dono vêm sugeridos. */
+  const desenharCampos = () => {
+    const tipo = tipoSel.value;
+    const esquema = esquemas.find((e) => e.tipo === tipo);
+    camposBox.replaceChildren(
+      ...camposDaFonteNaCriacao(tipo, esquema?.campos ?? []).map((c) => {
+        const valor =
+          tipo === "github" && c.campo === "project"
+            ? sugestao.prefixo
+            : tipo === "github" && c.campo === "assignee"
+              ? repo.dono
+              : "";
+        return el(
+          "label",
+          { className: "campo" },
+          el("span", { text: c.rotulo }),
+          el("input", {
+            attrs: {
+              name: `f_${c.campo}`,
+              autocomplete: "off",
+              value: valor,
+              ...(c.obrigatorio ? { required: "" } : {}),
+              ...(c.tipo === "lista" ? { placeholder: "separadas por vírgula" } : {}),
+            },
+          }),
+        );
+      }),
+    );
+  };
+
+  const rotuloDaFonte = (e) => (e.tipo === "github" ? "GitHub Issues do mesmo repositório (sugerido)" : e.rotulo);
+  esquemasDasFontes()
+    .then((lista) => {
+      esquemas = [...lista].sort((a, b) => (a.tipo === "github" ? -1 : b.tipo === "github" ? 1 : 0));
+      tipoSel.replaceChildren(
+        ...esquemas.map((e) => el("option", { attrs: { value: e.tipo }, text: rotuloDaFonte(e) })),
+      );
+      desenharCampos();
+    })
+    .catch((err) => {
+      status.textContent = err instanceof Error ? err.message : String(err);
+    });
+  tipoSel.addEventListener("change", desenharCampos);
+
   const form = el(
     "form",
     { className: "form-projeto", attrs: { hidden: "" } },
@@ -1242,25 +1303,30 @@ function formularioProjetoGithub(repo) {
         },
       }),
     ),
+    el("label", { className: "campo" }, el("span", { text: "Fonte de demandas" }), tipoSel),
+    camposBox,
     el(
       "label",
       { className: "campo" },
-      el("span", { text: "Prefixo das chaves (ex.: SF-12)" }),
-      el("input", {
-        attrs: {
-          name: "prefixo",
-          required: "",
-          value: sugestao.prefixo,
-          pattern: "[A-Za-z][A-Za-z0-9]{1,9}",
-          autocomplete: "off",
-        },
-      }),
+      el("span", { text: "Comando de teste (ex.: npm test)" }),
+      el("input", { attrs: { name: "comandoTeste", required: "", autocomplete: "off" } }),
+    ),
+    el(
+      "label",
+      { className: "campo" },
+      el("span", { text: "Horário de atividade" }),
+      el(
+        "select",
+        { attrs: { name: "horario" } },
+        el("option", { attrs: { value: "business-hours" }, text: "Horário comercial (padrão)" }),
+        el("option", { attrs: { value: "always" }, text: "Sempre ativo" }),
+      ),
     ),
     el(
       "label",
       { className: "ajuda" },
       el("input", { attrs: { type: "checkbox", name: "ensaio", checked: "" } }),
-      " Ensaio: a fábrica não escreve no GitHub até você desligar",
+      " Ensaio: a fábrica não escreve na Fonte nem no GitHub até você desligar",
     ),
     el(
       "div",
@@ -1280,17 +1346,22 @@ function formularioProjetoGithub(repo) {
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const dados = new FormData(form);
+    const tipo = tipoSel.value;
+    const esquema = esquemas.find((e) => e.tipo === tipo);
+    const valores = Object.fromEntries(
+      (esquema?.campos ?? []).map((c) => [c.campo, String(dados.get(`f_${c.campo}`) ?? "")]),
+    );
     status.textContent = "Criando o projeto…";
     try {
       const criado = await criarProjetoGithub({
         repoId: repo.id,
         nome: String(dados.get("nome") ?? "").trim(),
-        prefixo: String(dados.get("prefixo") ?? "").trim(),
+        fonte: fonteDoFormulario(tipo, camposDaFonteNaCriacao(tipo, esquema?.campos ?? []), valores),
+        horario: String(dados.get("horario") ?? "business-hours"),
         ensaio: dados.get("ensaio") === "on",
+        comandoTeste: comandoDoTexto(dados.get("comandoTeste")),
       });
-      $("repos-gh-status").textContent = `Projeto ${criado.projeto} criado para ${criado.repo}${
-        criado.ensaio ? ", em ensaio" : ""
-      }. Agora dá para importar as issues.`;
+      $("repos-gh-status").textContent = mensagemCriacao(criado);
       await loadCatalogoGithub();
     } catch (err) {
       status.textContent = err instanceof Error ? err.message : String(err);

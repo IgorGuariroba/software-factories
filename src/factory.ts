@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -76,6 +76,7 @@ import { type ManagementInterface, startManagementBridge } from "./management.js
 import { ferramentasMcpDaEtapa } from "./mcp-etapa.js";
 import {
   camposAlterados,
+  estadoDoProjeto,
   lerConfiguracao,
   pendenciasDeConfiguracao,
   semearConfiguracoes,
@@ -385,6 +386,11 @@ export async function startFactory(opts: {
    * não está configurado. `fetch` é injetado nos testes.
    */
   githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
+  /**
+   * Clona o repositório de um projeto criado pela interface em `destino`. Padrão: clone pelo GitHub App; os testes
+   * injetam um clone local.
+   */
+  clonarRepositorio?: (opts: { repo: string; instalacaoId: number; destino: string }) => Promise<void>;
   /** Cria a interface de gestão do Telegram com o token do cofre (fatia 09). Quem chama escolhe a implementação. */
   criarInterfaceTelegram?: (token: string, chat: string) => ManagementInterface;
   /** `fetch` da checagem de conexão com a Fonte antes de salvar a configuração (padrão: o global). */
@@ -1327,9 +1333,16 @@ export async function startFactory(opts: {
   const readState = async (): Promise<FactoryState> =>
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
 
+  /** Projetos criados pela UI (ADR-0022). Só eles são barrados enquanto incompletos; os do YAML seguem como estão. */
+  const criadosPelaInterface = new Set<string>();
+  /** Pendências que barram ações de um projeto criado pela UI: vazio para os do YAML ou quando o projeto está completo. */
+  const pendenciasBloqueantes = (nome: string): string[] =>
+    criadosPelaInterface.has(nome) ? pendenciasDeConfiguracao(projectOf(nome).config) : [];
+
   /** Registra um projeto criado pela UI no processo, com a Fonte e o conhecimento do mesmo jeito que os do YAML. */
   function registrarProjeto(config: ProjectConfig): void {
     if (!opts.createSource) throw new Error("este daemon não cria a Fonte de projetos da interface");
+    criadosPelaInterface.add(config.name);
     const knowledgeDir = opts.knowledgeDirFor?.(config.name);
     const base: FactoryProject = {
       config,
@@ -1365,7 +1378,8 @@ export async function startFactory(opts: {
       console.error(`[fábrica] projeto ${nome} salvo pela interface não carregado: este daemon não cria Fontes`);
       continue;
     }
-    registrarProjeto(lido.data);
+    // A configuração guardada é a que vale: a edição pela interface grava em `projetos`, depois da criação.
+    registrarProjeto(lerConfiguracao((await readState()).projetos?.[nome]) ?? lido.data);
   }
   retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
   if (!retroSettings.repo)
@@ -1521,6 +1535,8 @@ export async function startFactory(opts: {
     for (const { config, source } of projects.values()) {
       // Repositório desativado não entra na busca: nenhuma Tarefa nova dele (ADR-0015).
       if (repoDesativado(state, config.name)) continue;
+      // Projeto criado pela UI e incompleto não executa: a interface mostra o que falta (ADR-0022).
+      if (pendenciasBloqueantes(config.name).length > 0) continue;
       const cards = await source.listAssignedCards(config.source.assignee);
       if (config.source.type === "github") cards.sort((a, b) => issueOrder(a.key) - issueOrder(b.key));
       for (const card of cards) {
@@ -1917,15 +1933,40 @@ export async function startFactory(opts: {
     }
   }
 
+  /** Confere a Fonte antes de gravar: credencial no cofre e, no Jira, a conexão (ADR-0018). Devolve o erro, se houver. */
+  async function erroDaFonte(fonte: ProjectConfig["source"]): Promise<string | undefined> {
+    if (fonte.type === "jira") {
+      if (!fonte.credential) return undefined;
+      if (!(await segredos.has(fonte.credential))) return `credencial ${fonte.credential} não cadastrada`;
+      if (!fonte.baseUrl || !fonte.email) return "a Fonte Jira com credencial precisa de baseUrl e email";
+      const conexao = await testarConexaoJira({
+        baseUrl: fonte.baseUrl,
+        email: fonte.email,
+        token: (await segredos.get(fonte.credential)) ?? "",
+        fetch: opts.fetchFonte ?? fetch,
+      });
+      return conexao.ok ? undefined : `conexão com o Jira falhou (${conexao.motivo})`;
+    }
+    if (fonte.credential && !(await segredos.has(fonte.credential)))
+      return `credencial ${fonte.credential} não cadastrada`;
+    return undefined;
+  }
+
+  /** Diretório onde a fábrica clona o repositório de um projeto criado pela interface (nunca um caminho do usuário). */
+  const caminhoDoClone = (nome: string) => join(dirname(resolvePath(opts.statePath)), "repositorios", nome);
+
   /**
-   * Cria um projeto de repositório do catálogo do App (ADR-0016). Modelos e estados vêm do primeiro projeto do YAML, e o
-   * projeto nasce em ensaio por padrão. Nome, prefixo e repositório não podem repetir o que já existe.
+   * Cria um projeto a partir de um repositório do catálogo do App (ADR-0016, ADR-0022). A Fonte e o horário vêm do
+   * formulário; a fábrica clona o repositório em diretório gerenciado antes de gravar, e o projeto nasce incompleto
+   * quando faltam PO, tech lead ou outros itens. Nome, prefixo e a Fonte de issues não podem repetir o que já existe.
    */
   async function criarProjetoGithub(corpo: {
     repoId: number;
     nome: string;
-    prefixo: string;
+    fonte: Record<string, unknown>;
+    horario: "always" | "business-hours";
     ensaio: boolean;
+    comandoTeste: string[];
   }): Promise<{ status: number; body: unknown }> {
     if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
     const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
@@ -1940,44 +1981,84 @@ export async function startFactory(opts: {
       config = montarProjetoGithub({
         padroes: padroesDe(referencia.config),
         repo: repo.nome,
+        caminho: caminhoDoClone(corpo.nome),
         nome: corpo.nome,
-        prefixo: corpo.prefixo,
+        fonte: corpo.fonte,
+        horario: corpo.horario,
         ensaio: corpo.ensaio,
+        comandoTeste: corpo.comandoTeste,
       });
     } catch (err) {
       return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
+    }
+    const erroFonte = await erroDaFonte(config.source);
+    if (erroFonte) return { status: 400, body: { error: erroFonte } };
+
+    const conflitoDe = (existentes: ProjectConfig[]) =>
+      conflitoProjeto(
+        {
+          nome: config.name,
+          prefixo: config.source.project,
+          fonteTipo: config.source.type,
+          fonteRepo: "repo" in config.source ? config.source.repo : undefined,
+        },
+        existentes,
+      );
+    const salvosDe = (state: FactoryState) =>
+      Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
+        // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
+        const lido = ProjectConfig.safeParse(JSON.parse(t));
+        return lido.success ? [lido.data] : [];
+      });
+    const existentesAgora = () => [...projects.values()].map((p) => p.config);
+    const conflitoAntes = conflitoDe([...existentesAgora(), ...salvosDe(await readState())]);
+    if (conflitoAntes) return { status: 409, body: { error: conflitoAntes } };
+
+    // O clone sai antes da gravação: se a clonagem falhar, nada fica salvo pela metade.
+    const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
+    try {
+      await (opts.clonarRepositorio ?? ((c) => appChecker.clonar(c.repo, c.instalacaoId, c.destino)))({
+        repo: repo.nome,
+        instalacaoId: repo.instalacaoId,
+        destino,
+      });
+    } catch (err) {
+      return { status: 502, body: { error: redactSecrets(err instanceof Error ? err.message : "falha ao clonar") } };
     }
 
     let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
     let registrar = false;
     await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
-      // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
-      const salvos = Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
-        const lido = ProjectConfig.safeParse(JSON.parse(t));
-        return lido.success ? [lido.data] : [];
-      });
-      const existentes = [...projects.values()].map((p) => p.config).concat(salvos);
-      const conflito = conflitoProjeto(
-        { nome: config.name, prefixo: config.source.project, repo: repo.nome },
-        existentes,
-      );
+      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)]);
       if (conflito) {
         resposta = { status: 409, body: { error: conflito } };
         return;
       }
       state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
+      state.projetos = { ...state.projetos, [config.name]: JSON.stringify(config) };
       state.repos = {
         ...state.repos,
         [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
       };
       registrar = true;
+      const pendencias = pendenciasDeConfiguracao(config);
       resposta = {
         status: 201,
-        body: { projeto: config.name, repo: repo.nome, prefixo: config.source.project, ensaio: config.dryRun },
+        body: {
+          projeto: config.name,
+          repo: repo.nome,
+          prefixo: config.source.project,
+          fonte: config.source.type,
+          horario: config.activity,
+          ensaio: config.dryRun,
+          estado: estadoDoProjeto(pendencias),
+          pendencias,
+        },
       };
     }, context);
     if (registrar) registrarProjeto(config);
+    else await rm(destino, { recursive: true, force: true });
     return resposta;
   }
 
@@ -1996,6 +2077,11 @@ export async function startFactory(opts: {
         status: 409,
         body: { error: `nenhum projeto monitora ${repo.nome}; configure o projeto no YAML primeiro` },
       };
+    }
+    // Importar cria Tarefas: projeto incompleto não executa, então não importa (ADR-0022).
+    const pendencias = pendenciasBloqueantes(project);
+    if (pendencias.length > 0) {
+      return { status: 409, body: { error: `projeto ${project} incompleto: ${pendencias.join("; ")}` } };
     }
     let resposta: { status: number; body: unknown } = { status: 500, body: { error: "importação não registrada" } };
     let enfileirar = false;
@@ -2762,6 +2848,14 @@ export async function startFactory(opts: {
         if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
         return json(res, 200, pendenciasDeConfiguracao(guardada));
       }
+      const estadoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/estado$/);
+      if (estadoMatch && req.method === "GET") {
+        const nome = decodeURIComponent(estadoMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        const pendencias = pendenciasDeConfiguracao(guardada);
+        return json(res, 200, { estado: estadoDoProjeto(pendencias), pendencias });
+      }
       if (route === "GET /telegram/configuracao") {
         const salvo = (await readState()).telegramConfig;
         return salvo ? json(res, 200, salvo) : json(res, 404, { error: "Telegram não configurado" });
@@ -2867,27 +2961,8 @@ export async function startFactory(opts: {
           if (!(await ehDiretorio(repositorio.path)))
             return json(res, 400, { error: `caminho do repositório não existe: ${repositorio.path}` });
         }
-        const fonte = lida.data.source;
-        if (
-          (fonte.type === "gitlab" || fonte.type === "github") &&
-          fonte.credential &&
-          !(await segredos.has(fonte.credential))
-        )
-          return json(res, 400, { error: `credencial ${fonte.credential} não cadastrada` });
-        if (fonte.type === "jira" && fonte.credential) {
-          if (!(await segredos.has(fonte.credential)))
-            return json(res, 400, { error: `credencial ${fonte.credential} não cadastrada` });
-          if (!fonte.baseUrl || !fonte.email)
-            return json(res, 400, { error: "a Fonte Jira com credencial precisa de baseUrl e email" });
-          const token = await segredos.get(fonte.credential);
-          const conexao = await testarConexaoJira({
-            baseUrl: fonte.baseUrl,
-            email: fonte.email,
-            token: token ?? "",
-            fetch: opts.fetchFonte ?? fetch,
-          });
-          if (!conexao.ok) return json(res, 400, { error: `conexão com o Jira falhou (${conexao.motivo})` });
-        }
+        const erroFonte = await erroDaFonte(lida.data.source);
+        if (erroFonte) return json(res, 400, { error: erroFonte });
         let existe = false;
         await harness.commit(async (tx) => {
           const state = await tx.doc(StateDoc);
@@ -2931,15 +3006,37 @@ export async function startFactory(opts: {
       if (route === "POST /projetos/github") {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as
-          | { repoId?: unknown; nome?: unknown; prefixo?: unknown; ensaio?: unknown }
+          | {
+              repoId?: unknown;
+              nome?: unknown;
+              fonte?: unknown;
+              horario?: unknown;
+              ensaio?: unknown;
+              comandoTeste?: unknown;
+            }
           | undefined;
-        if (!Number.isInteger(body?.repoId) || typeof body?.nome !== "string" || typeof body?.prefixo !== "string")
-          return json(res, 400, { error: "informe repoId, nome e prefixo do projeto" });
+        if (
+          !Number.isInteger(body?.repoId) ||
+          typeof body?.nome !== "string" ||
+          typeof body?.fonte !== "object" ||
+          body.fonte === null ||
+          Array.isArray(body.fonte)
+        )
+          return json(res, 400, { error: "informe repoId, nome e a fonte (objeto com type e os campos dela)" });
+        if (body.horario !== undefined && body.horario !== "business-hours" && body.horario !== "always")
+          return json(res, 400, { error: "horario: use business-hours (horário comercial) ou always (sempre ativo)" });
+        const comando = Array.isArray(body.comandoTeste)
+          ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
+          : [];
+        if (comando.length === 0 || comando.some((item) => item === ""))
+          return json(res, 400, { error: "informe o comando de teste do projeto, como lista de argumentos" });
         const result = await criarProjetoGithub({
           repoId: body.repoId as number,
           nome: body.nome.trim(),
-          prefixo: body.prefixo.trim().toUpperCase(),
+          fonte: body.fonte as Record<string, unknown>,
+          horario: body.horario === "always" ? "always" : "business-hours",
           ensaio: body.ensaio !== false,
+          comandoTeste: comando,
         });
         return json(res, result.status, result.body);
       }

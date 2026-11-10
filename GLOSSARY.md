@@ -5,11 +5,24 @@ Agente autônomo e auto-hospedado que pega demandas atribuídas ao usuário e as
 ## Demanda e trabalho
 
 **Projeto**:
-Unidade de configuração da fábrica, que reúne a fonte, os canais, os perfis e as pessoas do projeto, os repositórios, os provedores permitidos e as evidências disponíveis de um contexto de trabalho. Sua configuração é editada pelo usuário.
+Unidade de configuração da fábrica, que reúne a fonte, os canais, os perfis e as pessoas do projeto, o repositório, os provedores permitidos e as evidências disponíveis de um contexto de trabalho. Sua configuração é editada pelo usuário.
 _Avoid_: workspace, cliente
 
+**Projeto incompleto**:
+Projeto que ainda não tem algum item obrigatório (repositório, Fonte, PO, Canal, comando de teste). Não executa, e a interface lista o que falta.
+
+**Projeto ativo**:
+Projeto com todos os itens obrigatórios preenchidos, que a fábrica executa, em ensaio ou não.
+
+**Projeto pausado**:
+Projeto ativo que o usuário suspendeu, sem perder a configuração.
+
+**Repositório**:
+Código de um projeto, hospedado no GitHub ou no GitLab. Cada projeto tem exatamente um repositório, e um mesmo repositório pode servir a mais de um projeto.
+_Avoid_: repo (em texto corrido), código
+
 **Fonte**:
-Sistema de onde a fábrica obtém demandas (Jira, GitHub Issues, GitLab Issues). Cada projeto tem uma única Fonte.
+Sistema de onde a fábrica obtém demandas (Jira, GitHub Issues, GitLab Issues). Cada projeto tem uma única Fonte, que pode ser diferente do repositório do projeto (ex.: Jira para demandas, GitLab para código).
 _Avoid_: origem, provider de tarefas, source
 
 **Card**:
@@ -71,11 +84,11 @@ A pessoa dona da fábrica, em nome de quem ela age e com cujas credenciais ela o
 _Avoid_: operador, dono
 
 **Pessoa do projeto**:
-Pessoa com quem a fábrica pode conversar num projeto. Tem um identificador por integração (ex.: accountId no Jira, login no GitHub, id no Teams) e pode ocupar um ou mais perfis.
+Pessoa com quem a fábrica pode conversar num projeto. Tem um identificador na Fonte do projeto (ex.: accountId no Jira, login no GitHub) e, para cada Canal pelo qual a fábrica fala com ela, um identificador nesse Canal (ex.: id no Teams). Pode ocupar um ou mais perfis.
 _Avoid_: usuário (usado só para o dono da fábrica), membro, contato
 
 **Perfil**:
-Função de uma pessoa do projeto (PO, tech lead, ou outra que o projeto definir). Um perfil pode ter várias pessoas, e uma pessoa pode ter vários perfis. Define para quem a fábrica encaminha perguntas e lembretes, na ordem cadastrada. Não concede autoridade: vetos e aprovações continuam com o usuário.
+Função de uma pessoa do projeto (PO, tech lead, ou outra que o projeto definir). PO e tech lead são obrigatórios para o projeto ficar ativo. Um perfil pode ter várias pessoas, e uma pessoa pode ter vários perfis. Define para quem a fábrica encaminha perguntas e lembretes, na ordem cadastrada. Não concede autoridade: vetos e aprovações continuam com o usuário.
 _Avoid_: papel (usado para modelos), cargo, role
 
 **Canal**:

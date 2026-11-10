@@ -1,10 +1,11 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectConfig } from "../src/config.js";
-import { api, startTestFactory, type TestFactory } from "./harness.js";
+import { MemoryDemandSource } from "./fakes/memory-demand-source.js";
+import { api, poll, startTestFactory, type TestFactory } from "./harness.js";
 
 const PEM = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ type: "pkcs1", format: "pem" })
@@ -55,6 +56,23 @@ const app = async () => ({
   fetch: githubFalso,
 });
 
+/** Clone falso: cria o diretório gerenciado, sem rede. A fábrica decide o destino, nunca o usuário. */
+const clonarFalso = async (opts: { destino: string }) => {
+  await mkdir(opts.destino, { recursive: true });
+};
+
+/** Fonte GitHub Issues do próprio repositório, como o formulário sugere. */
+const fonteGithub = (assignee = "IgorGuariroba") => ({ type: "github", project: "NR", assignee });
+
+/** Corpo mínimo de criação: repositório, nome, Fonte, comando de teste. */
+const corpo = (sobrescrita: Record<string, unknown> = {}) => ({
+  repoId: 77,
+  nome: "novo-repo",
+  fonte: fonteGithub(),
+  comandoTeste: ["npm", "test"],
+  ...sobrescrita,
+});
+
 async function chaveNoDisco(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "fabrica-chave-projeto-"));
   const caminho = join(dir, "app.private-key.pem");
@@ -92,20 +110,21 @@ afterEach(async () => {
   factory = undefined;
 });
 
+const subirFabrica = async (extra: Parameters<typeof startTestFactory>[0] = {}) =>
+  startTestFactory({ config: configYaml(), githubApp: await app(), clonarRepositorio: clonarFalso, ...extra });
+
 describe("POST /projetos/github: criar projeto a partir de um repositório do App", () => {
-  it("cria o projeto em ensaio, com o repositório plugado, e ele aparece na lista de repositórios", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    const criado = await chamada(factory, "POST", "/projetos/github", {
-      repoId: 77,
-      nome: "novo-repo",
-      prefixo: "nr",
-    });
+  it("cria o projeto com a Fonte escolhida, clonado pela fábrica, e ele aparece na lista de repositórios", async () => {
+    factory = await subirFabrica();
+    const criado = await chamada(factory, "POST", "/projetos/github", corpo());
     expect(criado.status).toBe(201);
     expect(criado.body).toMatchObject({
       projeto: "novo-repo",
       repo: "IgorGuariroba/novo-repo",
       prefixo: "NR",
+      fonte: "github",
       ensaio: true,
+      horario: "business-hours",
     });
 
     const repos = await api<{ project: string; repo: string; status: string }[]>(factory, "GET", "/repos");
@@ -121,9 +140,144 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     expect(catalogo.repos.find((r) => r.id === 77)?.plugado).toMatchObject({ projeto: "novo-repo" });
   });
 
-  it("a importação funciona logo depois de criar, sem reiniciar o daemon", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    await chamada(factory, "POST", "/projetos/github", { repoId: 77, nome: "novo-repo", prefixo: "NR" });
+  it("o caminho do clone é gerenciado pela fábrica: o corpo não consegue escolher outro", async () => {
+    factory = await subirFabrica();
+    await chamada(factory, "POST", "/projetos/github", { ...corpo(), caminho: "/etc" });
+    const configuracao = await api<{ repositories: { path: string }[] }>(
+      factory,
+      "GET",
+      "/projetos/novo-repo/configuracao",
+    );
+    expect(configuracao.repositories[0]?.path).toMatch(/repositorios[\\/]novo-repo$/);
+  });
+
+  it("o projeto criado nasce incompleto e a lista diz o que falta (PO e tech lead)", async () => {
+    factory = await subirFabrica();
+    await chamada(factory, "POST", "/projetos/github", corpo());
+    const situacao = await api<{ estado: string; pendencias: string[] }>(factory, "GET", "/projetos/novo-repo/estado");
+    expect(situacao.estado).toBe("incompleto");
+    expect(situacao.pendencias).toEqual(
+      expect.arrayContaining(["falta uma pessoa no perfil PO", "falta uma pessoa no perfil tech lead"]),
+    );
+  });
+
+  it("horário padrão é horário comercial; sempre ativo e ensaio desligado são escolhas da criação", async () => {
+    factory = await subirFabrica();
+    await chamada(factory, "POST", "/projetos/github", corpo());
+    expect((await api<{ activity: string }>(factory, "GET", "/projetos/novo-repo/configuracao")).activity).toBe(
+      "business-hours",
+    );
+
+    const outro = await chamada(factory, "POST", "/projetos/github", {
+      ...corpo({ nome: "sempre-ativo", fonte: fonteGithub() }),
+      repoId: 42,
+      fonte: { type: "jira", project: "SA", assignee: "accountid-1", baseUrl: "https://empresa.atlassian.net" },
+      horario: "always",
+      ensaio: false,
+    });
+    expect(outro.status).toBe(201);
+    expect(outro.body).toMatchObject({ horario: "always", ensaio: false, fonte: "jira" });
+  });
+
+  it("a Fonte de GitHub Issues do mesmo repositório que outro projeto já usa é recusada, com o nome do projeto", async () => {
+    factory = await subirFabrica();
+    const res = await chamada(factory, "POST", "/projetos/github", {
+      ...corpo({ fonte: { type: "github", project: "OU", assignee: "dono" } }),
+      repoId: 42,
+      nome: "outro",
+    });
+    expect(res.status).toBe(409);
+    expect(String(res.body?.error)).toContain("já tem a Fonte github de issues no projeto exemplo");
+  });
+
+  it("o mesmo repositório com Fonte Jira é permitido: projetos com Jira e código no GitHub", async () => {
+    factory = await subirFabrica();
+    const res = await chamada(factory, "POST", "/projetos/github", {
+      ...corpo({
+        fonte: { type: "jira", project: "OU", assignee: "accountid-1", baseUrl: "https://empresa.atlassian.net" },
+      }),
+      repoId: 42,
+      nome: "outro",
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("nome igual ao de um projeto do YAML é recusado (o YAML nunca é sobrescrito)", async () => {
+    factory = await subirFabrica();
+    const res = await chamada(factory, "POST", "/projetos/github", corpo({ nome: "exemplo" }));
+    expect(res.status).toBe(409);
+    expect(String(res.body?.error)).toContain("já existe um projeto chamado exemplo");
+  });
+
+  it("prefixo já usado pelo YAML é recusado, sem diferenciar caixa", async () => {
+    factory = await subirFabrica();
+    const res = await chamada(
+      factory,
+      "POST",
+      "/projetos/github",
+      corpo({ fonte: { type: "github", project: "sf", assignee: "dono" } }),
+    );
+    expect(res.status).toBe(409);
+    expect(String(res.body?.error)).toContain("prefixo SF");
+  });
+
+  it("se a clonagem falha, a criação responde 502 e nada fica salvo", async () => {
+    factory = await subirFabrica({
+      clonarRepositorio: async () => {
+        throw new Error("não foi possível clonar IgorGuariroba/novo-repo pelo GitHub App");
+      },
+    });
+    const res = await chamada(factory, "POST", "/projetos/github", corpo());
+    expect(res.status).toBe(502);
+    expect(String(res.body?.error)).toContain("não foi possível clonar");
+    expect((await fetch(`${factory.url}/projetos/novo-repo/estado`)).status).toBe(404);
+  });
+
+  it("projeto incompleto não entra na fila; completo com PO e tech lead, sim", async () => {
+    const card = {
+      key: "NR-1",
+      title: "Primeira",
+      description: "Descrição",
+      status: "aberta",
+      assignee: "IgorGuariroba",
+    };
+    factory = await subirFabrica({ createSource: () => new MemoryDemandSource([card]) });
+    await chamada(factory, "POST", "/projetos/github", corpo());
+
+    await poll(factory);
+    expect((await api<{ id: string }[]>(factory, "GET", "/tasks")).map((t) => t.id)).not.toContain("novo-repo/NR-1");
+
+    const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
+    await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
+      ...atual,
+      people: [
+        { id: "po-x", role: "po" },
+        { id: "tl-x", role: "tech_lead" },
+      ],
+    });
+    await poll(factory);
+    expect((await api<{ id: string }[]>(factory, "GET", "/tasks")).map((t) => t.id)).toContain("novo-repo/NR-1");
+  });
+
+  it("importar um projeto incompleto é recusado, com o que falta", async () => {
+    factory = await subirFabrica();
+    await chamada(factory, "POST", "/projetos/github", corpo());
+    const res = await chamada(factory, "POST", "/github/importar", { repoId: 77 });
+    expect(res.status).toBe(409);
+    expect(String(res.body?.error)).toContain("incompleto: falta uma pessoa no perfil PO");
+  });
+
+  it("a importação funciona logo depois de completar o projeto, sem reiniciar o daemon", async () => {
+    factory = await subirFabrica();
+    await chamada(factory, "POST", "/projetos/github", corpo());
+    const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
+    await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
+      ...atual,
+      people: [
+        { id: "po-x", role: "po" },
+        { id: "tl-x", role: "tech_lead" },
+      ],
+    });
     expect((await chamada(factory, "POST", "/github/importar", { repoId: 77 })).status).toBe(202);
     const registro = await esperarImportacao(factory, 77);
     expect(registro).toMatchObject({ status: "ok", ultimoResultado: { criadas: 1 } });
@@ -131,58 +285,42 @@ describe("POST /projetos/github: criar projeto a partir de um repositório do Ap
     expect(tarefas.map((t) => t.id)).toEqual(["novo-repo/NR-1"]);
   });
 
-  it("o projeto criado sobrevive a um reinício do daemon", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    await chamada(factory, "POST", "/projetos/github", { repoId: 77, nome: "novo-repo", prefixo: "NR" });
+  it("o projeto criado e as edições dele sobrevivem a um reinício do daemon", async () => {
+    factory = await subirFabrica();
+    await chamada(factory, "POST", "/projetos/github", corpo());
+    const atual = await api<Record<string, unknown>>(factory, "GET", "/projetos/novo-repo/configuracao");
+    await api(factory, "PUT", "/projetos/novo-repo/configuracao", {
+      ...atual,
+      people: [
+        { id: "po-x", role: "po" },
+        { id: "tl-x", role: "tech_lead" },
+      ],
+    });
     factory = await factory.restart();
     const repos = await api<{ project: string }[]>(factory, "GET", "/repos");
     expect(repos.map((r) => r.project)).toContain("novo-repo");
+    expect(await api(factory, "GET", "/projetos/novo-repo/estado")).toEqual({ estado: "ativo", pendencias: [] });
     expect((await chamada(factory, "POST", "/github/importar", { repoId: 77 })).status).toBe(202);
   });
 
-  it("nome igual ao de um projeto do YAML é recusado (o YAML nunca é sobrescrito)", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    const res = await chamada(factory, "POST", "/projetos/github", { repoId: 77, nome: "exemplo", prefixo: "NR" });
-    expect(res.status).toBe(409);
-    expect(String(res.body?.error)).toContain("já existe um projeto chamado exemplo");
-  });
-
-  it("prefixo já usado pelo YAML é recusado, sem diferenciar caixa", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    const res = await chamada(factory, "POST", "/projetos/github", { repoId: 77, nome: "novo-repo", prefixo: "sf" });
-    expect(res.status).toBe(409);
-    expect(String(res.body?.error)).toContain("prefixo SF");
-  });
-
-  it("repositório já monitorado pelo YAML não ganha um segundo projeto", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    const res = await chamada(factory, "POST", "/projetos/github", { repoId: 42, nome: "outro", prefixo: "OU" });
-    expect(res.status).toBe(409);
-    expect(String(res.body?.error)).toContain("já é monitorado");
-  });
-
   it("nome inválido responde 400 com a regra; repositório fora do catálogo responde 404", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
-    const invalido = await chamada(factory, "POST", "/projetos/github", {
-      repoId: 77,
-      nome: "Com Espaço",
-      prefixo: "NR",
-    });
+    factory = await subirFabrica();
+    const invalido = await chamada(factory, "POST", "/projetos/github", corpo({ nome: "Com Espaço" }));
     expect(invalido.status).toBe(400);
     expect(String(invalido.body?.error)).toContain("nome: use minúsculas");
-    expect(
-      (await chamada(factory, "POST", "/projetos/github", { repoId: 999, nome: "novo", prefixo: "NV" })).status,
-    ).toBe(404);
+    expect((await chamada(factory, "POST", "/projetos/github", corpo({ repoId: 999, nome: "novo" }))).status).toBe(404);
   });
 
-  it("corpo sem os campos responde 400", async () => {
-    factory = await startTestFactory({ config: configYaml(), githubApp: await app() });
+  it("corpo sem os campos, sem Fonte ou sem comando de teste responde 400", async () => {
+    factory = await subirFabrica();
     expect((await chamada(factory, "POST", "/projetos/github", { repoId: 77 })).status).toBe(400);
+    expect((await chamada(factory, "POST", "/projetos/github", corpo({ fonte: undefined }))).status).toBe(400);
+    expect((await chamada(factory, "POST", "/projetos/github", corpo({ comandoTeste: [] }))).status).toBe(400);
   });
 
   it("sem App configurado, não cria nada e diz por quê", async () => {
-    factory = await startTestFactory({ config: configYaml() });
-    const res = await chamada(factory, "POST", "/projetos/github", { repoId: 77, nome: "novo-repo", prefixo: "NR" });
+    factory = await startTestFactory({ config: configYaml(), clonarRepositorio: clonarFalso });
+    const res = await chamada(factory, "POST", "/projetos/github", corpo());
     expect(res.status).toBe(409);
     expect(String(res.body?.error)).toContain("GitHub App não configurado");
   });

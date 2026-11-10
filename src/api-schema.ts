@@ -502,7 +502,7 @@ export const API_SCHEMA = {
     "/projetos/github": {
       post: {
         summary:
-          "Cria um projeto de repositório do GitHub App a partir do catálogo (corpo: { repoId, nome, prefixo, ensaio? }). Modelos e estados vêm do primeiro projeto do YAML; ensaio é o padrão. Responde 201",
+          "Cria um projeto a partir de um repositório do catálogo do GitHub App (corpo: { repoId, nome, fonte: { type: github|gitlab|jira, project, ...campos da Fonte }, comandoTeste: string[], horario?: business-hours|always, ensaio? }). A fábrica clona o repositório em diretório gerenciado; o projeto nasce incompleto se faltar PO, tech lead ou outro item (ADR-0022). Responde 201 com estado e pendencias; 502 se a clonagem falhar, sem gravar nada",
         responses: ok,
       },
     },
@@ -536,6 +536,9 @@ export const API_SCHEMA = {
       get: { summary: "Histórico de alterações da configuração, sem valores", responses: ok },
     },
     "/projetos/{nome}/pendencias": { get: { summary: "O que falta na configuração (lista de avisos)", responses: ok } },
+    "/projetos/{nome}/estado": {
+      get: { summary: "Estado do projeto (incompleto ou ativo) com a lista do que falta (ADR-0022)", responses: ok },
+    },
     "/segredos": { get: { summary: "Credenciais cadastradas: nome e data, nunca o valor", responses: ok } },
     "/ferramentas": {
       get: {
