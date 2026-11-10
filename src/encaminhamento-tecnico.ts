@@ -3,6 +3,7 @@ import type { ProjectConfig } from "./config.js";
 import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
 import type { FactoryState } from "./durable.js";
 import type { EventRecorder } from "./events.js";
+import { pessoasDoPapel } from "./packages/profiles/index.js";
 import { calcularPrazoUtil } from "./prazo-util.js";
 
 export type EncaminhamentoTecnico = {
@@ -37,7 +38,7 @@ export async function encaminharPerguntaTecnica(deps: Dependencias, id: string, 
     if (!["aguardando-humano", "pausada"].includes(task.status)) return undefined;
     if (!q.needsForwarding && deps.now() < prazoPerguntaTecnica(q.askedAt)) return undefined;
 
-    const lead = deps.config.people.find((p) => p.role === "tech_lead");
+    const lead = pessoasDoPapel(deps.config, "tech_lead")[0];
     const reason = q.needsForwarding ? ("nao-sei" as const) : ("prazo" as const);
     q.forwarding = { status: lead ? "sending" : "blocked", to: lead?.id ?? null, reason, at: deps.now() };
     // Só valores independentes do rascunho saem do commit.
@@ -64,7 +65,7 @@ export async function encaminharPerguntaTecnica(deps: Dependencias, id: string, 
       deps.config.people.map((p) => p.id),
       reserva.to,
     );
-    if (!deps.config.people.some((p) => p.id === reserva.to && p.role === "tech_lead")) {
+    if (!pessoasDoPapel(deps.config, "tech_lead").some((p) => p.id === reserva.to)) {
       throw new Error("Tech lead revogado");
     }
   } catch {

@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -18,7 +18,7 @@ import { API_SCHEMA } from "./api-schema.js";
 import { AvisoLote } from "./aviso-lote.js";
 import { synchronizeBase } from "./base-sync.js";
 import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
-import { type Channel, createCardCommentChannel } from "./channel.js";
+import { type Channel, createCardCommentChannel, createPersonChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
 import { type CardState, ProjectConfig } from "./config.js";
 import { runDelivery } from "./delivery-stage.js";
@@ -56,6 +56,7 @@ import {
   createGitHubAppChecker,
   type GitHubAppPanel,
 } from "./github-app.js";
+import { ESQUEMA_FONTE as ESQUEMA_GITHUB } from "./github-demand-source.js";
 import {
   applyInstallationDelivery as applyInstallationToState,
   applyIssueDelivery as applyToState,
@@ -65,9 +66,28 @@ import {
   type WebhookEffect,
   type WebhookProject,
 } from "./github-webhook.js";
+import { ESQUEMA_FONTE as ESQUEMA_GITLAB } from "./gitlab-demand-source.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { aplicarImportacao } from "./importacao-issues.js";
+import { ESQUEMA_FONTE as ESQUEMA_JIRA } from "./jira-demand-source.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
+import {
+  camposAlterados,
+  lerConfiguracao,
+  pendenciasDeConfiguracao,
+  semearConfiguracoes,
+} from "./packages/config-store/index.js";
+import { createIntegrationRegistry, testarConexaoJira } from "./packages/integracoes/index.js";
+import {
+  avisoTeamsDe,
+  canalDaPessoa,
+  identidadeTeams,
+  PERFIS_PRONTOS,
+  pessoasDoPapel,
+  proximaPessoaDoPapel,
+  validarPerfis,
+} from "./packages/profiles/index.js";
+import { createSecretStore } from "./packages/secret-store/index.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { conflitoProjeto, montarProjetoGithub, padroesDe } from "./projetos-github.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
@@ -92,6 +112,8 @@ import {
 } from "./spec-stage.js";
 import { blockedResumeKind } from "./task-resume.js";
 import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
+import { createTeamsChannel } from "./teams-canal.js";
+import type { TeamsConversation } from "./teams-conversa.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
 import {
@@ -314,6 +336,15 @@ function retroInput(stage: RetroStage, task: QueuedTask, all: FactoryEvent[]): s
 }
 
 /** Sobe a fábrica: estado durável, agendador da fila única e API local, sempre só em localhost. */
+/** Se `caminho` existe e é um diretório (fatia 10: caminho de repositório local). */
+async function ehDiretorio(caminho: string): Promise<boolean> {
+  try {
+    return (await stat(caminho)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export async function startFactory(opts: {
   projects: FactoryProject[];
   /** Arquivo SQLite do estado durável. */
@@ -331,6 +362,8 @@ export async function startFactory(opts: {
   clock?: FactoryClock;
   /** Canal de aviso ao PO; nunca é chamado no dry-run. */
   teams?: TeamsNotifier;
+  /** Conversa 1:1 com as pessoas no Teams (canal `teams`, fatia 08). */
+  teamsConversation?: TeamsConversation;
   /** Interface de gestão (Telegram) e a conversa/usuário de onde ela aceita comandos. Sem ela, a fábrica só tem a API. */
   management?: { port: ManagementInterface; chat: string; user?: string };
   /**
@@ -348,6 +381,10 @@ export async function startFactory(opts: {
    * não está configurado. `fetch` é injetado nos testes.
    */
   githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
+  /** Cria a interface de gestão do Telegram com o token do cofre (fatia 09). Quem chama escolhe a implementação. */
+  criarInterfaceTelegram?: (token: string, chat: string) => ManagementInterface;
+  /** `fetch` da checagem de conexão com a Fonte antes de salvar a configuração (padrão: o global). */
+  fetchFonte?: typeof fetch;
   /** Cria a Fonte de um projeto de repositório GitHub criado pela UI (o mesmo que o daemon usa para os do YAML). */
   createSource?: (config: ProjectConfig) => DemandSource;
   /** Diretório do conhecimento de um projeto criado pela UI (`knowledge.md`, ADR-0010). */
@@ -371,6 +408,35 @@ export async function startFactory(opts: {
     return () => clearTimeout(timer);
   };
   const retroSettings = { ...opts.retro };
+  /** Cofre das credenciais (ADR-0018), ao lado do estado durável. Nunca devolve valores pela API. */
+  const segredos = createSecretStore({ dir: join(dirname(resolvePath(opts.statePath)), "segredos") });
+  // Canais de conversa com as pessoas do projeto, por tipo (ADR-0019). Hoje só existe o comentário no card.
+  const rotulosCanais: Record<string, string> = {
+    "card-comment": "Comentário no card (perguntas e respostas)",
+    teams: "Aviso no Teams",
+  };
+  const canais = createIntegrationRegistry<
+    {
+      source: DemandSource;
+      writer: EffectWriter;
+      conversation?: TeamsConversation;
+      personMri?: string;
+      dryRun?: boolean;
+    },
+    Channel
+  >("Canal");
+  canais.register("card-comment", ({ source, writer }) => createCardCommentChannel({ source, writer }));
+  canais.register("teams", ({ conversation, personMri, dryRun }) => {
+    if (!conversation || !personMri)
+      throw new Error("Teams não configurado: o canal de conversa precisa da conversa e da identidade");
+    return createTeamsChannel({ conversation, personMri, dryRun });
+  });
+  // Canais de aviso (fatia 01): o aviso a uma pessoa é um tipo registrado, como os de conversa. Hoje: o Teams.
+  const canaisDeAviso = createIntegrationRegistry<{ notifier?: TeamsNotifier }, TeamsNotifier>("Aviso");
+  canaisDeAviso.register("teams", ({ notifier }) => {
+    if (!notifier) throw new Error("Teams não configurado: o aviso precisa do notificador");
+    return notifier;
+  });
   let events!: DurableEventLog;
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   /** Monta o que o daemon precisa de um projeto (escritor, canal, código). Usado no startup e ao criar um projeto. */
@@ -415,10 +481,45 @@ export async function startFactory(opts: {
       },
       retro: retroSettings,
     });
-    const channel: Channel = createCardCommentChannel({ source: p.source, writer });
+    const pessoaDe = (personId: string) => p.config.people.find((x) => x.id === personId);
+    const padrao = canais.create("card-comment", { source: p.source, writer });
+    const channel: Channel = createPersonChannel({
+      padrao,
+      escolheTeams: (personId) => {
+        const pessoa = pessoaDe(personId);
+        return pessoa !== undefined && canalDaPessoa(pessoa) === "teams";
+      },
+      teamsDe: (personId) => {
+        const pessoa = pessoaDe(personId);
+        const personMri = pessoa && identidadeTeams(pessoa);
+        if (!pessoa || !personMri || !opts.teamsConversation) return undefined;
+        return canais.create("teams", {
+          source: p.source,
+          writer,
+          conversation: opts.teamsConversation,
+          personMri,
+          dryRun: p.config.dryRun,
+        });
+      },
+    });
     return { ...p, codeHost, writer, channel };
   }
   const projects = new Map(opts.projects.map((p) => [p.config.name, montarProjeto(p)] as const));
+  /** Base de cada projeto (Fonte e conhecimento): a configuração muda sem trocar essas peças (ADR-0017). */
+  const bases = new Map(opts.projects.map((p) => [p.config.name, p] as const));
+  /** Troca a configuração de um projeto carregado, mantendo a Fonte e o conhecimento dele. */
+  function aplicarConfiguracao(config: ProjectConfig): boolean {
+    const base = bases.get(config.name);
+    if (!base) return false;
+    // Trocar o tipo da Fonte cria a Fonte nova; mudar só os campos mantém a que já existe.
+    const trocouTipo = base.config.source.type !== config.source.type && opts.createSource;
+    const nova: FactoryProject = trocouTipo
+      ? { ...base, config, source: opts.createSource?.(config) ?? base.source }
+      : { ...base, config };
+    bases.set(config.name, nova);
+    projects.set(config.name, montarProjeto(nova));
+    return true;
+  }
   // Os clones da fábrica ficam ao lado do estado durável, nunca na cópia de trabalho do usuário.
   const implementationDeps = {
     worktreesRoot: join(dirname(resolvePath(opts.statePath)), "worktrees"),
@@ -952,12 +1053,12 @@ export async function startFactory(opts: {
             throw new StageBlocked((erro as Error).message);
           }
         }
-        const po = project.config.people.find((p) =>
-          tecnica ? p.id === project.config.source.assignee : p.role === "po",
-        );
+        const po = tecnica
+          ? project.config.people.find((p) => p.id === project.config.source.assignee)
+          : pessoasDoPapel(project.config, "po")[0];
         if (!po)
           throw new StageBlocked(`o grill precisa perguntar ao PO, mas o projeto ${input.project} não declara um`);
-        if (!tecnica && po.teamsUserId && (!project.config.source.baseUrl || !opts.teams))
+        if (!tecnica && avisoTeamsDe(po) && (!project.config.source.baseUrl || !opts.teams))
           throw new StageBlocked("aviso ao PO no Teams configurado sem origem Jira ou conexão MCP");
         if (previous.length >= MAX_PO_QUESTIONS)
           throw new StageBlocked(
@@ -986,10 +1087,10 @@ export async function startFactory(opts: {
           notified: false,
           answer: null,
           ...(!tecnica && project.config.questionApproval ? { publication: "draft" as const } : {}),
-          ...(!tecnica && po.teamsUserId && project.config.source.baseUrl && !project.config.dryRun
+          ...(!tecnica && avisoTeamsDe(po) && project.config.source.baseUrl && !project.config.dryRun
             ? {
                 teamsNotice: {
-                  userId: po.teamsUserId,
+                  userId: avisoTeamsDe(po) as string,
                   link: `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(input.key)}`,
                   status: "pending" as const,
                 },
@@ -1067,6 +1168,50 @@ export async function startFactory(opts: {
           status: "lembrete",
         });
         q.reminded = true;
+      }
+      // Fatia 07: pergunta de negócio sem resposta no prazo escalona à pessoa seguinte do perfil PO. Com revisão de
+      // perguntas, o escalonamento vira rascunho: só sai no card depois da aprovação, como a pergunta original.
+      const seguinte = !q.notified && now >= q.notifyAt ? proximaPessoaDoPapel(project.config, "po", q.to) : undefined;
+      if (seguinte) {
+        const revisao = project.config.questionApproval;
+        const ref = revisao
+          ? { card: input.key, to: seguinte.id, before: [] }
+          : await project.channel.ask({
+              card: input.key,
+              to: seguinte.id,
+              // O texto nomeia a pessoa: sem isso, a deduplicação do escritor trataria a repetição como a mesma mensagem.
+              text: `Pergunta ${q.n} (encaminhada a ${seguinte.name ?? seguinte.id}): ${q.text}`,
+            });
+        const { calendar } = project.config;
+        await markQuestion(input.id, q.n, (stored) => {
+          stored.to = seguinte.id;
+          stored.ref = ref;
+          stored.reminded = false;
+          stored.notified = false;
+          if (revisao) stored.publication = "draft";
+          stored.remindAt = addBusinessHours(calendar, now, REMINDER_BUSINESS_HOURS);
+          stored.notifyAt = addBusinessHours(calendar, now, workdayHours(calendar));
+        });
+        await events.append(
+          revisao
+            ? {
+                type: "notify",
+                project: input.project,
+                target: input.key,
+                reason: "pergunta-sem-resposta",
+                message: `A pergunta ${q.n} no card ${input.key} foi encaminhada a ${seguinte.name ?? seguinte.id} e aguarda a sua revisão.`,
+              }
+            : {
+                type: "question",
+                project: input.project,
+                target: input.key,
+                n: q.n,
+                to: seguinte.id,
+                text: q.text,
+                status: "escalonada",
+              },
+        );
+        return addBusinessHours(calendar, now, REMINDER_BUSINESS_HOURS);
       }
       if (!q.notified && now >= q.notifyAt) {
         await events.append({
@@ -1168,14 +1313,26 @@ export async function startFactory(opts: {
   function registrarProjeto(config: ProjectConfig): void {
     if (!opts.createSource) throw new Error("este daemon não cria a Fonte de projetos da interface");
     const knowledgeDir = opts.knowledgeDirFor?.(config.name);
-    projects.set(
-      config.name,
-      montarProjeto({
-        config,
-        source: opts.createSource(config),
-        ...(knowledgeDir ? { knowledgeDir } : {}),
-      }),
+    const base: FactoryProject = {
+      config,
+      source: opts.createSource(config),
+      ...(knowledgeDir ? { knowledgeDir } : {}),
+    };
+    bases.set(config.name, base);
+    projects.set(config.name, montarProjeto(base));
+  }
+
+  // ADR-0017: o YAML só semeia o estado; depois da primeira execução, a configuração guardada é a que vale.
+  await harness.commit(async (tx) => {
+    const state = await tx.doc(StateDoc);
+    state.projetos = semearConfiguracoes(
+      state.projetos ?? {},
+      opts.projects.map((p) => p.config),
     );
+  }, context);
+  for (const p of opts.projects) {
+    const guardada = lerConfiguracao((await readState()).projetos?.[p.config.name]);
+    if (guardada) aplicarConfiguracao(guardada);
   }
 
   // Projetos criados pela UI voltam com o estado. Um nome que o YAML já usa não é sobrescrito (o YAML manda).
@@ -1266,15 +1423,15 @@ export async function startFactory(opts: {
         return undefined;
       const q = task.questions?.find((item) => item.n === n);
       if (q?.teamsNotice?.status !== "pending" || q.answer !== null) return undefined;
-      if (!config.people.some((p) => p.role === "po" && p.id === q.to && p.teamsUserId === q.teamsNotice?.userId))
+      if (!pessoasDoPapel(config, "po").some((p) => p.id === q.to && identidadeTeams(p) === q.teamsNotice?.userId))
         return undefined;
       q.teamsNotice.status = "attempted";
-      const po = config.people.find((p) => p.role === "po" && p.id === q.to);
+      const po = pessoasDoPapel(config, "po").find((p) => p.id === q.to);
       return { userId: q.teamsNotice.userId, link: q.teamsNotice.link, title: task.title, name: po?.name };
     }, context);
     if (!notice) return;
     try {
-      await opts.teams.send({
+      await canaisDeAviso.create("teams", { notifier: opts.teams }).send({
         userId: notice.userId,
         text: teamsQuestionMessage({ card: key, title: notice.title, link: notice.link, name: notice.name }),
       });
@@ -2262,7 +2419,7 @@ export async function startFactory(opts: {
         const preview = {
           card: cardKey,
           to: q.to,
-          comment: withAutomationMark(redactSecrets(text)),
+          comment: withAutomationMark(redactSecrets(`${project.source.formatMention(q.to)} ${text}`)),
           dryRun: project.config.dryRun,
         };
         const revision = reviewRevision(preview);
@@ -2340,7 +2497,7 @@ export async function startFactory(opts: {
           if (q.publication !== "draft" || task?.status !== "aguardando-humano")
             return json(res, 409, { error: "pergunta não está disponível para aprovação" });
           const project = projectOf(projectName);
-          const po = project.config.people.find((p) => p.role === "po" && p.id === q.to);
+          const po = pessoasDoPapel(project.config, "po").find((p) => p.id === q.to);
           if (!po) return json(res, 409, { error: "destinatário não está configurado" });
           const link = project.config.source.baseUrl
             ? `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(cardKey)}`
@@ -2348,10 +2505,12 @@ export async function startFactory(opts: {
           const preview = {
             card: cardKey,
             to: q.to,
-            comment: withAutomationMark(redactSecrets(`Pergunta ${n}: ${q.text}`)),
-            teamsUserId: po.teamsUserId ?? null,
+            comment: withAutomationMark(
+              redactSecrets(`${project.source.formatMention(q.to)} Pergunta ${n}: ${q.text}`),
+            ),
+            teamsUserId: avisoTeamsDe(po) ?? null,
             teamsMessage:
-              po.teamsUserId && link
+              avisoTeamsDe(po) && link
                 ? teamsQuestionMessage({ card: cardKey, title: task?.title ?? "", link, name: po.name })
                 : null,
             dryRun: project.config.dryRun,
@@ -2363,7 +2522,7 @@ export async function startFactory(opts: {
           if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
           if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
           if (state.daemonPaused || task.pauseRequested) return json(res, 409, { error: "tarefa ou daemon pausado" });
-          if (po.teamsUserId && (!link || !opts.teams)) return json(res, 409, { error: "Teams indisponível" });
+          if (avisoTeamsDe(po) && (!link || !opts.teams)) return json(res, 409, { error: "Teams indisponível" });
           const reserved = await harness.commit(async (tx) => {
             const currentState = await tx.doc(StateDoc);
             const current = currentState.tasks.find((t) => t.id === id);
@@ -2399,7 +2558,7 @@ export async function startFactory(opts: {
             stored.remindAt = addBusinessHours(project.config.calendar, askedAt, REMINDER_BUSINESS_HOURS);
             stored.notifyAt = addBusinessHours(project.config.calendar, askedAt, workdayHours(project.config.calendar));
             stored.teamsNotice =
-              po.teamsUserId && link ? { userId: po.teamsUserId, link, status: "pending" } : undefined;
+              avisoTeamsDe(po) && link ? { userId: avisoTeamsDe(po) as string, link, status: "pending" } : undefined;
             stored.publication = "sent";
           });
           await sendTeamsNotice(id, projectName, cardKey, n);
@@ -2512,6 +2671,175 @@ export async function startFactory(opts: {
         const found = await commands[command](id);
         return found ? json(res, 200, { ok: true }) : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
+      const pendenciasMatch = url.pathname.match(/^\/projetos\/([^/]+)\/pendencias$/);
+      if (pendenciasMatch && req.method === "GET") {
+        const nome = decodeURIComponent(pendenciasMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
+        return json(res, 200, pendenciasDeConfiguracao(guardada));
+      }
+      if (route === "GET /telegram/configuracao") {
+        const salvo = (await readState()).telegramConfig;
+        return salvo ? json(res, 200, salvo) : json(res, 404, { error: "Telegram não configurado" });
+      }
+      if (route === "PUT /telegram/configuracao") {
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const corpo = (await readBody(req)) as { chat?: unknown; credential?: unknown; usuario?: unknown } | undefined;
+        if (typeof corpo?.chat !== "string" || !/^-?\d+$/.test(corpo.chat.trim()))
+          return json(res, 400, { error: "informe chat, o id numérico da conversa do bot" });
+        if (typeof corpo.usuario !== "string" || !/^\d+$/.test(corpo.usuario.trim()))
+          return json(res, 400, {
+            error: "informe usuario, o id numérico do usuário autorizado a falar com a fábrica",
+          });
+        const credential = typeof corpo.credential === "string" ? corpo.credential.trim() : undefined;
+        if (credential !== undefined && !(await segredos.has(credential)))
+          return json(res, 400, { error: `credencial ${credential} não cadastrada` });
+        const configTelegram = {
+          chat: corpo.chat.trim(),
+          usuario: corpo.usuario.trim(),
+          ...(credential ? { credential } : {}),
+        };
+        await harness.commit(async (tx) => {
+          (await tx.doc(StateDoc)).telegramConfig = configTelegram;
+        }, context);
+        await reiniciarBridge();
+        return json(res, 200, configTelegram);
+      }
+      const historicoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/historico$/);
+      if (historicoMatch && req.method === "GET") {
+        const nome = decodeURIComponent(historicoMatch[1] ?? "");
+        const state = await readState();
+        if (!lerConfiguracao(state.projetos?.[nome])) return json(res, 404, { error: `projeto ${nome} não existe` });
+        return json(res, 200, state.historicoConfig?.[nome] ?? []);
+      }
+      const segredoMatch = url.pathname.match(/^\/segredos\/([^/]+)$/);
+      if (route === "GET /segredos") return json(res, 200, await segredos.list());
+      if (segredoMatch && req.method === "PUT") {
+        const nomeSegredo = decodeURIComponent(segredoMatch[1] ?? "");
+        if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(nomeSegredo))
+          return json(res, 400, { error: "nome: use minúsculas, números e hífen (2 a 64 caracteres)" });
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const corpo = (await readBody(req)) as { valor?: unknown } | undefined;
+        if (typeof corpo?.valor !== "string" || corpo.valor.length === 0)
+          return json(res, 400, { error: "informe valor, o conteúdo da credencial" });
+        // Credencial em uso por projetos: a troca passa pelo mesmo teste de conexão do PUT da Fonte Jira
+        // (um valor inválido não deve degradar as tarefas em silêncio) e fica registrada no histórico.
+        const usadoPor: { nome: string; fonte: { type: string; baseUrl?: string; email?: string } }[] = [];
+        for (const [nome, bruto] of Object.entries((await readState()).projetos ?? {})) {
+          const config = lerConfiguracao(bruto);
+          if (config?.source.credential === nomeSegredo) usadoPor.push({ nome, fonte: config.source });
+        }
+        for (const { fonte } of usadoPor) {
+          if (fonte.type !== "jira" || !fonte.baseUrl || !fonte.email) continue;
+          const conexao = await testarConexaoJira({
+            baseUrl: fonte.baseUrl,
+            email: fonte.email,
+            token: corpo.valor,
+            fetch: opts.fetchFonte ?? fetch,
+          });
+          if (!conexao.ok)
+            return json(res, 400, {
+              error: `conexão com o Jira falhou (${conexao.motivo}); a credencial ${nomeSegredo} não foi trocada`,
+            });
+        }
+        const gravado = await segredos.put(nomeSegredo, corpo.valor);
+        if (usadoPor.length > 0) {
+          await harness.commit(async (tx) => {
+            const state = await tx.doc(StateDoc);
+            const quando = new Date(clock.now()).toISOString();
+            const historico = { ...state.historicoConfig };
+            for (const { nome } of usadoPor)
+              historico[nome] = [
+                ...(historico[nome] ?? []),
+                { quando, autor: "usuario", campos: [`credencial ${nomeSegredo} trocada`] },
+              ];
+            state.historicoConfig = historico;
+          }, context);
+        }
+        return json(res, 200, gravado);
+      }
+      const configuracaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/configuracao$/);
+      if (configuracaoMatch && req.method === "GET") {
+        const nome = decodeURIComponent(configuracaoMatch[1] ?? "");
+        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+        return guardada ? json(res, 200, guardada) : json(res, 404, { error: `projeto ${nome} não existe` });
+      }
+      if (configuracaoMatch && req.method === "PUT") {
+        const nome = decodeURIComponent(configuracaoMatch[1] ?? "");
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const lida = ProjectConfig.safeParse(await readBody(req));
+        if (!lida.success)
+          return json(res, 400, {
+            error: lida.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+          });
+        if (lida.data.name !== nome) return json(res, 400, { error: "o nome do projeto no corpo não bate com a URL" });
+        const errosPerfis = validarPerfis({ profiles: lida.data.profiles, people: lida.data.people });
+        if (errosPerfis.length > 0) return json(res, 400, { error: errosPerfis[0] });
+        const semIdentidade = lida.data.people.find((p) => p.canal === "teams" && !identidadeTeams(p));
+        if (semIdentidade)
+          return json(res, 400, { error: `pessoa ${semIdentidade.id}: canal teams exige identidade no Teams` });
+        for (const repositorio of lida.data.repositories ?? []) {
+          if (!(await ehDiretorio(repositorio.path)))
+            return json(res, 400, { error: `caminho do repositório não existe: ${repositorio.path}` });
+        }
+        const fonte = lida.data.source;
+        if (
+          (fonte.type === "gitlab" || fonte.type === "github") &&
+          fonte.credential &&
+          !(await segredos.has(fonte.credential))
+        )
+          return json(res, 400, { error: `credencial ${fonte.credential} não cadastrada` });
+        if (fonte.type === "jira" && fonte.credential) {
+          if (!(await segredos.has(fonte.credential)))
+            return json(res, 400, { error: `credencial ${fonte.credential} não cadastrada` });
+          if (!fonte.baseUrl || !fonte.email)
+            return json(res, 400, { error: "a Fonte Jira com credencial precisa de baseUrl e email" });
+          const token = await segredos.get(fonte.credential);
+          const conexao = await testarConexaoJira({
+            baseUrl: fonte.baseUrl,
+            email: fonte.email,
+            token: token ?? "",
+            fetch: opts.fetchFonte ?? fetch,
+          });
+          if (!conexao.ok) return json(res, 400, { error: `conexão com o Jira falhou (${conexao.motivo})` });
+        }
+        let existe = false;
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          const anterior = lerConfiguracao(state.projetos?.[nome]);
+          if (!anterior) return;
+          existe = true;
+          state.projetos = { ...state.projetos, [nome]: JSON.stringify(lida.data) };
+          const campos = camposAlterados(anterior, lida.data);
+          if (campos.length > 0)
+            state.historicoConfig = {
+              ...state.historicoConfig,
+              [nome]: [
+                ...(state.historicoConfig?.[nome] ?? []),
+                { quando: new Date(clock.now()).toISOString(), autor: "usuario", campos },
+              ],
+            };
+        }, context);
+        if (existe) aplicarConfiguracao(lida.data);
+        return existe ? json(res, 200, lida.data) : json(res, 404, { error: `projeto ${nome} não existe` });
+      }
+      if (route === "GET /projetos")
+        return json(
+          res,
+          200,
+          [...projects.values()].map((p) => ({
+            nome: p.config.name,
+            fonte: p.config.source.type,
+            ensaio: p.config.dryRun,
+          })),
+        );
+      if (route === "GET /integracoes/canais")
+        return json(res, 200, [
+          ...canais.tipos().map((tipo) => ({ tipo, papel: "conversa", rotulo: rotulosCanais[tipo] ?? tipo })),
+          ...canaisDeAviso.tipos().map((tipo) => ({ tipo, papel: "aviso", rotulo: rotulosCanais[tipo] ?? tipo })),
+        ]);
+      if (route === "GET /integracoes/fontes") return json(res, 200, [ESQUEMA_JIRA, ESQUEMA_GITHUB, ESQUEMA_GITLAB]);
+      if (route === "GET /perfis/modelos") return json(res, 200, PERFIS_PRONTOS);
       if (route === "GET /repos") return json(res, 200, await listRepos());
       if (route === "GET /github-app") return json(res, 200, await githubAppPanel());
       if (route === "GET /github/repos") return json(res, 200, await githubReposCatalog());
@@ -2620,34 +2948,56 @@ export async function startFactory(opts: {
 
   // --- Interface de gestão ------------------------------------------------------------------------
 
-  const management = opts.management;
-  const bridge =
-    management &&
-    (await startManagementBridge({
-      ...management,
-      events,
-      initialEventCount,
-      progress: {
-        load: async () => {
-          const stored = (await harness.snapshot(ManagementDoc, context))?.[management.port.name];
-          return stored && { ...stored };
+  /** Interface de gestão salva pela API (fatia 09): o token sai do cofre; só vale com usuário e credencial. */
+  async function interfaceDeGestaoSalva(): Promise<
+    { port: ManagementInterface; chat: string; user: string } | undefined
+  > {
+    const salvo = (await readState()).telegramConfig;
+    if (!salvo?.credential || !opts.criarInterfaceTelegram) return undefined;
+    const token = await segredos.get(salvo.credential);
+    if (!token) return undefined;
+    return { port: opts.criarInterfaceTelegram(token, salvo.chat), chat: salvo.chat, user: salvo.usuario };
+  }
+  // Variáveis de ambiente, quando definidas, têm prioridade sobre a configuração salva.
+  async function montarBridge(management: { port: ManagementInterface; chat: string; user?: string } | undefined) {
+    return (
+      management &&
+      (await startManagementBridge({
+        ...management,
+        events,
+        initialEventCount,
+        progress: {
+          load: async () => {
+            const stored = (await harness.snapshot(ManagementDoc, context))?.[management.port.name];
+            return stored && { ...stored };
+          },
+          save: (progress) =>
+            harness.commit(async (tx) => {
+              (await tx.doc(ManagementDoc))[management.port.name] = progress;
+            }, context),
         },
-        save: (progress) =>
-          harness.commit(async (tx) => {
-            (await tx.doc(ManagementDoc))[management.port.name] = progress;
-          }, context),
-      },
-      tasks: async () => (await readState()).tasks,
-      commands,
-      content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
-      contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
-      availableAt: (name) => {
-        const config = projects.get(name)?.config;
-        return config ? nextProjectActivity(config, clock.now()) : clock.now();
-      },
-      now: clock.now,
-      armTimer,
-    }));
+        tasks: async () => (await readState()).tasks,
+        commands,
+        content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
+        contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
+        availableAt: (name) => {
+          const config = projects.get(name)?.config;
+          return config ? nextProjectActivity(config, clock.now()) : clock.now();
+        },
+        now: clock.now,
+        armTimer,
+      }))
+    );
+  }
+  let bridge = await montarBridge(opts.management ?? (await interfaceDeGestaoSalva()));
+  /** Telegram salvo pela API vale sem reiniciar; a variável de ambiente (opts.management) continua prioritária. */
+  async function reiniciarBridge(): Promise<void> {
+    if (opts.management) return;
+    const anterior = bridge;
+    bridge = undefined;
+    await anterior?.stop();
+    bridge = await montarBridge(await interfaceDeGestaoSalva());
+  }
 
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;

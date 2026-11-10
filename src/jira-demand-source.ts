@@ -36,6 +36,11 @@ export interface JiraDemandSourceOptions {
    * Ambiente de onde vêm as credenciais dos anexos (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`). Padrão: `process.env`.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Credenciais dos anexos vindas do cofre da fábrica (ADR-0018). Quando informado, tem prioridade sobre `env`; é
+   * consultado a cada download, então uma credencial trocada vale na próxima leitura.
+   */
+  credentials?: () => Promise<{ email: string; token: string } | undefined>;
   /** `fetch` usado para baixar o conteúdo dos anexos de texto. Padrão: o global. */
   fetch?: typeof fetch;
   /** Prazo de download de anexos em milissegundos. Padrão: 60 segundos. */
@@ -87,12 +92,19 @@ const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_E
  * erro (a Tarefa é tentada de novo). O token nunca aparece na mensagem de erro.
  */
 function createHttpAttachmentReader(
-  opts: { env?: Record<string, string | undefined>; fetch?: typeof fetch; timeoutMs?: number; baseUrl?: string } = {},
+  opts: {
+    env?: Record<string, string | undefined>;
+    credentials?: () => Promise<{ email: string; token: string } | undefined>;
+    fetch?: typeof fetch;
+    timeoutMs?: number;
+    baseUrl?: string;
+  } = {},
 ): AttachmentReader {
   return async (attachment) => {
     const env = opts.env ?? process.env;
-    const email = env.ATLASSIAN_EMAIL;
-    const token = env.ATLASSIAN_API_TOKEN;
+    const doCofre = opts.credentials ? await opts.credentials() : undefined;
+    const email = doCofre ? doCofre.email : env.ATLASSIAN_EMAIL;
+    const token = doCofre ? doCofre.token : env.ATLASSIAN_API_TOKEN;
     if (!email || !token) return MISSING_ATTACHMENT_CREDENTIALS;
     const what = `anexo ${attachment.filename} (id ${attachment.id})`;
     const url =
@@ -116,6 +128,23 @@ function createHttpAttachmentReader(
 }
 
 /**
+ * Trechos de uma linha em ADF: `[~accountid:ID]` vira nó de menção, para o Jira avisar a pessoa (ADR-0020); o resto é
+ * texto.
+ */
+function inlineAdf(line: string): object[] {
+  const out: object[] = [];
+  let resto = line;
+  const mencao = /\[~accountid:([^\]\s]+)\]/;
+  for (let m = mencao.exec(resto); m; m = mencao.exec(resto)) {
+    if (m.index > 0) out.push({ type: "text", text: resto.slice(0, m.index) });
+    out.push({ type: "mention", attrs: { id: m[1] } });
+    resto = resto.slice(m.index + m[0].length);
+  }
+  if (resto) out.push({ type: "text", text: resto });
+  return out;
+}
+
+/**
  * Texto da fábrica em ADF: linha em branco separa parágrafos, quebra simples vira `hardBreak` e um parágrafo inteiro
  * entre asteriscos (a marca de automação) sai em itálico.
  */
@@ -129,7 +158,7 @@ export function textToAdf(text: string): object {
       if (italic) return { type: "paragraph", content: [{ type: "text", text: italic[1], marks: [{ type: "em" }] }] };
       const content = p.split("\n").flatMap((line, i) => {
         const parts: object[] = i > 0 ? [{ type: "hardBreak" }] : [];
-        return line ? [...parts, { type: "text", text: line }] : parts;
+        return line ? [...parts, ...inlineAdf(line)] : parts;
       });
       return { type: "paragraph", content };
     });
@@ -239,6 +268,7 @@ export class JiraDemandSource implements DemandSource {
     this.runner = opts.runner ?? defaultAcliRunner;
     this.readAttachment = createHttpAttachmentReader({
       env: opts.env,
+      credentials: opts.credentials,
       fetch: opts.fetch,
       timeoutMs: opts.timeoutMs,
       baseUrl: opts.baseUrl,
@@ -402,7 +432,18 @@ export class JiraDemandSource implements DemandSource {
     const viaRest = await this.restComment("POST", `issue/${encodeURIComponent(key)}/comment`, body);
     if (viaRest?.id) return { id: viaRest.id };
     if (!viaRest) {
-      const args = ["jira", "workitem", "comment", "create", "--key", key, "--body", body, "--json"];
+      // O acli aceita ADF no corpo: assim a menção vira nó `mention`, e não texto literal (ADR-0020).
+      const args = [
+        "jira",
+        "workitem",
+        "comment",
+        "create",
+        "--key",
+        key,
+        "--body",
+        JSON.stringify(textToAdf(body)),
+        "--json",
+      ];
       const stdout = (await this.run(args, command, key)) ?? "";
       let parsed: unknown;
       try {
@@ -427,7 +468,18 @@ export class JiraDemandSource implements DemandSource {
   async editComment(key: string, commentId: string, body: string): Promise<void> {
     const path = `issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(commentId)}`;
     if (await this.restComment("PUT", path, body)) return;
-    const args = ["jira", "workitem", "comment", "update", "--key", key, "--id", commentId, "--body", body];
+    const args = [
+      "jira",
+      "workitem",
+      "comment",
+      "update",
+      "--key",
+      key,
+      "--id",
+      commentId,
+      "--body",
+      JSON.stringify(textToAdf(body)),
+    ];
     await this.run(args, `jira workitem comment update --key ${key} --id ${commentId}`, key);
   }
 
@@ -440,3 +492,17 @@ export class JiraDemandSource implements DemandSource {
 export function createJiraDemandSource(opts: JiraDemandSourceOptions): JiraDemandSource {
   return new JiraDemandSource(opts);
 }
+
+/** Schema de configuração desta Fonte: a interface gera o formulário a partir dele (fatia 04). */
+export const ESQUEMA_FONTE = {
+  tipo: "jira",
+  rotulo: "Jira",
+  campos: [
+    { campo: "project", rotulo: "Chave do projeto", tipo: "texto", obrigatorio: true },
+    { campo: "assignee", rotulo: "Responsável (accountId)", tipo: "texto", obrigatorio: true },
+    { campo: "baseUrl", rotulo: "URL do Jira (https)", tipo: "url", obrigatorio: false },
+    { campo: "email", rotulo: "E-mail da conta", tipo: "email", obrigatorio: false },
+    { campo: "credential", rotulo: "Credencial (nome no cofre)", tipo: "segredo", obrigatorio: false },
+    { campo: "keys", rotulo: "Restringir a cards", tipo: "lista", obrigatorio: false },
+  ],
+};

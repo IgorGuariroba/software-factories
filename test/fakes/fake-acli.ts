@@ -136,7 +136,8 @@ export class FakeAcli {
 
   private create(key: string, body: string): AcliExecResult {
     if (!this.issue(key)) return fail(`✗ Error: Issue does not exist: ${key}`);
-    const id = this.addHumanComment(key, this.me, body);
+    // Como o acli real: o corpo é texto ou um documento ADF (JSON), que é guardado como ADF.
+    const id = this.addHumanComment(key, this.me, asAdfOrText(body));
     return ok(this.createReturnsId ? { id, self: `https://exemplo.invalid/comment/${id}` } : { ok: true });
   }
 
@@ -146,4 +147,15 @@ export class FakeAcli {
     comment.body = toAdf(body);
     return ok(`✓ Comment ${id} updated`);
   }
+}
+
+/** Corpo de comentário do acli: ADF (JSON com `type: "doc"`) ou texto puro. */
+function asAdfOrText(body: string): string | object {
+  try {
+    const parsed = JSON.parse(body) as { type?: string };
+    if (parsed && parsed.type === "doc") return parsed;
+  } catch {
+    // texto puro
+  }
+  return body;
 }

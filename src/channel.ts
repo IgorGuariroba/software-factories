@@ -11,6 +11,11 @@ export type QuestionRef = {
   to: string;
   /** Comentários que já existiam no card quando a pergunta saiu: nenhum deles é resposta. */
   before: string[];
+  /**
+   * Conversa do Teams onde a pergunta saiu (canal Teams de conversa, fatia 08): a resposta é lida dela, depois da
+   * mensagem `apos`. Vazio em modo ensaio: nada foi enviado.
+   */
+  conversa?: { conversationId: string; apos: string };
 };
 
 /** Porta para a conversa com as pessoas do projeto (Teams, Slack, comentário no card). */
@@ -46,6 +51,34 @@ export function createCardCommentChannel(opts: { source: DemandSource; writer: E
         (c) => c.author === ref.to && !ref.before.includes(c.id) && !isAutomationText(c.body),
       );
       return replies.length > 0 ? replies.map((c) => c.body).join("\n\n") : undefined;
+    },
+  };
+}
+
+/**
+ * Canal de cada pergunta conforme a pessoa (fatia 08). A pergunta a quem tem canal `teams` sai pela conversa Teams; os
+ * demais, pelo canal padrão (comentário no card). Lembrete e resposta seguem o canal em que a pergunta saiu.
+ */
+export function createPersonChannel(opts: {
+  padrao: Channel;
+  /** Canal Teams da pessoa, ou `undefined` se ela não tem como ser alcançada pelo Teams. */
+  teamsDe: (personId: string) => Channel | undefined;
+  /** Se a pessoa escolheu o canal `teams` para perguntas novas. */
+  escolheTeams: (personId: string) => boolean;
+}): Channel {
+  const { padrao, teamsDe, escolheTeams } = opts;
+  return {
+    async ask(question) {
+      const teams = escolheTeams(question.to) ? teamsDe(question.to) : undefined;
+      return (teams ?? padrao).ask(question);
+    },
+    async remind(ref, text) {
+      const teams = ref.conversa ? teamsDe(ref.to) : undefined;
+      return (teams ?? padrao).remind(ref, text);
+    },
+    async answer(ref) {
+      const teams = ref.conversa ? teamsDe(ref.to) : undefined;
+      return (teams ?? padrao).answer(ref);
     },
   };
 }

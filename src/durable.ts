@@ -328,6 +328,15 @@ export type FactoryState = {
    * Guardado como JSON (o estado precisa ser compatível com JSON); no startup cada um passa de novo pelo schema.
    */
   projetosGitHub?: Record<string, string>;
+  /**
+   * Configuração de cada projeto, por nome (ADR-0017). Semeada do YAML na primeira execução; depois disso, o estado
+   * manda. Guardado como JSON, validado de novo a cada leitura.
+   */
+  projetos?: Record<string, string>;
+  /** Telegram do usuário, global aos projetos (fatia 09): chat e nome da credencial do bot no cofre, nunca o token. */
+  telegramConfig?: { chat: string; usuario: string; credential?: string };
+  /** Histórico de alterações de configuração por projeto, sem valores (fatia 12). */
+  historicoConfig?: Record<string, { quando: string; autor: string; campos: string[] }[]>;
 };
 
 /**

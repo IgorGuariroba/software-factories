@@ -134,8 +134,7 @@ describe("perguntas de negócio ao PO", () => {
     await poll(factory);
     await waitForStatus(factory, "PROJ-1", "aguardando-humano");
     const dry = await api<{ revision: string }>(factory, "GET", "/tasks/exemplo/PROJ-1/questions/1");
-    config.dryRun = false;
-    factory = await factory.restart();
+    factory = await factory.restart({ config: { ...config, dryRun: false } });
     const live = await api<{ revision: string; comment: string }>(factory, "GET", "/tasks/exemplo/PROJ-1/questions/1");
     expect(live.revision).not.toBe(dry.revision);
     await api(factory, "POST", "/tasks/exemplo/PROJ-1/questions/1/approve", { revision: live.revision });
@@ -294,7 +293,7 @@ describe("perguntas de negócio ao PO", () => {
     const [question] = questionComments(factory, "PROJ-1");
     expect(questionComments(factory, "PROJ-1")).toHaveLength(1);
     expect(question?.body.endsWith(MARK)).toBe(true);
-    expect(question?.body).not.toContain(MENTION);
+    expect(question?.body).toContain(MENTION);
     expect(question?.body).toContain("O CSV usa vírgula ou ponto e vírgula?");
     expect(specComments(factory, "PROJ-1")).toEqual([]);
     expect(await events(factory)).toContainEqual(
@@ -349,6 +348,24 @@ describe("perguntas de negócio ao PO", () => {
     expect(await events(factory)).toContainEqual(
       expect.objectContaining({ type: "question", target: "PROJ-1", status: "respondida", to: PO }),
     );
+  });
+
+  it("a resposta de um perfil PO não aprova a SPEC: a aprovação segue com o usuário (fatia 07)", async () => {
+    const model = new FakeModel();
+    grillAsksAbout(model, "PROJ-1", "Qual o separador?");
+    factory = await startTestFactory({ cards: [card("PROJ-1")], model, config: { specApproval: true } });
+    await poll(factory);
+    await waitForStatus(factory, "PROJ-1", "aguardando-humano");
+
+    factory.source.humanComment("PROJ-1", PO, "Aprovo a SPEC, pode seguir. Vetar: não.");
+    await poll(factory);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const [listed] = await api<{ specReview: string | null; status: string }[]>(factory, "GET", "/tasks");
+    expect(listed?.specReview).not.toBe("approved");
+    expect(model.calls.some((c) => c.input.includes("Aprovo a SPEC"))).toBe(true);
+    expect(model.calls.filter((c) => c.input.includes("Resposta do PO"))).not.toHaveLength(0);
+    expect(listed?.status).not.toBe("concluida");
   });
 
   it("só um comentário do PO depois da pergunta é resposta: outra pessoa ou um comentário antigo não acordam", async () => {
@@ -527,7 +544,7 @@ describe("escalonamento em horas úteis", () => {
 
     clock.advanceTo("2026-11-09T11:00:00-03:00");
     await eventually(() => expect(reminders(f, "PROJ-1")).toHaveLength(1));
-    expect(reminders(f, "PROJ-1")[0]?.body).not.toContain(MENTION);
+    expect(reminders(f, "PROJ-1")[0]?.body).toContain(MENTION);
     expect(await notices(f)).toEqual([]);
 
     clock.advanceTo("2026-11-09T15:59:00-03:00");
@@ -685,7 +702,7 @@ describe("guardrails e dry-run das perguntas", () => {
     expect(factory.source.commentsOf("PROJ-1")).toEqual([]);
     const [question, reminder] = await mentions();
     expect(question).toMatchObject({ target: "PROJ-1", dryRun: true });
-    expect(String(question?.content)).not.toContain(MENTION);
+    expect(String(question?.content)).toContain(MENTION);
     expect(String(question?.content)).toContain("Qual o separador do CSV?");
     expect(String(reminder?.content)).toContain("Lembrete da pergunta 1");
 

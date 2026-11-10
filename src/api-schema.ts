@@ -523,6 +523,32 @@ export const API_SCHEMA = {
         responses: ok,
       },
     },
+    "/projetos": { get: { summary: "Projetos carregados, com a Fonte e o estado do ensaio", responses: ok } },
+    "/projetos/{nome}/configuracao": {
+      get: { summary: "Configuração guardada do projeto (ADR-0017)", responses: ok },
+      put: {
+        summary:
+          "Grava a configuração do projeto, validada pelo schema, pelos perfis, pelos caminhos de repositório e pela conexão da Fonte Jira com credencial; aplica na hora",
+        responses: ok,
+      },
+    },
+    "/projetos/{nome}/historico": {
+      get: { summary: "Histórico de alterações da configuração, sem valores", responses: ok },
+    },
+    "/projetos/{nome}/pendencias": { get: { summary: "O que falta na configuração (lista de avisos)", responses: ok } },
+    "/segredos": { get: { summary: "Credenciais cadastradas: nome e data, nunca o valor", responses: ok } },
+    "/segredos/{nome}": {
+      put: { summary: "Grava uma credencial no cofre (o valor não volta depois)", responses: ok },
+    },
+    "/telegram/configuracao": {
+      get: { summary: "Chat e credencial do bot do Telegram do usuário (sem token)", responses: ok },
+      put: { summary: "Grava chat e credencial do bot, validando a credencial no cofre", responses: ok },
+    },
+    "/integracoes/fontes": { get: { summary: "Fontes disponíveis e os campos do schema de cada uma", responses: ok } },
+    "/integracoes/canais": {
+      get: { summary: "Tipos de Canal registrados: conversa (perguntas e respostas) e aviso", responses: ok },
+    },
+    "/perfis/modelos": { get: { summary: "Modelos prontos de perfil (PO e Tech Lead)", responses: ok } },
     "/daemon": { get: { summary: "Estado do daemon ({ paused })", responses: ok } },
     "/daemon/pause": { post: { summary: "Pausa o daemon: nenhuma tarefa nova começa", responses: ok } },
     "/daemon/resume": { post: { summary: "Retoma o daemon", responses: ok } },

@@ -1,13 +1,16 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ConfigError, startDaemon } from "./daemon.js";
 import { createFactoryModels } from "./factory-models.js";
 import { createGitHubDemandSource } from "./github-demand-source.js";
+import { createGitLabDemandSource } from "./gitlab-demand-source.js";
 import { createJiraDemandSource } from "./jira-demand-source.js";
+import { createSecretStore } from "./packages/secret-store/index.js";
 import { isRetroRepository } from "./retro-settings.js";
 import { createGhRetroSink } from "./retro-sink.js";
+import { createTeamsMcpConversation } from "./teams-conversa.js";
 import { createTeamsMcpNotifier } from "./teams-mcp.js";
 import { createTelegramBot } from "./telegram.js";
 
@@ -15,6 +18,8 @@ const configDir = process.env.FACTORY_CONFIG_DIR ?? join(homedir(), ".config", "
 const port = Number(process.env.FACTORY_PORT ?? 7420);
 const statePath =
   process.env.FACTORY_STATE_PATH ?? join(homedir(), ".local", "state", "software-factory", "fabrica.sqlite");
+/** Cofre das credenciais, ao lado do estado durável (mesmo diretório que o da factory). */
+const cofre = createSecretStore({ dir: join(dirname(statePath), "segredos") });
 const pollSeconds = Number(process.env.FACTORY_POLL_SECONDS ?? 300);
 /** Maior atraso aceito por setInterval; acima disso o Node usa 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -106,27 +111,58 @@ try {
     statePath,
     pollIntervalMs,
     sources: {
-      jira: (config) =>
-        createJiraDemandSource({
+      jira: (config) => {
+        if (config.source.type !== "jira") throw new Error(`projeto ${config.name} não é jira`);
+        // Credencial do cofre (ADR-0018): o token sai do cofre pelo nome guardado na configuração, a cada download.
+        const { credential, email } = config.source;
+        return createJiraDemandSource({
           project: config.source.project,
           assignee: config.source.assignee,
           baseUrl: config.source.baseUrl,
-        }),
+          ...(credential && email
+            ? {
+                credentials: async () => {
+                  const token = await cofre.get(credential);
+                  return token ? { email, token } : undefined;
+                },
+              }
+            : {}),
+        });
+      },
+      gitlab: (config) => {
+        if (config.source.type !== "gitlab") throw new Error(`projeto ${config.name} não é gitlab`);
+        const credencialGitLab = config.source.credential ?? "";
+        return createGitLabDemandSource({
+          project: config.source.project,
+          repo: config.source.repo,
+          assignee: config.source.assignee,
+          ...(config.source.hostname ? { hostname: config.source.hostname } : {}),
+          ignoreLabels: config.source.ignoreLabels,
+          // Token do GitLab no cofre pelo nome da credencial (ADR-0018); sem credencial, vale o login do glab.
+          ...(config.source.credential ? { token: () => cofre.get(credencialGitLab) } : {}),
+        });
+      },
       // Repositório monitorado (ADR-0014): toda issue aberta passa pela triagem antes da SPEC.
       github: (config) => {
         if (config.source.type !== "github") throw new Error(`projeto ${config.name} não é github`);
+        const credencialGitHub = config.source.credential;
         return createGitHubDemandSource({
           project: config.source.project,
           repo: config.source.repo,
           assignee: config.source.assignee,
           ignoreLabels: config.source.ignoreLabels,
+          // Token do GitHub no cofre pelo nome da credencial (ADR-0018); sem credencial, vale o login do gh.
+          ...(credencialGitHub ? { token: () => cofre.get(credencialGitHub) } : {}),
         });
       },
     },
     // Credenciais do pi e chaves do ambiente; seleção por regras e allowlist vêm na M1-16.
     models: await createFactoryModels(),
     management: telegramFromEnv(),
+    // Interface salva pela API (fatia 09): o token vem do cofre, nunca do ambiente.
+    criarInterfaceTelegram: (token, chat) => createTelegramBot({ token, chat }),
     teams: teamsClient && createTeamsMcpNotifier(teamsClient),
+    teamsConversation: teamsClient && createTeamsMcpConversation(teamsClient),
     retro: { sink: createGhRetroSink(), repo: retroRepo },
     webhook: webhookFromEnv(),
     githubApp: githubAppFromEnv(),

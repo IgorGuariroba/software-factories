@@ -38,6 +38,7 @@ import {
 import { alertaGithubApp, etapasGithubApp, linhasGithubApp, progressoGithubApp } from "./github-app.js";
 import { ICONES } from "./icones.js";
 import { renderImplementation } from "./implementation.js";
+import { iniciarProjetos } from "./projetos-tela.js";
 import { linhasRepositorios, mensagemTarefasAtivas } from "./repositorios.js";
 import {
   estadoImportacao,
@@ -876,7 +877,9 @@ document.querySelector(".abas").addEventListener("keydown", (event) => {
 showTab(currentTab);
 
 function showPage(page) {
-  const current = ["inicio", "tarefas", "fonte", "repositorios", "configuracoes"].includes(page) ? page : "inicio";
+  const current = ["inicio", "tarefas", "fonte", "repositorios", "projetos", "configuracoes"].includes(page)
+    ? page
+    : "inicio";
   const previous = document.querySelector("[data-tela]:not([hidden])")?.dataset.tela;
   document.querySelector(".visao-geral").hidden = current !== "inicio";
   for (const section of document.querySelectorAll("[data-tela]")) section.hidden = section.dataset.tela !== current;
@@ -886,6 +889,8 @@ function showPage(page) {
     loadRepos();
   }
   if (current === "repositorios" && previous !== "repositorios") loadCatalogoGithub();
+  if (current === "projetos" && previous !== "projetos")
+    iniciarProjetos(document.getElementById("projetos-config")).catch((erro) => console.error(erro));
   if (current !== "repositorios") pararAtualizacaoCatalogo();
   for (const link of document.querySelectorAll("[data-pagina]")) {
     if (link.dataset.pagina === current) link.setAttribute("aria-current", "page");
@@ -898,7 +903,7 @@ function readSelection() {
   pendingRef = retro ? retro[1] : null;
   const match = location.hash.match(/^#\/tarefa\/([^/]+)\/([^/]+)$/);
   selected = match ? { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null;
-  const page = location.hash.match(/^#\/(inicio|tarefas|fonte|repositorios|configuracoes)$/)?.[1];
+  const page = location.hash.match(/^#\/(inicio|tarefas|fonte|repositorios|projetos|configuracoes)$/)?.[1];
   if (page) detailReturn = page === "inicio" ? "inicio" : "tarefas";
   showPage(selected ? detailReturn : pendingRef ? "tarefas" : page);
   syncSheet();

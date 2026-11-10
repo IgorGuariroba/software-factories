@@ -20,6 +20,7 @@
         <a href="#/fonte" data-pagina="fonte"><span class="icone-nav" data-icone="inbox" aria-hidden="true"></span>Fonte de demandas</a>
         <a href="#/repositorios" data-pagina="repositorios"><span class="icone-nav" data-icone="git-branch" aria-hidden="true"></span>Repositórios</a>
         <span class="nav-legenda">ADMINISTRAÇÃO</span>
+        <a href="#/projetos" data-pagina="projetos"><span class="icone-nav" data-icone="folder-cog" aria-hidden="true"></span>Projetos</a>
         <a href="#/configuracoes" data-pagina="configuracoes"><span class="icone-nav" data-icone="settings" aria-hidden="true"></span>Configurações</a>
         <div class="controles"><span id="daemon" class="selo">daemon: …</span><span id="conexao" class="selo" role="status">conectando…</span><button type="button" id="alternar-daemon" disabled>Pausar daemon</button></div>
       </nav>
@@ -77,6 +78,11 @@
               <p>Use “Pré-visualizar elegíveis” para listar os cards disponíveis na fonte.</p>
             </div>
           </div>
+        </section>
+        <section class="pagina-simples" data-tela="projetos" hidden aria-labelledby="titulo-projetos">
+          <h2 id="titulo-projetos">Projetos</h2>
+          <p class="introducao">Fonte de demandas, perfis e pessoas de cada projeto. Tudo grava pela API; a fábrica só age depois de salvar.</p>
+          <div id="projetos-config"></div>
         </section>
         <section class="pagina-simples" data-tela="repositorios" hidden aria-labelledby="titulo-repositorios-github">
           <h2 id="titulo-repositorios-github">Repositórios do GitHub</h2>

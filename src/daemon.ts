@@ -6,7 +6,9 @@ import { ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
 import { type RunningFactory, startFactory } from "./factory.js";
 import type { ManagementInterface } from "./management.js";
+import { createIntegrationRegistry, type Registro } from "./packages/integracoes/index.js";
 import type { RetroSink } from "./retro-sink.js";
+import type { TeamsConversation } from "./teams-conversa.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 
 /** Como criar a Fonte de cada tipo declarado em `source.type`. */
@@ -16,10 +18,17 @@ export class ConfigError extends Error {
   override name = "ConfigError";
 }
 
-function sourceFor(sources: SourceFactories, config: ProjectConfig): DemandSource {
-  const create = sources[config.source.type];
-  if (!create) throw new ConfigError(`projeto ${config.name}: Fonte "${config.source.type}" não disponível`);
-  return create(config);
+/** Monta o registro de Fontes a partir das fábricas recebidas: cada tipo registrado vira uma integração criável. */
+function sourceRegistry(sources: SourceFactories): Registro<ProjectConfig, DemandSource> {
+  const registro = createIntegrationRegistry<ProjectConfig, DemandSource>("Fonte");
+  for (const [tipo, fabrica] of Object.entries(sources)) if (fabrica) registro.register(tipo, fabrica);
+  return registro;
+}
+
+function sourceFor(registro: Registro<ProjectConfig, DemandSource>, config: ProjectConfig): DemandSource {
+  if (!registro.tem(config.source.type))
+    throw new ConfigError(`projeto ${config.name}: Fonte "${config.source.type}" não disponível`);
+  return registro.create(config.source.type, config);
 }
 
 /** Lê e valida todos os `*.yaml` de `dir`. Junta os erros de todos os arquivos numa única mensagem. */
@@ -56,8 +65,12 @@ export async function startDaemon(opts: {
   models: Models;
   /** Avisos Teams ao PO. */
   teams?: TeamsNotifier;
+  /** Conversa 1:1 das pessoas no Teams: canal `teams` de perguntas e respostas (fatia 08). */
+  teamsConversation?: TeamsConversation;
   /** Interface de gestão (Telegram), global ao daemon: um bot e uma conversa para todos os projetos. */
   management?: { port: ManagementInterface; chat: string; user?: string };
+  /** Cria a interface de gestão salva pela API, com o token do cofre (fatia 09). */
+  criarInterfaceTelegram?: (token: string, chat: string) => ManagementInterface;
   /** Issues da fábrica: a porta e o repositório público da fábrica (global ao daemon). */
   retro?: { sink?: RetroSink; repo?: string };
   /** Receptor do webhook do GitHub App (global ao daemon). Sem ele, a fábrica não recebe entregas. */
@@ -66,6 +79,7 @@ export async function startDaemon(opts: {
   githubApp?: { appId?: number; privateKeyPath?: string };
 }): Promise<RunningFactory> {
   const configs = await loadProjects(opts.configDir);
+  const fontes = sourceRegistry(opts.sources);
   return startFactory({
     webhook: opts.webhook,
     githubApp: opts.githubApp,
@@ -74,15 +88,17 @@ export async function startDaemon(opts: {
     pollIntervalMs: opts.pollIntervalMs,
     models: opts.models,
     teams: opts.teams,
+    teamsConversation: opts.teamsConversation,
     management: opts.management,
+    criarInterfaceTelegram: opts.criarInterfaceTelegram,
     retro: opts.retro,
     // Projetos criados pela interface (ADR-0016) usam a mesma Fonte e o mesmo lugar de conhecimento dos do YAML.
-    createSource: (config) => sourceFor(opts.sources, config),
+    createSource: (config) => sourceFor(fontes, config),
     knowledgeDirFor: (name) => join(opts.configDir, name),
     // O conhecimento de cada projeto fica ao lado da config: <configDir>/<projeto>/knowledge.md (ADR-0010).
     projects: configs.map((config) => ({
       config,
-      source: sourceFor(opts.sources, config),
+      source: sourceFor(fontes, config),
       knowledgeDir: join(opts.configDir, config.name),
     })),
   });

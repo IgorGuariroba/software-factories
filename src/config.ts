@@ -73,13 +73,37 @@ export const ConventionsConfig = z.object({
 export type ConventionsConfig = z.infer<typeof ConventionsConfig>;
 
 /** Uma das pessoas do projeto: as únicas com quem a fábrica conversa neste projeto. */
+/** Perfil do projeto, com nome livre (fatia 06). O papel diz o que ele recebe no roteamento (fatia 07). */
+export const Profile = z.object({
+  nome: z.string().min(1).max(60),
+  papel: z.enum(["po", "tech_lead", "outro"]).default("outro"),
+});
+export type Profile = z.infer<typeof Profile>;
+
 export const Person = z.object({
-  /** Identificador da pessoa na Fonte (no Jira, o accountId), usado na menção e para reconhecer as respostas. */
+  /** Identificador da pessoa na Fonte do projeto (no Jira, o accountId), usado na menção e para reconhecer as respostas. */
   id: z.string().min(1),
-  role: z.enum(["po", "tech_lead"]),
+  /** Forma antiga do perfil (po ou tech lead). Mantida para as configurações do YAML; novos projetos usam `perfis`. */
+  role: z.enum(["po", "tech_lead"]).optional(),
+  /** Perfis que a pessoa ocupa, pelo nome cadastrado em `profiles`. Uma pessoa pode ter vários (fatia 07). */
+  perfis: z.array(z.string().min(1)).optional(),
   /** Nome para exibição, opcional. */
   name: z.string().min(1).optional(),
-  /** Identificador do usuário no Teams, quando houver aviso pelo MCP. */
+  /** Identificador da pessoa em cada integração (fatia 06): a Fonte e o canal consultam só o que lhes cabe. */
+  identidades: z
+    .object({
+      jira: z.string().min(1).optional(),
+      github: z.string().min(1).optional(),
+      gitlab: z.string().min(1).optional(),
+      teams: z
+        .string()
+        .regex(/^8:orgid:[a-zA-Z0-9-]+$/)
+        .optional(),
+    })
+    .optional(),
+  /** Canal da pessoa (fatia 08): `teams` acrescenta o aviso no Teams; ausente segue o padrão (ver canalDaPessoa). */
+  canal: z.enum(["card-comment", "teams"]).optional(),
+  /** Identificador do usuário no Teams, quando houver aviso pelo MCP (forma antiga; ver `identidades.teams`). */
   teamsUserId: z
     .string()
     .regex(/^8:orgid:[a-zA-Z0-9-]+$/)
@@ -133,6 +157,10 @@ const JiraSourceConfig = z.object({
   assignee: z.string().min(1),
   /** Restrição opcional da busca a cards específicos; use estado novo para ensaios isolados. */
   keys: z.array(z.string().min(1)).min(1).optional(),
+  /** E-mail da conta Atlassian usada com a credencial (autenticação básica). */
+  email: z.string().email().optional(),
+  /** Nome da credencial no cofre da fábrica (token da API), sem o valor (ADR-0018). */
+  credential: z.string().min(1).optional(),
   /** Origem HTTPS do Jira: link no aviso ao PO e download dos anexos. */
   baseUrl: z
     .string()
@@ -158,11 +186,36 @@ const GitHubSourceConfig = z.object({
   assignee: z.string().min(1),
   keys: z.array(z.string().min(1)).min(1).optional(),
   baseUrl: z.undefined().optional(),
+  /** Nome da credencial no cofre (token do GitHub), sem o valor (ADR-0018). */
+  credential: z.string().min(1).optional(),
   /** Toda recusa da triagem passa por prévia na página local antes de comentar e fechar a issue. */
   triageApproval: z.boolean().default(true),
   /** Quantas issues deste repositório a fábrica toca ao mesmo tempo (Tarefas não terminadas). */
   maxActive: z.number().int().positive().default(1),
   /** Issues com algum destes labels ficam fora da fila; issues com sub-issues (épicos) também. */
+  ignoreLabels: z.array(z.string().min(1)).default(["epic"]),
+});
+
+/** Projeto do GitLab monitorado (fatia 05): issues abertas atribuídas ao usuário, com o status por label `fabrica:`. */
+const GitLabSourceConfig = z.object({
+  type: z.literal("gitlab"),
+  /** Prefixo das chaves dos cards (ex.: "GL" → "GL-12"). */
+  project: z.string().min(1),
+  /** Projeto no GitLab, como caminho completo (ex.: "grupo/projeto"). */
+  repo: z.string().regex(/^[\w.-]+(\/[\w.-]+)+$/, "use grupo/projeto"),
+  /** Usuário do GitLab dono das issues; a fábrica age com a conta dele. */
+  assignee: z.string().min(1),
+  keys: z.array(z.string().min(1)).min(1).optional(),
+  /** A origem vem de `hostname`; `baseUrl` não se aplica ao GitLab. */
+  baseUrl: z.undefined().optional(),
+  /** Nome da credencial no cofre (token do GitLab), sem o valor (ADR-0018). */
+  credential: z.string().min(1).optional(),
+  /** Servidor quando não é gitlab.com (self-hosted), como nome de host (ex.: "gitlab.empresa.com"). */
+  hostname: z
+    .string()
+    .regex(/^[a-z0-9.-]+(:\d+)?$/i, "use só o nome do host, sem https://")
+    .optional(),
+  /** Issues com algum destes labels ficam fora da fila; épicos também (padrão: `epic`). */
   ignoreLabels: z.array(z.string().min(1)).default(["epic"]),
 });
 
@@ -180,7 +233,7 @@ export const ProjectConfig = z.object({
   retroApproval: z.boolean().default(false),
   /** Comenta "Assumindo este card." ao assumir. Desligue quando o card atribuído ao usuário já basta como sinal. */
   announceAssume: z.boolean().default(true),
-  source: z.discriminatedUnion("type", [JiraSourceConfig, GitHubSourceConfig]),
+  source: z.discriminatedUnion("type", [JiraSourceConfig, GitHubSourceConfig, GitLabSourceConfig]),
   /** Modelo fixado para cada Papel. A seleção por regras, com candidatos e allowlist, vem depois (M1-16). */
   roles: z.object({
     /** Grill, SPEC e Tickets. */
@@ -196,6 +249,8 @@ export const ProjectConfig = z.object({
   }),
   /** Pessoas do projeto. A fábrica só menciona e pergunta a quem está aqui; perguntas de negócio vão ao `po`. */
   people: z.array(Person).default([]),
+  /** Perfis do projeto, com nome livre (fatia 06). Quem não tem perfil nenhum usa só a forma antiga (`role`). */
+  profiles: z.array(Profile).default([]),
   /** Calendário de horas úteis dos prazos das perguntas. Padrão: segunda a sexta, 09:00–18:00, UTC. */
   calendar: BusinessCalendar.default({
     timezone: "UTC",

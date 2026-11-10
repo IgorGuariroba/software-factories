@@ -148,7 +148,7 @@ describe("Fonte Jira: criação de comentário", () => {
     const { id } = await source.addComment("PROJ-1", "Título\n\nnovo");
 
     expect(id).not.toBe(older);
-    expect((await source.listComments("PROJ-1")).find((c) => c.id === id)?.body).toBe("Título\n\nnovo");
+    expect((await source.listComments("PROJ-1")).find((c) => c.id === id)?.body).toBe("Título\nnovo");
   });
 
   it("sem id na resposta e sem comentário correspondente, lança erro em vez de inventar um id", async () => {
@@ -213,6 +213,37 @@ describe("Fonte Jira: conteúdo dos anexos de texto com credenciais", () => {
       { name: "especificacao.md", content: "# Especificação" },
     ]);
     expect(requests).toEqual([{ url: "https://exemplo.invalid/a/1", auth: `Basic ${basic}` }]);
+  });
+
+  it("usa as credenciais do cofre quando informadas, e não o ambiente", async () => {
+    const acli = new FakeAcli(me);
+    acli.issues = [
+      {
+        key: "PROJ-1",
+        summary: "x",
+        status: "A Fazer",
+        assignee: me,
+        attachments: [
+          { id: "1", filename: "a.md", mimeType: "text/markdown", size: 1, content: "https://exemplo.invalid/a/1" },
+        ],
+      },
+    ];
+    const auths: (string | null)[] = [];
+    const source = createJiraDemandSource({
+      project: "PROJ",
+      assignee: me.accountId,
+      runner: acli.runner,
+      env: {},
+      credentials: async () => ({ email: "cofre@exemplo.invalid", token: "token-do-cofre" }),
+      fetch: async (_url, init) => {
+        auths.push(new Headers(init?.headers).get("authorization"));
+        return new Response("ok");
+      },
+    });
+
+    await source.listTextAttachments("PROJ-1");
+
+    expect(auths).toEqual([`Basic ${Buffer.from("cofre@exemplo.invalid:token-do-cofre").toString("base64")}`]);
   });
 
   it("com baseUrl, baixa pelo site do Jira, não pelo host interno que o acli devolve", async () => {
@@ -298,6 +329,16 @@ describe("Fonte Jira: comentários da fábrica em ADF pela API REST", () => {
     expect(calls).toEqual([
       { method: "POST", url: "https://empresa.atlassian.net/rest/api/3/issue/PROJ-1/comment", body: { body: ADF } },
     ]);
+  });
+
+  it("uma menção [~accountid:ID] vira nó de menção do ADF, para o Jira notificar a pessoa", async () => {
+    const { calls, source } = rest();
+    await source.addComment("PROJ-1", "[~accountid:po-1] Pergunta 1: qual o separador?");
+    const corpo = calls[0]?.body as { body: { content: { content: unknown[] }[] } };
+    expect(corpo.body.content[0]?.content).toContainEqual(
+      expect.objectContaining({ type: "mention", attrs: expect.objectContaining({ id: "po-1" }) }),
+    );
+    expect(JSON.stringify(calls[0]?.body)).not.toContain("[~accountid:po-1]");
   });
 
   it("edita o comentário em ADF", async () => {

@@ -25,6 +25,19 @@ export function stripAutomationMark(body: string): string {
   return trimmed.endsWith(AUTOMATION_MARK) ? trimmed.slice(0, -AUTOMATION_MARK.length).trimEnd() : body;
 }
 
+/**
+ * Igualdade de texto que ignora linhas em branco: a Fonte pode devolver parágrafos sem a linha em branco que a fábrica
+ * escreveu (o ADF do Jira separa blocos por quebra simples), e a deduplicação não pode repetir o comentário por isso.
+ */
+export function mesmoTexto(a: string, b: string): boolean {
+  const semVazias = (t: string) =>
+    t
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .join("\n");
+  return semVazias(a) === semVazias(b);
+}
+
 /** O texto com a marca de automação no fim. */
 export function withAutomationMark(body: string): string {
   return `${body}${MARK_SUFFIX}`;
@@ -232,7 +245,7 @@ export function createEffectWriter(opts: {
       if (!config.dryRun) {
         const content = outgoing(body);
         const existing = (await source.listComments(cardKey)).find(
-          (c) => c.author === user && withAutomationMark(stripAutomationMark(c.body)) === content,
+          (c) => c.author === user && mesmoTexto(withAutomationMark(stripAutomationMark(c.body)), content),
         );
         if (existing) return { id: existing.id };
       }
@@ -240,8 +253,8 @@ export function createEffectWriter(opts: {
     },
 
     async mention(cardKey, personId, body) {
-      // Sem o token de menção: o acli grava texto puro e o Jira o mostraria literalmente. O aviso vai pelo Teams.
-      const content = outgoing(body);
+      // A menção vai no comentário, no formato da própria Fonte (ADR-0020). O Teams segue como aviso à parte.
+      const content = outgoing(`${source.formatMention(personId)} ${body}`);
       const effect = { target: cardKey, action: "mention", content };
       const check = async () => {
         if (!config.people.some((p) => p.id === personId))
@@ -253,7 +266,7 @@ export function createEffectWriter(opts: {
       await authorize(effect, check);
       if (!config.dryRun) {
         const existing = (await source.listComments(cardKey)).find(
-          (c) => c.author === user && withAutomationMark(stripAutomationMark(c.body)) === content,
+          (c) => c.author === user && mesmoTexto(withAutomationMark(stripAutomationMark(c.body)), content),
         );
         if (existing) return { id: existing.id };
       }
@@ -268,7 +281,7 @@ export function createEffectWriter(opts: {
         (c) => c.author === user && isAutomationText(c.body) && stripAutomationMark(c.body).split("\n")[0] === header,
       );
       if (!existing) return addOwnComment(cardKey, content, true);
-      if (existing.body !== content) await this.editComment(cardKey, existing.id, content);
+      if (!mesmoTexto(existing.body, content)) await this.editComment(cardKey, existing.id, content);
       return { id: existing.id };
     },
 
