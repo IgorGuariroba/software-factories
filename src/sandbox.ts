@@ -96,9 +96,12 @@ export async function executarNoSandbox(opts: {
           }
         }
       };
+      // No tempo limite, responde sem esperar o fechamento dos pipes: um neto que sobreviveria ao kill os manteria abertos.
       const timer = setTimeout(() => {
         timedOut = true;
         matar();
+        child.kill("SIGKILL");
+        resolve({ exitCode: null, timedOut: true, output: redactSecrets(output) });
       }, opts.timeoutMs);
       opts.signal?.addEventListener("abort", matar, { once: true });
       child.on("error", (err) => {

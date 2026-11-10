@@ -62,5 +62,5 @@ describe.skipIf(!disponivel)("sandbox do bash dos modelos (ADR-0006)", () => {
   it("mata o comando que passa do tempo limite", async () => {
     const r = await executarNoSandbox({ cwd: clone, comando: "sleep 30", timeoutMs: 500 });
     expect(r.timedOut).toBe(true);
-  });
+  }, 20_000);
 });
