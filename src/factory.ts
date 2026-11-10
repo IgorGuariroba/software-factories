@@ -48,7 +48,13 @@ import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhament
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
-import { cobertura, createGitHubAppChecker, type GitHubAppPanel } from "./github-app.js";
+import {
+  type CatalogoRepo,
+  catalogoDoApp,
+  cobertura,
+  createGitHubAppChecker,
+  type GitHubAppPanel,
+} from "./github-app.js";
 import {
   applyInstallationDelivery as applyInstallationToState,
   applyIssueDelivery as applyToState,
@@ -152,6 +158,14 @@ export interface RepoListItem {
   motivo: string | null;
 }
 
+/** Catálogo de repositórios do App, com o plugue atual de cada um (`GET /github/repos`). */
+export interface GitHubReposCatalog {
+  configurado: boolean;
+  erro?: string;
+  consultadoEm: string;
+  repos: (CatalogoRepo & { plugado: { projeto: string; status: "ativo" | "desativado" } | null })[];
+}
+
 export interface RunningFactory {
   url: string;
   /** Os mesmos comandos da API, para as interfaces de gestão no processo do daemon. */
@@ -164,6 +178,8 @@ export interface RunningFactory {
   unplugRepo(repo: string, force: boolean): Promise<{ status: number; body: unknown }>;
   /** Painel do GitHub App: receptor, instalações do App e cobertura de cada repositório plugado. */
   githubAppPanel(): Promise<GitHubAppPanel>;
+  /** Catálogo dos repositórios que o App acessa, com o plugue atual de cada um. */
+  githubReposCatalog(): Promise<GitHubReposCatalog>;
   /** URL local do receptor do webhook, quando ele está ligado. */
   webhookUrl?: string;
   close(): Promise<void>;
@@ -1589,6 +1605,28 @@ export async function startFactory(opts: {
    * Painel do GitHub App. A cobertura só é dita quando a consulta ao App deu certo: sem ela, `coberto` é `null`, e a
    * página não afirma nada que não sabe.
    */
+  /**
+   * Catálogo de repositórios do App (Fase 2): só leitura, sem token nem chave. `plugado` diz se algum projeto de
+   * repositório monitorado já aponta para o repositório (comparação sem caixa), com o status do vínculo.
+   */
+  async function githubReposCatalog(): Promise<GitHubReposCatalog> {
+    const app = await appChecker.status();
+    const plugados = new Map((await listRepos()).map((r) => [r.repo.toLowerCase(), r]));
+    const repos = app.configurado && !app.erro ? catalogoDoApp(app) : [];
+    return {
+      configurado: app.configurado,
+      ...(app.erro ? { erro: app.erro } : {}),
+      consultadoEm: app.consultadoEm,
+      repos: repos.map((r) => {
+        const plugado = plugados.get(r.nome.toLowerCase());
+        return {
+          ...r,
+          plugado: plugado ? { projeto: plugado.project, status: plugado.status } : null,
+        };
+      }),
+    };
+  }
+
   async function githubAppPanel(): Promise<GitHubAppPanel> {
     const state = await readState();
     const app = await appChecker.status();
@@ -2252,6 +2290,7 @@ export async function startFactory(opts: {
       }
       if (route === "GET /repos") return json(res, 200, await listRepos());
       if (route === "GET /github-app") return json(res, 200, await githubAppPanel());
+      if (route === "GET /github/repos") return json(res, 200, await githubReposCatalog());
       if (route === "POST /repos/plugar" || route === "POST /repos/desplugar") {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { repo?: unknown; force?: unknown } | undefined;
@@ -2374,6 +2413,7 @@ export async function startFactory(opts: {
     plugRepo,
     unplugRepo,
     githubAppPanel,
+    githubReposCatalog,
     close: async () => {
       closing = true;
       await avisos.flush();

@@ -6,12 +6,25 @@ import { readFile as readFileFromDisk } from "node:fs/promises";
  * estão cobertos. Só lê; nunca grava nada no GitHub e nunca guarda a chave privada fora da memória do processo.
  */
 
+/** Repositório que uma instalação do App pode acessar, com o id numérico estável do GitHub (ADR-0015, Fase 2). */
+export interface CatalogoRepo {
+  /** Id numérico do repositório no GitHub: não muda com renomeação ou transferência. */
+  id: number;
+  /** `dono/nome`, como o GitHub mostra hoje. */
+  nome: string;
+  dono: string;
+  privado: boolean;
+  instalacaoId: number;
+}
+
 export interface GitHubAppInstallation {
   id: number;
   conta: string;
   /** `all` cobre todos os repositórios da conta; `selected` só os listados em `repositorios`. */
   selecao: "all" | "selected";
   repositorios: string[];
+  /** Os mesmos repositórios com id, privacidade e dono (lidos por paginação completa). */
+  catalogo: CatalogoRepo[];
 }
 
 export interface GitHubAppStatus {
@@ -85,6 +98,38 @@ export function cobertura(
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+/** Teto de páginas por listagem: impede uma paginação sem fim se a API responder algo inesperado. */
+export const MAX_PAGINAS = 50;
+const POR_PAGINA = 100;
+
+/**
+ * Junta todas as páginas de uma listagem da API. Para quando uma página vem incompleta; passar do teto é erro, para não
+ * truncar a lista em silêncio.
+ */
+export async function todasAsPaginas<T>(
+  get: (path: string) => Promise<unknown>,
+  caminho: string,
+  extrair: (corpo: unknown) => T[],
+): Promise<T[]> {
+  const itens: T[] = [];
+  const separador = caminho.includes("?") ? "&" : "?";
+  for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
+    const lote = extrair(await get(`${caminho}${separador}per_page=${POR_PAGINA}&page=${pagina}`));
+    itens.push(...lote);
+    if (lote.length < POR_PAGINA) return itens;
+  }
+  throw new Error(`listagem ${caminho.split("?")[0]} passou de ${MAX_PAGINAS} páginas`);
+}
+
+/** Catálogo de repositórios do App, sem repetição: um repositório aparece uma vez, mesmo se mais de uma instalação o cobre. */
+export function catalogoDoApp(app: Pick<GitHubAppStatus, "instalacoes">): CatalogoRepo[] {
+  const porId = new Map<number, CatalogoRepo>();
+  for (const instalacao of app.instalacoes) {
+    for (const repo of instalacao.catalogo) if (!porId.has(repo.id)) porId.set(repo.id, repo);
+  }
+  return [...porId.values()].sort((a, b) => a.nome.localeCompare(b.nome));
+}
+
 export interface GitHubAppChecker {
   /** Estado atual; a consulta ao GitHub é reaproveitada por `ttlMs` para não estourar o limite da API. */
   status(): Promise<GitHubAppStatus>;
@@ -120,24 +165,40 @@ export function createGitHubAppChecker(opts: {
       return res.json() as Promise<unknown>;
     };
     const app = (await github("/app")) as { id: number; slug: string; name: string };
-    const lista = (await github("/app/installations?per_page=100")) as {
-      id: number;
-      account: { login: string };
-      repository_selection: "all" | "selected";
-    }[];
+    const lista = await todasAsPaginas(
+      github,
+      "/app/installations",
+      (corpo) =>
+        corpo as {
+          id: number;
+          account: { login: string };
+          repository_selection: "all" | "selected";
+        }[],
+    );
     const instalacoes: GitHubAppInstallation[] = [];
     for (const item of lista) {
       const { token } = (await github(`/app/installations/${item.id}/access_tokens`, { method: "POST" })) as {
         token: string;
       };
-      const repos = (await github("/installation/repositories?per_page=100", {}, token)) as {
-        repositories: { full_name: string }[];
-      };
+      const repos = await todasAsPaginas(
+        (caminho) => github(caminho, {}, token),
+        "/installation/repositories",
+        (corpo) =>
+          (corpo as { repositories: { id: number; full_name: string; private: boolean; owner: { login: string } }[] })
+            .repositories,
+      );
       instalacoes.push({
         id: item.id,
         conta: item.account.login,
         selecao: item.repository_selection,
-        repositorios: repos.repositories.map((r) => r.full_name),
+        repositorios: repos.map((r) => r.full_name),
+        catalogo: repos.map((r) => ({
+          id: r.id,
+          nome: r.full_name,
+          dono: r.owner.login,
+          privado: r.private,
+          instalacaoId: item.id,
+        })),
       });
     }
     return {

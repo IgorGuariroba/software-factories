@@ -1,6 +1,14 @@
 import { generateKeyPairSync, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { cobertura, createAppJwt, createGitHubAppChecker, type GitHubAppInstallation } from "../src/github-app.js";
+import {
+  catalogoDoApp,
+  cobertura,
+  createAppJwt,
+  createGitHubAppChecker,
+  type GitHubAppInstallation,
+  MAX_PAGINAS,
+  todasAsPaginas,
+} from "../src/github-app.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const PEM = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
@@ -27,7 +35,12 @@ function githubFalso(opts: { appStatus?: number; repos?: string[] } = {}) {
     if (caminho === "/app/installations/180265101/access_tokens") return json({ token: "ghs_token_falso" });
     if (caminho === "/installation/repositories") {
       return json({
-        repositories: (opts.repos ?? ["IgorGuariroba/software-factories"]).map((full_name) => ({ full_name })),
+        repositories: (opts.repos ?? ["IgorGuariroba/software-factories"]).map((full_name, i) => ({
+          id: 1000 + i,
+          full_name,
+          private: full_name.endsWith("-privado"),
+          owner: { login: full_name.split("/")[0] },
+        })),
       });
     }
     return json({ message: "Not Found" }, 404);
@@ -40,6 +53,7 @@ const instalacao = (over: Partial<GitHubAppInstallation> = {}): GitHubAppInstall
   conta: "IgorGuariroba",
   selecao: "selected",
   repositorios: ["IgorGuariroba/software-factories"],
+  catalogo: [],
   ...over,
 });
 
@@ -164,5 +178,71 @@ describe("createGitHubAppChecker", () => {
     const status = await checker.status();
     expect(status.configurado).toBe(true);
     expect(status.erro).toMatch(/ENOENT/);
+  });
+});
+
+describe("catálogo de repositórios do App (Fase 2)", () => {
+  it("cada repositório traz id, dono, privacidade e a instalação de origem", async () => {
+    const gh = githubFalso({ repos: ["IgorGuariroba/software-factories", "IgorGuariroba/segredo-privado"] });
+    const checker = createGitHubAppChecker({
+      appId: 5685212,
+      privateKeyPath: "/chave.pem",
+      fetch: gh.fetch,
+      readFile: async () => PEM,
+      now: () => AGORA,
+    });
+    const status = await checker.status();
+    expect(status.instalacoes[0]?.catalogo).toEqual([
+      {
+        id: 1000,
+        nome: "IgorGuariroba/software-factories",
+        dono: "IgorGuariroba",
+        privado: false,
+        instalacaoId: 180265101,
+      },
+      {
+        id: 1001,
+        nome: "IgorGuariroba/segredo-privado",
+        dono: "IgorGuariroba",
+        privado: true,
+        instalacaoId: 180265101,
+      },
+    ]);
+  });
+
+  it("a paginação pede as páginas seguintes até uma vir incompleta", async () => {
+    const paginas: string[] = [];
+    const lotes = [Array.from({ length: 100 }, (_, i) => i), [100, 101, 102]];
+    const itens = await todasAsPaginas(
+      async (caminho) => {
+        paginas.push(caminho);
+        return lotes[paginas.length - 1] ?? [];
+      },
+      "/installation/repositories",
+      (corpo) => corpo as number[],
+    );
+    expect(itens).toHaveLength(103);
+    expect(paginas).toEqual([
+      "/installation/repositories?per_page=100&page=1",
+      "/installation/repositories?per_page=100&page=2",
+    ]);
+  });
+
+  it("uma listagem que não termina vira erro, em vez de lista truncada em silêncio", async () => {
+    const cheia = async () => Array.from({ length: 100 }, (_, i) => i);
+    await expect(todasAsPaginas(cheia, "/app/installations", (c) => c as number[])).rejects.toThrow(
+      `listagem /app/installations passou de ${MAX_PAGINAS} páginas`,
+    );
+  });
+
+  it("o catálogo do App não repete um repositório coberto por mais de uma instalação", () => {
+    const repo = { id: 7, nome: "dono/x", dono: "dono", privado: true };
+    const instalacoes: GitHubAppInstallation[] = [
+      { id: 1, conta: "dono", selecao: "selected", repositorios: ["dono/x"], catalogo: [{ ...repo, instalacaoId: 1 }] },
+      { id: 2, conta: "dono", selecao: "all", repositorios: [], catalogo: [{ ...repo, instalacaoId: 2 }] },
+    ];
+    const catalogo = catalogoDoApp({ instalacoes });
+    expect(catalogo).toHaveLength(1);
+    expect(catalogo[0]).toMatchObject({ id: 7, instalacaoId: 1 });
   });
 });
