@@ -94,6 +94,8 @@ interface TestFactoryOptions {
   retroRepo?: string | null;
   /** Secret do GitHub App: liga o receptor do webhook numa porta livre (`webhookUrl`). */
   webhookSecret?: string;
+  /** Painel do GitHub App: App ID e chave (caminho) e o `fetch` falso que responde pela API do GitHub. */
+  githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
   /** Janela de agrupamento dos avisos. Padrão nos testes: 0 (cada aviso sai na hora). */
   avisoJanelaMs?: number;
 }
@@ -123,6 +125,7 @@ export async function startTestFactory(opts: TestFactoryOptions = {}, stateDir?:
     retro: { sink: retroSink, repo: retroRepo ?? undefined },
     webhook: opts.webhookSecret ? { port: 0, secret: opts.webhookSecret } : undefined,
     avisos: { janelaMs: opts.avisoJanelaMs ?? 0 },
+    githubApp: opts.githubApp,
     projects: [
       { config: testProjectConfig({ dryRun: opts.dryRun ?? false, ...opts.config }), source, knowledgeDir, codeHost },
     ],

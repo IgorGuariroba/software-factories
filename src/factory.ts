@@ -48,6 +48,7 @@ import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhament
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
 import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
+import { cobertura, createGitHubAppChecker, type GitHubAppPanel } from "./github-app.js";
 import {
   applyInstallationDelivery as applyInstallationToState,
   applyIssueDelivery as applyToState,
@@ -161,6 +162,8 @@ export interface RunningFactory {
   listRepos(): Promise<RepoListItem[]>;
   plugRepo(repo: string): Promise<{ status: number; body: unknown }>;
   unplugRepo(repo: string, force: boolean): Promise<{ status: number; body: unknown }>;
+  /** Painel do GitHub App: receptor, instalações do App e cobertura de cada repositório plugado. */
+  githubAppPanel(): Promise<GitHubAppPanel>;
   /** URL local do receptor do webhook, quando ele está ligado. */
   webhookUrl?: string;
   close(): Promise<void>;
@@ -316,11 +319,22 @@ export async function startFactory(opts: {
    * fábrica não recebe entregas.
    */
   webhook?: { port: number; secret: string };
+  /**
+   * App ID e caminho da chave privada do GitHub App, para o painel (só leitura). Sem eles, o painel mostra que o App
+   * não está configurado. `fetch` é injetado nos testes.
+   */
+  githubApp?: { appId?: number; privateKeyPath?: string; fetch?: typeof fetch };
   /** Agrupamento de avisos em rajada (ver `AvisoLote`). Padrão: 10 s de silêncio. Zero desliga o agrupamento. */
   avisos?: { janelaMs?: number };
 }): Promise<RunningFactory> {
   const retryDelayMs = opts.retryDelayMs ?? 60_000;
   const clock: FactoryClock = opts.clock ?? { now: Date.now };
+  const appChecker = createGitHubAppChecker({
+    appId: opts.githubApp?.appId,
+    privateKeyPath: opts.githubApp?.privateKeyPath,
+    fetch: opts.githubApp?.fetch,
+    now: clock.now,
+  });
   /** Um timer do agendador no relógio da fábrica. */
   const armTimer = (callback: () => void, delayMs: number): (() => void) => {
     const disarm = clock.setTimer?.(callback, delayMs, { background: false });
@@ -1539,6 +1553,7 @@ export async function startFactory(opts: {
           ? applyToState({ state, delivery, projects: webhookProjects(), newRef: newTaskRef })
           : applyInstallationToState({ state, delivery, projects: webhookProjects() });
       state.deliveries = [...(state.deliveries ?? []), delivery.deliveryId].slice(-DELIVERY_MEMORY);
+      state.ultimoWebhookEm = new Date(clock.now()).toISOString();
     }, context);
     if (!duplicate) await runWebhookEffects(effects);
   }
@@ -1568,6 +1583,32 @@ export async function startFactory(opts: {
       });
     }
     return repos;
+  }
+
+  /**
+   * Painel do GitHub App. A cobertura só é dita quando a consulta ao App deu certo: sem ela, `coberto` é `null`, e a
+   * página não afirma nada que não sabe.
+   */
+  async function githubAppPanel(): Promise<GitHubAppPanel> {
+    const state = await readState();
+    const app = await appChecker.status();
+    const repos = await listRepos();
+    const ativos = repos.filter((r) => r.status === "ativo").map((r) => r.repo);
+    const cobertos = cobertura(ativos, app.configurado && !app.erro ? app.instalacoes : undefined);
+    return {
+      receptor: {
+        ligado: opts.webhook !== undefined,
+        porta: opts.webhook?.port ?? null,
+        ultimaEntregaEm: state.ultimoWebhookEm ?? null,
+      },
+      app,
+      repositorios: repos.map((r) => ({
+        projeto: r.project,
+        repo: r.repo,
+        status: r.status,
+        coberto: r.status === "ativo" ? (cobertos.get(r.repo) ?? null) : null,
+      })),
+    };
   }
 
   /**
@@ -2210,6 +2251,7 @@ export async function startFactory(opts: {
         return found ? json(res, 200, { ok: true }) : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
       if (route === "GET /repos") return json(res, 200, await listRepos());
+      if (route === "GET /github-app") return json(res, 200, await githubAppPanel());
       if (route === "POST /repos/plugar" || route === "POST /repos/desplugar") {
         if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
         const body = (await readBody(req)) as { repo?: unknown; force?: unknown } | undefined;
@@ -2331,6 +2373,7 @@ export async function startFactory(opts: {
     listRepos,
     plugRepo,
     unplugRepo,
+    githubAppPanel,
     close: async () => {
       closing = true;
       await avisos.flush();

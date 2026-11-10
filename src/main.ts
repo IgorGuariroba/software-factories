@@ -68,6 +68,22 @@ function webhookFromEnv(): { port: number; secret: string } | undefined {
   return { port, secret };
 }
 
+/**
+ * Painel do GitHub App (só leitura): App ID numérico e caminho do arquivo da chave privada. Nada é lido aqui; a chave
+ * só é aberta quando o painel consulta o GitHub. Sem as duas variáveis, o painel mostra que o App não está configurado.
+ */
+function githubAppFromEnv(): { appId?: number; privateKeyPath?: string } {
+  const rawId = process.env.FACTORY_GITHUB_APP_ID?.trim();
+  const privateKeyPath = process.env.FACTORY_GITHUB_APP_PRIVATE_KEY_PATH?.trim() || undefined;
+  if (!rawId) return { privateKeyPath };
+  const appId = Number(rawId);
+  if (!Number.isInteger(appId) || appId <= 0) {
+    console.error(`FACTORY_GITHUB_APP_ID inválido: "${rawId}" (use o número do App)`);
+    process.exit(1);
+  }
+  return { appId, privateKeyPath };
+}
+
 /** Repositório público da fábrica para as issues de retrô (`dono/nome`). Sem ele, as propostas só ficam registradas. */
 const retroRepo = process.env.FACTORY_RETRO_REPO?.trim() || undefined;
 if (retroRepo && !isRetroRepository(retroRepo)) {
@@ -113,6 +129,7 @@ try {
     teams: teamsClient && createTeamsMcpNotifier(teamsClient),
     retro: { sink: createGhRetroSink(), repo: retroRepo },
     webhook: webhookFromEnv(),
+    githubApp: githubAppFromEnv(),
   });
   console.log(`[fábrica] API local em ${daemon.url}`);
   const stop = () =>
