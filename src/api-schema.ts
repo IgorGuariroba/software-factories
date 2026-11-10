@@ -537,6 +537,33 @@ export const API_SCHEMA = {
     },
     "/projetos/{nome}/pendencias": { get: { summary: "O que falta na configuração (lista de avisos)", responses: ok } },
     "/segredos": { get: { summary: "Credenciais cadastradas: nome e data, nunca o valor", responses: ok } },
+    "/ferramentas": {
+      get: {
+        summary:
+          "Catálogo fechado de ferramentas: nome, tipo, etapas que as implementam e etapas que as têm ligadas por padrão",
+        responses: ok,
+      },
+    },
+    "/tasks/{project}/{key}/etapas/{etapa}/memoria/esquecer": {
+      post: {
+        summary: "Esquece a memória da SPEC: a próxima execução usa uma conversa nova; o histórico fica guardado",
+        responses: ok,
+      },
+    },
+    "/tasks/{project}/{key}/etapas/{etapa}/mensagem": {
+      post: {
+        summary:
+          "Mensagem do usuário para o Agente da etapa: vira steer se a etapa roda, ou inicia um turno se está parada",
+        responses: ok,
+      },
+    },
+    "/tasks/{project}/{key}/trace": {
+      get: {
+        summary:
+          "Trace de cada etapa da Tarefa: passos da conversa (pedido, texto, chamadas e resultados de ferramenta)",
+        responses: ok,
+      },
+    },
     "/segredos/{nome}": {
       put: { summary: "Grava uma credencial no cofre (o valor não volta depois)", responses: ok },
     },

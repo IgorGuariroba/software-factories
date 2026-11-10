@@ -9,6 +9,8 @@ import {
   cancelTask,
   criarProjetoGithub,
   decideTriage,
+  enviarMensagemEtapa,
+  esquecerMemoriaEtapa,
   eventStream,
   getDaemon,
   getGithubApp,
@@ -22,6 +24,7 @@ import {
   getSpecPreview,
   getTask,
   getTasks,
+  getTrace,
   getTriagePreview,
   importarRepoGithub,
   pauseDaemon,
@@ -49,6 +52,7 @@ import {
   textoImportacao,
   visibilidade,
 } from "./repositorios-github.js";
+import { renderTrace } from "./trace.js";
 import {
   actionsFor,
   actionTab,
@@ -577,7 +581,50 @@ function renderDaemon() {
 }
 
 let openedTask = null;
+/** Etapa escolhida na aba Trace e a última tarefa aberta, para atualizar o trace enquanto ela roda. */
+let etapaTrace = null;
+let detalheAtual = null;
+let traceTimer = null;
+
+async function atualizarTrace(task) {
+  clearTimeout(traceTimer);
+  if (!task || currentTab !== "trace") return;
+  const alvo = task.id;
+  try {
+    const etapas = await getTrace(task.project, task.key);
+    if (detalheAtual?.id !== alvo || currentTab !== "trace") return;
+    renderTrace($("detalhe-trace"), etapas, etapaTrace, el, {
+      aoEscolher: (nome) => {
+        etapaTrace = nome;
+        atualizarTrace(detalheAtual);
+      },
+      aoEsquecer: async (nome) => {
+        try {
+          await esquecerMemoriaEtapa(detalheAtual.project, detalheAtual.key, nome);
+        } catch (erro) {
+          showError(erro);
+        }
+        atualizarTrace(detalheAtual);
+      },
+      aoEnviar: async (nome, texto) => {
+        try {
+          await enviarMensagemEtapa(detalheAtual.project, detalheAtual.key, nome, texto);
+        } catch (erro) {
+          showError(erro);
+        }
+        atualizarTrace(detalheAtual);
+      },
+    });
+  } catch {
+    if (detalheAtual?.id === alvo)
+      $("detalhe-trace").replaceChildren(el("p", { text: "Não foi possível carregar o trace." }));
+  }
+  if (detalheAtual?.id === alvo && !isTerminal(detalheAtual))
+    traceTimer = setTimeout(() => atualizarTrace(detalheAtual), 3000);
+}
+
 function renderDetail(task) {
+  detalheAtual = task;
   const opening = openedTask !== task.id || $("detalhe").hidden;
   const focused = document.activeElement;
   const editing =
@@ -857,6 +904,8 @@ function showTab(name) {
     panel.setAttribute("aria-labelledby", `aba-${panel.dataset.painel}`);
   }
   for (const panel of document.querySelectorAll("[data-painel]")) panel.hidden = panel.dataset.painel !== name;
+  if (name === "trace") atualizarTrace(detalheAtual);
+  else clearTimeout(traceTimer);
 }
 for (const tab of document.querySelectorAll("[data-aba]"))
   tab.addEventListener("click", () => showTab(tab.dataset.aba));

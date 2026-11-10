@@ -2,7 +2,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { configure, defineExtension, defineTool, type Harness } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
-import type { ModelRef, ProjectConfig } from "./config.js";
+import {
+  type AgenteDaEtapa,
+  comPromptAdicional,
+  ferramentasParaEtapa,
+  textoAdicionalDoAgente,
+} from "./agente-etapa-config.js";
+import type { ProjectConfig } from "./config.js";
 import {
   copyOutOfCommit,
   type RetroKind,
@@ -141,7 +147,8 @@ export async function runRetro(opts: {
   config: ProjectConfig;
   writer: EffectWriter;
   events: EventRecorder;
-  model: ModelRef;
+  /** Configuração efetiva da retrô (Agente da etapa): modelo, ferramentas e prompt adicional. */
+  agente: AgenteDaEtapa;
   /** O relato da etapa para o modelo; só montado se o modelo ainda não entregou. */
   input: () => Promise<string>;
   sink?: RetroSink;
@@ -237,11 +244,13 @@ export async function runRetro(opts: {
     if (!retro.conversationId) {
       await runtime.commit(async (tx) => {
         const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
+        const modelo = opts.agente.modelo;
+        if (!modelo) throw new Error("a retrô não tem modelo configurado");
         await configure(tx, conversation.id, {
-          model: { provider: opts.model.provider, modelId: opts.model.model },
+          model: { provider: modelo.provider, modelId: modelo.model },
           extensions: [RetroExtension],
-          tools: [deliverTool],
-          instructions: INSTRUCTIONS,
+          tools: ferramentasParaEtapa([deliverTool], opts.agente.ferramentas, "retro"),
+          instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(opts.agente)),
           maxTurns: 2,
         });
         retro.conversationId = conversation.id;

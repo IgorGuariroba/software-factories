@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DISPONIVEIS_DA_ETAPA, FERRAMENTAS, type NomeFerramenta } from "./ferramentas-catalogo.js";
 
 /** Estados do workflow que a fábrica entende. */
 export const CardState = z.enum([
@@ -219,8 +220,59 @@ const GitLabSourceConfig = z.object({
   ignoreLabels: z.array(z.string().min(1)).default(["epic"]),
 });
 
-export const ProjectConfig = z.object({
+const NOMES_FERRAMENTAS = Object.keys(FERRAMENTAS) as [NomeFerramenta, ...NomeFerramenta[]];
+
+/** Servidor MCP liberado para uma etapa, com as tools que ela pode usar (fatia 09). */
+const McpDaEtapa = z.object({
+  servidor: z.string().min(1),
+  ferramentas: z.array(z.string().min(1)).default([]),
+});
+
+/**
+ * Configuração gravada de uma etapa (Agente da etapa, ADR-0021). Campo ausente usa o padrão embutido de cada etapa.
+ * Ferramentas só aceitam nomes do catálogo fechado.
+ */
+export const AgenteDaEtapaConfig = z.object({
+  modelo: ModelRef.optional(),
+  /** Texto acrescentado ao prompt base da etapa. Ausente: nenhum. */
+  promptAdicional: z.string().optional(),
+  ferramentas: z.array(z.enum(NOMES_FERRAMENTAS)).optional(),
+  mcp: z.array(McpDaEtapa).optional(),
+  /** Skills do projeto ativadas nesta etapa (fatia 10). Devem existir em `skills` do projeto. */
+  skills: z.array(z.string().min(1)).optional(),
+});
+export type AgenteDaEtapaConfig = z.infer<typeof AgenteDaEtapaConfig>;
+
+export const EtapasConfig = z
+  .object({
+    spec: AgenteDaEtapaConfig.optional(),
+    review: AgenteDaEtapaConfig.optional(),
+    implementacao: AgenteDaEtapaConfig.optional(),
+    retro: AgenteDaEtapaConfig.optional(),
+  })
+  .strict();
+export type EtapasConfig = z.infer<typeof EtapasConfig>;
+
+/** Servidor MCP do projeto, iniciado por comando local em stdio (fatia 09). */
+export const ServidorMcp = z.object({
+  nome: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/, "use minúsculas, números e hífen (2 a 64 caracteres)"),
+  comando: z.string().min(1),
+  argumentos: z.array(z.string()).default([]),
+});
+export type ServidorMcp = z.infer<typeof ServidorMcp>;
+
+/** Skill do projeto: bloco de instruções que uma etapa pode ativar (fatia 10). */
+export const SkillDoProjeto = z.object({
+  nome: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/, "use minúsculas, números e hífen (2 a 64 caracteres)"),
+  descricao: z.string().optional(),
+  conteudo: z.string().min(1),
+});
+export type SkillDoProjeto = z.infer<typeof SkillDoProjeto>;
+
+const ProjectConfigBase = z.object({
   name: z.string().min(1),
+  /** Configuração de cada etapa (Agente da etapa). Ausente: padrão embutido para todas as etapas. */
+  etapas: EtapasConfig.optional(),
   /** Execução e avisos automáticos: sempre (pessoal) ou somente no calendário do projeto (empresa). */
   activity: z.enum(["always", "business-hours"]).default("always"),
   /** No dry-run a fábrica lê a Fonte de verdade, mas só registra as escritas. Ligado por padrão. */
@@ -272,6 +324,42 @@ export const ProjectConfig = z.object({
   conventions: ConventionsConfig.optional(),
   /** Mensagens deste projeto no Telegram. Sem o bloco, `content: full`. */
   telegram: z.object({ content: TelegramContent.default("full") }).optional(),
+  /** Skills do projeto: blocos de instruções que cada etapa escolhe, pela interface. */
+  skills: z.array(SkillDoProjeto).optional(),
+  /** Servidores MCP cadastrados no projeto (fatia 09). Uma etapa só usa os que estão aqui. */
+  mcpServers: z.array(ServidorMcp).optional(),
+});
+
+/** Uma etapa só pode ativar skills e servidores MCP que o projeto define. */
+export const ProjectConfig = ProjectConfigBase.superRefine((config, ctx) => {
+  const skills = new Set((config.skills ?? []).map((s) => s.nome));
+  const servidores = new Set((config.mcpServers ?? []).map((s) => s.nome));
+  for (const [etapa, bloco] of Object.entries(config.etapas ?? {})) {
+    // Uma etapa só liga as ferramentas que ela implementa (ex.: escrita nunca na review).
+    const disponiveis = DISPONIVEIS_DA_ETAPA[etapa as keyof typeof DISPONIVEIS_DA_ETAPA] as
+      | readonly string[]
+      | undefined;
+    for (const nome of bloco?.ferramentas ?? []) {
+      if (!disponiveis?.includes(nome))
+        ctx.addIssue({
+          code: "custom",
+          path: ["etapas", etapa, "ferramentas"],
+          message: `a etapa ${etapa} não implementa a ferramenta ${nome}`,
+        });
+    }
+    for (const nome of bloco?.skills ?? []) {
+      if (!skills.has(nome))
+        ctx.addIssue({ code: "custom", path: ["etapas", etapa, "skills"], message: `skill inexistente: ${nome}` });
+    }
+    for (const { servidor } of bloco?.mcp ?? []) {
+      if (!servidores.has(servidor))
+        ctx.addIssue({
+          code: "custom",
+          path: ["etapas", etapa, "mcp"],
+          message: `servidor MCP inexistente: ${servidor}`,
+        });
+    }
+  }
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;
 

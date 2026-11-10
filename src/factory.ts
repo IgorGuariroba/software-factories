@@ -14,6 +14,7 @@ import {
   type TaskId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { resolverAgenteDaEtapa } from "./agente-etapa-config.js";
 import { API_SCHEMA } from "./api-schema.js";
 import { AvisoLote } from "./aviso-lote.js";
 import { synchronizeBase } from "./base-sync.js";
@@ -47,6 +48,7 @@ import {
 import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
 import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhamento-tecnico.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
+import { catalogoDeFerramentas } from "./ferramentas-catalogo.js";
 import { defaultBranch, git } from "./git.js";
 import { gitCodeHost } from "./git-code-host.js";
 import {
@@ -71,6 +73,7 @@ import { createImplementationExtension, runImplementation, StageBlocked } from "
 import { aplicarImportacao } from "./importacao-issues.js";
 import { ESQUEMA_FONTE as ESQUEMA_JIRA } from "./jira-demand-source.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
+import { ferramentasMcpDaEtapa } from "./mcp-etapa.js";
 import {
   camposAlterados,
   lerConfiguracao,
@@ -116,6 +119,7 @@ import { createTeamsChannel } from "./teams-canal.js";
 import type { TeamsConversation } from "./teams-conversa.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
+import { conversasDaTarefa, traceDaTarefa } from "./trace-tarefa.js";
 import {
   classifyTriage,
   deterministicTriage,
@@ -699,7 +703,7 @@ export async function startFactory(opts: {
             ...current.delivery,
             tickets: [...current.delivery.tickets, ...(current.correctionTickets ?? [])],
           },
-          model: project.config.roles.implementer ?? project.config.roles.spec,
+          agente: resolverAgenteDaEtapa(project.config, "implementacao"),
           deps: implementationDeps,
           tools: implementationTools,
           originalTicketCount: current.delivery.tickets.length,
@@ -716,6 +720,7 @@ export async function startFactory(opts: {
               config: project.config,
               worktreesRoot: implementationDeps.worktreesRoot,
               tools: reviewTools,
+              agente: resolverAgenteDaEtapa(project.config, "review"),
               verification: { head, diagnostic },
             });
             const latest = (await readState()).tasks.find((t) => t.id === input.id);
@@ -775,6 +780,7 @@ export async function startFactory(opts: {
             config: project.config,
             worktreesRoot: implementationDeps.worktreesRoot,
             tools: reviewTools,
+            agente: resolverAgenteDaEtapa(project.config, "review"),
             feedback,
           });
           const reviewed = (await readState()).tasks.find((t) => t.id === input.id)?.review;
@@ -943,7 +949,14 @@ export async function startFactory(opts: {
           harness,
           commit: runtime.commit,
           taskId: runtime.taskId,
-          model: project.config.roles.spec,
+          agente: resolverAgenteDaEtapa(project.config, "spec"),
+          ferramentasExtras: await ferramentasMcpDaEtapa(project.config, resolverAgenteDaEtapa(project.config, "spec")),
+          instalarExtensao: (extensao) => registry.install(extensao),
+          registrarConversa: (conversa) =>
+            runtime.commit(async (tx) => {
+              const atual = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
+              if (atual) atual.specConversationId = conversa;
+            }),
           context: runtime.context,
           // Uma SPEC refeita por mudança de escopo tem outro identificador: o motor não reaproveita a resposta antiga.
           requestId: `spec-${questions.length}-r${(await readState()).tasks.find((t) => t.id === input.id)?.specRevision ?? 0}`,
@@ -977,9 +990,14 @@ export async function startFactory(opts: {
       }
 
       /** A conversa da triagem desta Tarefa, que a SPEC não pode reaproveitar. */
+      /** Conversas que a SPEC não deve retomar: a da triagem e as que o usuário esqueceu. */
       async function triageConversations(): Promise<string[]> {
-        const conversation = (await readState()).tasks.find((t) => t.id === input.id)?.triageConversation;
-        return conversation ? [String(conversation)] : [];
+        const task = (await readState()).tasks.find((t) => t.id === input.id);
+        const excluidas = [
+          ...(task?.triageConversation ? [task.triageConversation] : []),
+          ...(task?.conversasEsquecidas ?? []),
+        ];
+        return excluidas.map((c) => String(c));
       }
 
       /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
@@ -1002,7 +1020,7 @@ export async function startFactory(opts: {
           config: project.config,
           writer,
           events: eventRecorder,
-          model: project.config.roles.retro ?? project.config.roles.spec,
+          agente: resolverAgenteDaEtapa(project.config, "retro"),
           input: async () => {
             const current = (await readState()).tasks.find((t) => t.id === input.id) ?? task;
             return retroInput(stage, current, events.list());
@@ -2283,6 +2301,72 @@ export async function startFactory(opts: {
           ? json(res, 200, taskDetail(task, events.list()))
           : json(res, 404, { error: `Tarefa ${id} não existe` });
       }
+      const traceRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/trace$/);
+      if (req.method === "GET" && traceRoute) {
+        const id = `${decodeURIComponent(traceRoute[1] as string)}/${decodeURIComponent(traceRoute[2] as string)}`;
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task) return json(res, 404, { error: `Tarefa ${id} não existe` });
+        return json(res, 200, await traceDaTarefa(harness, task, context));
+      }
+      const esquecerRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/etapas\/([^/]+)\/memoria\/esquecer$/);
+      if (req.method === "POST" && esquecerRoute) {
+        const id = `${decodeURIComponent(esquecerRoute[1] as string)}/${decodeURIComponent(esquecerRoute[2] as string)}`;
+        const etapa = decodeURIComponent(esquecerRoute[3] as string);
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task) return json(res, 404, { error: `Tarefa ${id} não existe` });
+        // A implementação não entra aqui: as tools dela localizam a Tarefa pelo id da conversa, e zerá-lo quebraria a
+        // retomada. SPEC, review e retrô têm caminho de nova conversa.
+        const retroStage = etapa.startsWith("retro:") ? etapa.slice("retro:".length) : undefined;
+        const atual =
+          etapa === "spec"
+            ? task.specConversationId
+            : etapa === "review"
+              ? task.review?.conversationId
+              : retroStage
+                ? task.retros?.find((r) => r.stage === retroStage)?.conversationId
+                : undefined;
+        if (etapa !== "spec" && etapa !== "review" && !retroStage)
+          return json(res, 409, { error: `a etapa ${etapa} ainda não permite esquecer a memória` });
+        if (!atual) return json(res, 409, { error: `a etapa ${etapa} ainda não tem memória para esquecer` });
+        await harness.commit(async (tx) => {
+          const alvo = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+          if (!alvo) return;
+          alvo.conversasEsquecidas = [...(alvo.conversasEsquecidas ?? []), atual];
+          if (etapa === "spec") alvo.specConversationId = null;
+          else if (etapa === "review" && alvo.review) alvo.review.conversationId = null;
+          else if (retroStage) {
+            const retro = alvo.retros?.find((r) => r.stage === retroStage);
+            if (retro) retro.conversationId = null;
+          }
+        }, context);
+        return json(res, 200, { etapa, esquecida: true });
+      }
+      const mensagemRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/etapas\/([^/]+)\/mensagem$/);
+      if (req.method === "POST" && mensagemRoute) {
+        const id = `${decodeURIComponent(mensagemRoute[1] as string)}/${decodeURIComponent(mensagemRoute[2] as string)}`;
+        const etapa = decodeURIComponent(mensagemRoute[3] as string);
+        const task = (await readState()).tasks.find((t) => t.id === id);
+        if (!task) return json(res, 404, { error: `Tarefa ${id} não existe` });
+        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
+        const corpo = (await readBody(req)) as { texto?: unknown } | undefined;
+        if (typeof corpo?.texto !== "string" || corpo.texto.trim() === "")
+          return json(res, 400, { error: "informe texto, a mensagem para o agente" });
+        const conversa = [...conversasDaTarefa(task)].find(([, nome]) => nome === etapa)?.[0];
+        if (!conversa) return json(res, 404, { error: `a etapa ${etapa} ainda não tem conversa nesta tarefa` });
+        const handle = await harness.conversation(conversa, context);
+        if (!handle) return json(res, 404, { error: `a conversa da etapa ${etapa} não existe mais` });
+        // Com a etapa em execução, a mensagem vira steer no próximo ponto de decisão; parada, inicia um turno novo.
+        await handle.submit(
+          {
+            type: "input",
+            content: corpo.texto.trim(),
+            requestId: `usuario-${globalThis.crypto.randomUUID()}`,
+            whenBusy: "steer",
+          },
+          context,
+        );
+        return json(res, 200, { etapa, enviada: true });
+      }
       const repairRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/repair$/);
       if (repairRoute && (req.method === "GET" || req.method === "POST")) {
         const project = decodeURIComponent(repairRoute[1] as string);
@@ -2714,6 +2798,7 @@ export async function startFactory(opts: {
       }
       const segredoMatch = url.pathname.match(/^\/segredos\/([^/]+)$/);
       if (route === "GET /segredos") return json(res, 200, await segredos.list());
+      if (route === "GET /ferramentas") return json(res, 200, catalogoDeFerramentas());
       if (segredoMatch && req.method === "PUT") {
         const nomeSegredo = decodeURIComponent(segredoMatch[1] ?? "");
         if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(nomeSegredo))
