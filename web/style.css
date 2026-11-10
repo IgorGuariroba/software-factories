@@ -2950,3 +2950,52 @@ summary.disclosure .chevron svg {
     justify-self: start;
   }
 }
+
+/* Repositórios do GitHub (Fase 5): busca e lista sem marcadores, com a mesma margem dos demais cartões. */
+.campo-busca {
+  display: grid;
+  gap: var(--sp-2);
+  max-width: 420px;
+  margin: var(--sp-3) 0 var(--sp-4);
+  color: var(--suave);
+  font-size: 0.85rem;
+}
+
+.campo-busca input {
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--r-controle);
+  background: var(--superficie);
+  color: var(--texto);
+  font: inherit;
+}
+
+.repos-gh-lista {
+  padding-left: 0;
+  list-style: none;
+}
+
+.repo-gh {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--borda);
+}
+
+.repo-gh:last-child {
+  border-bottom: 0;
+}
+
+.repo-gh .primario,
+.repo-gh .secundario {
+  justify-self: start;
+  margin-top: var(--sp-1);
+}
+
+.repo-gh-cabeca {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}

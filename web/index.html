@@ -18,6 +18,7 @@
         <a href="#/inicio" data-pagina="inicio"><span class="icone-nav" data-icone="layout-dashboard" aria-hidden="true"></span>Visão geral</a>
         <a href="#/tarefas" data-pagina="tarefas"><span class="icone-nav" data-icone="list-checks" aria-hidden="true"></span>Tarefas</a>
         <a href="#/fonte" data-pagina="fonte"><span class="icone-nav" data-icone="inbox" aria-hidden="true"></span>Fonte de demandas</a>
+        <a href="#/repositorios" data-pagina="repositorios"><span class="icone-nav" data-icone="git-branch" aria-hidden="true"></span>Repositórios</a>
         <span class="nav-legenda">ADMINISTRAÇÃO</span>
         <a href="#/configuracoes" data-pagina="configuracoes"><span class="icone-nav" data-icone="settings" aria-hidden="true"></span>Configurações</a>
         <div class="controles"><span id="daemon" class="selo">daemon: …</span><span id="conexao" class="selo" role="status">conectando…</span><button type="button" id="alternar-daemon" disabled>Pausar daemon</button></div>
@@ -77,6 +78,28 @@
             </div>
           </div>
         </section>
+        <section class="pagina-simples" data-tela="repositorios" hidden aria-labelledby="titulo-repositorios-github">
+          <h2 id="titulo-repositorios-github">Repositórios do GitHub</h2>
+          <p class="introducao">Repositórios que o GitHub App acessa. Importe as issues abertas de um repositório plugado para a fábrica. A importação roda em fila e repetir não duplica nada.</p>
+          <section class="cartao-area" aria-labelledby="titulo-catalogo-github">
+            <div class="cartao-cabeca">
+              <div>
+                <h3 id="titulo-catalogo-github">Repositórios com acesso do App</h3>
+                <p>Só as issues abertas entram. Pull requests e épicos ficam de fora.</p>
+              </div>
+            </div>
+            <label class="campo-busca">
+              <span>Buscar repositório</span>
+              <input type="search" id="repos-gh-busca" placeholder="nome ou dono" autocomplete="off">
+            </label>
+            <p id="repos-gh-mensagem" class="ajuda" role="status" hidden></p>
+            <ul id="repos-gh-lista" class="lista repos-gh-lista" aria-label="Repositórios com acesso do GitHub App"></ul>
+            <p id="repos-gh-vazio" class="vazio" hidden>Nenhum repositório encontrado.</p>
+            <p id="repos-gh-status" role="status"></p>
+            <p class="ajuda">Consultado em <span id="repos-gh-consulta">—</span>.</p>
+          </section>
+        </section>
+
         <section class="pagina-simples" data-tela="configuracoes" hidden aria-labelledby="titulo-configuracoes">
           <h2 id="titulo-configuracoes">Configurações</h2>
           <p class="introducao">Preferências compartilhadas por todos os projetos desta fábrica.</p>
