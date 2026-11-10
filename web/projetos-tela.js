@@ -61,6 +61,16 @@ const cabecalhoGrade = (rotulos) =>
     rotulos.length,
   );
 
+/** Linha de configuração (padrão de ajustes): título e descrição à esquerda, controle à direita. */
+const linhaConfig = (titulo, descricao, controle) =>
+  el("div", { class: "linha-config" }, [
+    el("div", { class: "linha-config-texto" }, [
+      el("span", { class: "linha-config-titulo", texto: titulo }),
+      el("span", { class: "ajuda", texto: descricao }),
+    ]),
+    controle,
+  ]);
+
 /** Linha de controles alinhada às colunas do cabeçalho. */
 const linhaGrade = (controles) => comColunas(el("div", { class: "grade-linha" }, controles), controles.length);
 
@@ -151,8 +161,20 @@ export async function iniciarProjetos(raiz) {
 
   // Dois escopos separados: o que vale para o usuário inteiro, e o que é de cada projeto. O seletor de projeto fica
   // numa barra de contexto no topo do escopo "Por projeto", porque só ele muda o que aparece abaixo.
+  // O projeto vem primeiro: é o foco da tela. Credenciais e Telegram são globais e ficam depois, como referência.
   raiz.replaceChildren(
     mensagem,
+    el("section", { class: "escopo escopo-projeto", "aria-labelledby": "escopo-projeto-titulo" }, [
+      el("div", {}, [
+        el("h3", { class: "grupo-titulo", id: "escopo-projeto-titulo", texto: "Por projeto" }),
+        el("p", {
+          class: "grupo-descricao",
+          texto: "Cada projeto tem a própria Fonte, pessoas, repositórios, provedores e agentes.",
+        }),
+      ]),
+      el("div", { class: "projeto-contexto" }, [rotulado("Projeto", seletor)]),
+      corpo,
+    ]),
     el("section", { class: "escopo escopo-global", "aria-labelledby": "escopo-global-titulo" }, [
       el("div", {}, [
         el("h3", { class: "grupo-titulo", id: "escopo-global-titulo", texto: "Globais ao usuário" }),
@@ -160,18 +182,6 @@ export async function iniciarProjetos(raiz) {
       ]),
       cofreBox,
       telegramBox,
-    ]),
-    el("section", { class: "escopo escopo-projeto", "aria-labelledby": "escopo-projeto-titulo" }, [
-      el("div", {}, [
-        el("h3", { class: "grupo-titulo", id: "escopo-projeto-titulo", texto: "Por projeto" }),
-        el("p", {
-          class: "grupo-descricao",
-          texto:
-            "Fonte, pessoas, repositórios, provedores, ensaio, conteúdo no Telegram, estado e remoção de cada projeto.",
-        }),
-      ]),
-      el("div", { class: "projeto-contexto" }, [rotulado("Projeto", seletor)]),
-      corpo,
     ]),
   );
   desenharTelegram(telegramBox, () => mensagem, seletorDeCredencial);
@@ -398,52 +408,73 @@ export async function iniciarProjetos(raiz) {
     const etapasBox = el("section", { class: "bloco" });
     const { lerEtapas, lerSkills, lerServidores } = desenharEtapasAgente(etapasBox, atual, catalogo, el);
 
-    const secoes = [
-      etapasBox,
-      el("section", { class: "bloco" }, [
-        el("h3", { texto: "Fonte de demandas" }),
-        el("label", { class: "campo" }, [el("span", { texto: "Tipo" }), tipoSel]),
-        camposBox,
-      ]),
-      el("section", { class: "bloco" }, [el("h3", { texto: "Perfis" }), modelosBox, adicionarPerfil, perfisBox]),
-      el("section", { class: "bloco" }, [el("h3", { texto: "Pessoas do projeto" }), adicionarPessoa, pessoasBox]),
-      el("section", { class: "bloco" }, [el("h3", { texto: "Repositórios locais" }), adicionarRepo, repoBox]),
-      el("section", { class: "bloco" }, [
-        el("h3", { texto: "Provedores" }),
-        el("label", { class: "campo" }, [el("span", { texto: "Provedores permitidos (vírgula)" }), provedores]),
-      ]),
-      el("section", { class: "bloco" }, [
-        el("label", {}, [ensaio, el("span", { texto: " Ensaio (dry-run): registra as escritas sem aplicá-las" })]),
-        el("label", { class: "campo" }, [el("span", { texto: "Conteúdo no Telegram" }), conteudoTelegram]),
-        salvar,
-      ]),
-      el("section", { class: "bloco" }, [
-        el("h3", { texto: "Histórico de alterações" }),
-        el(
-          "ul",
-          {},
-          historico.length === 0
-            ? [el("li", { texto: "Sem alterações." })]
-            : resumoHistorico(historico).map((linha) => el("li", { texto: linha })),
-        ),
-      ]),
-    ];
+    // Seções na ordem da subnavegação. Cada uma tem âncora própria; a subnavegação rola até ela.
+    const fonteSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Fonte de demandas" }),
+      el("label", { class: "campo" }, [el("span", { texto: "Tipo" }), tipoSel]),
+      camposBox,
+    ]);
+    const perfisSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Perfis" }),
+      el("p", { class: "ajuda", texto: "Papéis que a fábrica consulta ao decidir a quem perguntar." }),
+      modelosBox,
+      adicionarPerfil,
+      perfisBox,
+    ]);
+    const pessoasSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Pessoas do projeto" }),
+      adicionarPessoa,
+      pessoasBox,
+    ]);
+    const repositoriosSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Repositórios locais" }),
+      adicionarRepo,
+      repoBox,
+    ]);
+    const provedoresSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Provedores de modelos" }),
+      el("label", { class: "campo" }, [el("span", { texto: "Provedores permitidos (vírgula)" }), provedores]),
+    ]);
+    // Ensaio e Telegram do projeto em linhas de configuração: rótulo e descrição à esquerda, controle à direita.
+    const ensaioSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Ensaio e Telegram" }),
+      linhaConfig(
+        "Ensaio (dry-run)",
+        "Registra as escritas sem aplicá-las. Use para testar a configuração antes de executar de verdade.",
+        ensaio,
+      ),
+      linhaConfig(
+        "Conteúdo no Telegram",
+        "Completo traz o texto das mensagens; mínimo envia só o essencial.",
+        conteudoTelegram,
+      ),
+    ]);
+    const historicoSec = el("section", { class: "bloco" }, [
+      el("h3", { texto: "Histórico de alterações" }),
+      el(
+        "ul",
+        { class: "lista-simples" },
+        historico.length === 0
+          ? [el("li", { texto: "Sem alterações." })]
+          : resumoHistorico(historico).map((linha) => el("li", { texto: linha })),
+      ),
+    ]);
     // Estado fica fora do formulário travado: pausar e retomar não são edições da configuração (ticket 09).
     const situacaoBox = el("section", { class: "bloco" }, [
       el("h3", { texto: "Estado" }),
       el("p", { texto: acoesDoEstado(situacao.estado).texto }),
       el("div", { class: "acoes-cartao" }, [pausar, retomar, confirmar]),
-      el("h3", { texto: "Pendências" }),
+      el("h4", { class: "subtitulo", texto: "Pendências" }),
       el(
         "ul",
-        {},
+        { class: "lista-simples" },
         pendencias.length === 0
           ? [el("li", { texto: "Nenhuma pendência." })]
           : pendencias.map((p) => el("li", { texto: p })),
       ),
     ]);
     // Remoção (ticket 11): pede confirmação explícita; a fábrica recusa se houver Tarefa em andamento.
-    const remocaoBox = el("section", { class: "bloco" }, [
+    const remocaoBox = el("section", { class: "bloco zona-perigo" }, [
       el("h3", { texto: "Remover projeto" }),
       el("p", {
         texto: `Apaga a configuração do projeto. O histórico das tarefas concluídas fica, e o prefixo ${atual.source.project} segue reservado enquanto esse histórico existir. Não há como desfazer.`,
@@ -471,23 +502,80 @@ export async function iniciarProjetos(raiz) {
     });
     remocaoBox.append(el("div", { class: "acoes-cartao" }, [remover]));
     // Modo leitura (fatia 02): a configuração aparece travada; "Editar configuração" libera o formulário.
-    const formulario = el("fieldset", { class: "projeto-config-form" }, secoes);
+    const formulario = el("fieldset", { class: "projeto-config-form" }, [
+      etapasBox,
+      fonteSec,
+      perfisSec,
+      pessoasSec,
+      repositoriosSec,
+      provedoresSec,
+      ensaioSec,
+    ]);
     const editar = el("button", { type: "button", texto: "Editar configuração" });
-    const cancelar = el("button", { type: "button", texto: "Cancelar edição" });
+    const cancelar = el("button", { type: "button", texto: "Cancelar" });
+    // A barra de salvar só existe durante a edição: é o único lugar onde se grava a configuração do projeto.
+    const barraSalvar = el("div", { class: "barra-salvar" }, [
+      el("p", { class: "barra-salvar-texto", texto: "Alterações não salvas ficam só nesta tela." }),
+      el("div", { class: "acoes-cartao" }, [cancelar, salvar]),
+    ]);
     const aplicarEstado = (editando) => {
       const estado = estadoDoFormulario(editando);
       formulario.disabled = estado.formularioTravado;
       editar.hidden = !estado.editarVisivel;
-      cancelar.hidden = !estado.cancelarVisivel;
+      barraSalvar.hidden = !estado.cancelarVisivel;
     };
     aplicarEstado(false);
     editar.addEventListener("click", () => aplicarEstado(true));
     cancelar.addEventListener("click", () => carregar().catch((erro) => (mensagem.textContent = erro.message)));
+
+    // Subnavegação: mesma ordem do DOM. Cada item rola até a seção correspondente.
+    const ancoras = [
+      ["estado", "Estado", situacaoBox],
+      ["agente", "Agente por etapa", etapasBox],
+      ["fonte", "Fonte de demandas", fonteSec],
+      ["perfis", "Perfis", perfisSec],
+      ["pessoas", "Pessoas", pessoasSec],
+      ["repositorios", "Repositórios", repositoriosSec],
+      ["provedores", "Provedores", provedoresSec],
+      ["ensaio", "Ensaio e Telegram", ensaioSec],
+      ["historico", "Histórico", historicoSec],
+      ["remocao", "Remover", remocaoBox],
+    ];
+    for (const [id, , no] of ancoras) no.id = `projeto-secao-${id}`;
+    const subnav = el(
+      "nav",
+      { class: "projeto-subnav", "aria-label": "Seções do projeto" },
+      ancoras.map(([id, titulo]) => {
+        const item = el("button", { type: "button", texto: titulo });
+        item.addEventListener("click", () =>
+          document.getElementById(`projeto-secao-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        );
+        return item;
+      }),
+    );
+
+    const rotuloEstado = { ativo: "Ativo", pausado: "Pausado" }[situacao.estado] ?? "Incompleto";
+    const cabecalhoProjeto = el("header", { class: "projeto-cabecalho" }, [
+      el("div", { class: "projeto-titulo" }, [
+        el("h3", { texto: nome }),
+        el("span", {
+          class: `estado-selo estado-${situacao.estado === "ativo" || situacao.estado === "pausado" ? situacao.estado : "incompleto"}`,
+          texto:
+            pendencias.length === 0
+              ? rotuloEstado
+              : `${rotuloEstado} · ${pendencias.length} ${pendencias.length === 1 ? "pendência" : "pendências"}`,
+        }),
+      ]),
+      el("div", { class: "acoes-cartao" }, [editar]),
+    ]);
+
     corpo.replaceChildren(
-      el("div", { class: "acoes-cartao" }, [editar, cancelar]),
-      formulario,
-      situacaoBox,
-      remocaoBox,
+      cabecalhoProjeto,
+      el("div", { class: "projeto-layout" }, [
+        subnav,
+        el("div", { class: "projeto-secoes" }, [situacaoBox, formulario, historicoSec, remocaoBox]),
+      ]),
+      barraSalvar,
     );
   }
 
