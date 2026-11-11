@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { api, PO as PO_ID, poll, startTestFactory, type TestFactory, USER } from "./harness.js";
+import { api, eventually, PO as PO_ID, poll, startTestFactory, type TestFactory, USER } from "./harness.js";
 
 const BASE = "https://jira.example.invalid";
 const EMAIL = "igor@example.invalid";
@@ -142,13 +142,15 @@ describe("pausar, retomar e ensaio de projeto (ticket 09)", () => {
   it("pausar no meio da execução: a resposta da pergunta não reabre a Tarefa enquanto o projeto estiver pausado", async () => {
     f = await subirAtivo();
     await poll(f);
-    expect(await statusDaTarefa(f, "exemplo/PROJ-1")).toBe("aguardando-humano");
+    // A Tarefa ativada pela busca roda o pipeline em outro tempo: espera chegar à pergunta, sem fixar o instante.
+    const fabrica = f;
+    await eventually(async () => expect(await statusDaTarefa(fabrica, "exemplo/PROJ-1")).toBe("aguardando-humano"));
     await chamada(f, "POST", "/projetos/exemplo/pausa");
 
     await api(f, "POST", "/tasks/exemplo/PROJ-1/questions/1/answer", { answer: process.cwd() });
     await poll(f);
 
     // Enquanto pausado, a Tarefa não volta a rodar: segue na fila até a retomada.
-    expect(await statusDaTarefa(f, "exemplo/PROJ-1")).toBe("enfileirada");
+    await eventually(async () => expect(await statusDaTarefa(fabrica, "exemplo/PROJ-1")).toBe("enfileirada"));
   });
 });

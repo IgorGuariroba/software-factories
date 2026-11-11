@@ -90,6 +90,7 @@ import {
 } from "./packages/config-store/index.js";
 import { criarEscalonador } from "./packages/escalonador/index.js";
 import { createIntegrationRegistry, testarConexaoJira } from "./packages/integracoes/index.js";
+import { criarPerguntas } from "./packages/perguntas/index.js";
 import {
   avisoTeamsDe,
   canalDaPessoa,
@@ -1127,7 +1128,7 @@ export async function startFactory(opts: {
           if (task && !task.questions?.some((q) => q.n === n)) task.questions = [...(task.questions ?? []), question];
         });
         if (!tecnica && project.config.questionApproval) return;
-        await sendTeamsNotice(input.id, input.project, input.key, n);
+        await perguntas.avisarTeams(input.id, input.project, input.key, n);
         await events.append({
           type: "question",
           project: input.project,
@@ -1160,7 +1161,7 @@ export async function startFactory(opts: {
         return !q.forwarding && runtime.now() < q.remindAt ? q.remindAt : null;
       }
       if (q.publication === "draft" || q.publication === "sending") return runtime.now() + 60_000;
-      if (await checkAnswer(input, q)) return null;
+      if (await perguntas.conferir(input.id, q.n)) return null;
 
       const now = runtime.now();
       if (!q.reminded && now >= q.remindAt && project.config.questionApproval) {
@@ -1504,93 +1505,8 @@ export async function startFactory(opts: {
   }
 
   /** Reserva antes de enviar: uma falha ambígua ou reinício nunca repetem automaticamente uma mensagem. */
-  async function sendTeamsNotice(id: string, project: string, key: string, n: number): Promise<void> {
-    const config = projectOf(project).config;
-    if (!opts.teams || config.dryRun || (config.source.keys && !config.source.keys.includes(key))) return;
-    const notice = await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      const task = state.tasks.find((t) => t.id === id);
-      if (
-        state.daemonPaused ||
-        !task ||
-        task.pauseRequested ||
-        projetoPausado(state, task.project) ||
-        !["ativa", "aguardando-humano"].includes(task.status)
-      )
-        return undefined;
-      const q = task.questions?.find((item) => item.n === n);
-      if (q?.teamsNotice?.status !== "pending" || q.answer !== null) return undefined;
-      if (!pessoasDoPapel(config, "po").some((p) => p.id === q.to && identidadeTeams(p) === q.teamsNotice?.userId))
-        return undefined;
-      q.teamsNotice.status = "attempted";
-      const po = pessoasDoPapel(config, "po").find((p) => p.id === q.to);
-      return { userId: q.teamsNotice.userId, link: q.teamsNotice.link, title: task.title, name: po?.name };
-    }, context);
-    if (!notice) return;
-    try {
-      await canaisDeAviso.create("teams", { notifier: opts.teams }).send({
-        userId: notice.userId,
-        text: teamsQuestionMessage({ card: key, title: notice.title, link: notice.link, name: notice.name }),
-      });
-      await markQuestion(id, n, (q) => {
-        if (q.teamsNotice) q.teamsNotice.status = "sent";
-      });
-    } catch {
-      await markQuestion(id, n, (q) => {
-        if (q.teamsNotice) q.teamsNotice.status = "uncertain";
-      });
-      await events.append({
-        type: "error",
-        project,
-        target: key,
-        message: "aviso Teams não confirmado; verifique o chat antes de tentar novamente",
-      });
-    }
-  }
-
   /** Lê a resposta pelo Canal; se chegou, registra e devolve a Tarefa à fila. */
-  async function checkAnswer(task: { id: string; project: string; key: string }, q: Question): Promise<boolean> {
-    if (q.origin === "tecnica") return false;
-    const answer = await projectOf(task.project).channel.answer(q.ref);
-    if (answer === undefined) return false;
-    const recorded = await harness.commit(
-      async (tx) => recordAnswer(await tx.doc(StateDoc), task.id, q.n, answer),
-      context,
-    );
-    if (recorded)
-      await events.append({
-        type: "question",
-        project: task.project,
-        target: task.key,
-        n: q.n,
-        to: q.to,
-        text: q.text,
-        status: "respondida",
-      });
-    return true;
-  }
-
   /** Confere, na Fonte, a resposta de cada Tarefa que aguarda uma pessoa. */
-  async function checkAnswers(): Promise<void> {
-    for (const task of (await readState()).tasks) {
-      const pending = task.status === "aguardando-humano" ? pendingQuestion(task) : undefined;
-      if (!pending || pending.publication === "draft" || pending.publication === "sending") continue;
-      try {
-        const config = projectOf(task.project).config;
-        if (nextProjectActivity(config, clock.now()) > clock.now()) continue;
-        await sendTeamsNotice(task.id, task.project, task.key, pending.n);
-        await checkAnswer(task, pending);
-      } catch (err) {
-        await events.append({
-          type: "error",
-          project: task.project,
-          target: task.key,
-          message: `falha ao conferir a resposta: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-    }
-  }
-
   // --- Fila ------------------------------------------------------------------------------------
 
   /** Cards elegíveis na Fonte agora. Num repositório monitorado, as issues mais antigas primeiro. */
@@ -1630,7 +1546,7 @@ export async function startFactory(opts: {
       // Uma falha do GitHub nesta consulta não pode impedir a busca dos cards.
       console.error("[fábrica] sincronização com o GitHub falhou:", redactSecrets(String(err)));
     }
-    await checkAnswers();
+    await perguntas.verificar();
     const eligible = await queue();
     await harness.commit(async (tx) => {
       const state = await tx.doc(StateDoc);
@@ -1658,6 +1574,40 @@ export async function startFactory(opts: {
       }
     }, context);
   }
+
+  // --- Perguntas ----------------------------------------------------------------------------------
+  // Conferência de respostas pelo Canal e aviso ao Teams: no pacote perguntas. A fábrica fornece o estado, o Canal de
+  // cada projeto e a gravação dos eventos.
+  const perguntas = criarPerguntas({
+    estado: () => readState(),
+    alterar: (fn) => harness.commit(async (tx) => fn(await tx.doc(StateDoc)), context),
+    agora: () => clock.now(),
+    projeto: (nome) => {
+      const projeto = projects.get(nome);
+      if (!projeto) return undefined;
+      return {
+        canal: projeto.channel,
+        dryRun: projeto.config.dryRun,
+        chavesDaFonte: projeto.config.source.keys,
+        proximaAtividade: (agora) => nextProjectActivity(projeto.config, agora),
+        pessoaPO: (id) => {
+          const po = pessoasDoPapel(projeto.config, "po").find((p) => p.id === id);
+          return po ? { nome: po.name, identidadeTeams: identidadeTeams(po) } : undefined;
+        },
+      };
+    },
+    projetoPausado: (state, nome) => projetoPausado(comoEstadoDaFabrica(state), nome),
+    perguntaPendente: (tarefa) => pendingQuestion(tarefa as unknown as QueuedTask),
+    registrarResposta: (state, id, n, resposta) => recordAnswer(comoEstadoDaFabrica(state), id, n, resposta),
+    avisoTeams: opts.teams
+      ? async (userId, texto) => {
+          await canaisDeAviso.create("teams", { notifier: opts.teams }).send({ userId, text: texto });
+        }
+      : undefined,
+    registrarEvento: async (evento) => {
+      await events.append(evento as NewEvent);
+    },
+  });
 
   // --- Escalonador ------------------------------------------------------------------------------
   // Fila de buscas e sincronizações, reações a mudanças de estado e escolha da próxima Tarefa: no pacote escalonador.
@@ -2232,7 +2182,7 @@ export async function startFactory(opts: {
           avisoTeamsDe(po) && link ? { userId: avisoTeamsDe(po) as string, link, status: "pending" } : undefined;
         stored.publication = "sent";
       });
-      await sendTeamsNotice(id, projectName, cardKey, n);
+      await perguntas.avisarTeams(id, projectName, cardKey, n);
       await events.append({
         type: "question",
         project: projectName,
