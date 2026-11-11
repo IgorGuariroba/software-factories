@@ -1,4 +1,5 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { chamarFerramentaTeams } from "./teams-mcp-chamada.js";
 
 /**
  * Conversa de uma pessoa no Teams (fatia 08): envia mensagens e lê as respostas dela. Porta, com um adaptador MCP.
@@ -12,20 +13,7 @@ export interface TeamsConversation {
 
 /** Adaptador MCP do msteams-mcp: `teams_get_chat`, `teams_send_message` e `teams_get_thread`. */
 export function createTeamsMcpConversation(client: Client): TeamsConversation {
-  async function call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 30_000 });
-    if (response.isError) throw new Error(`MCP Teams: falha em ${name}`);
-    const part = Array.isArray(response.content) ? response.content.find((item) => item.type === "text") : undefined;
-    let data: unknown;
-    try {
-      data = part && typeof part.text === "string" ? JSON.parse(part.text) : undefined;
-    } catch {
-      throw new Error(`MCP Teams: resposta inválida em ${name}`);
-    }
-    if (!data || typeof data !== "object" || !("success" in data) || data.success !== true)
-      throw new Error(`MCP Teams: falha em ${name}`);
-    return data as Record<string, unknown>;
-  }
+  const call = (name: string, args: Record<string, unknown>) => chamarFerramentaTeams(client, name, args);
 
   return {
     async send(userId, text) {

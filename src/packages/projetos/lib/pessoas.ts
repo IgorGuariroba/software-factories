@@ -1,4 +1,3 @@
-import { catalogoDoApp } from "../../../github-app.js";
 import { hostDoServidor } from "../../../gitlab-repositorio.js";
 import {
   listarPessoasGitlab,
@@ -6,6 +5,7 @@ import {
   type PessoaDaFonte,
   pessoasDeAssignees,
 } from "../../../pessoas-fonte.js";
+import { repoDoCatalogo } from "./catalogo.js";
 import type { PortasProjetos, Resposta } from "./portas.js";
 
 /** Lista de pessoas do GitLab do projeto, com o token do cofre. Falha de rede ou de resposta lança o erro. */
@@ -76,11 +76,9 @@ export async function pessoasParaCriacao(
     }
     if (corpo.tipo === "github") {
       if (!Number.isInteger(corpo.repoId)) return { status: 400, body: { error: "informe repoId do repositório" } };
-      const app = await portas.github.status();
-      if (!app.configurado || app.erro)
-        return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
-      const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
-      if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
+      const encontrado = await repoDoCatalogo(portas, corpo.repoId as number);
+      if ("erro" in encontrado) return encontrado.erro;
+      const { repo } = encontrado;
       const lista = pessoasDeAssignees(await portas.github.responsaveisPossiveis(repo.nome, repo.instalacaoId));
       return { status: 200, body: lista };
     }

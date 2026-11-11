@@ -1,4 +1,4 @@
-import { catalogoDoApp } from "../../../github-app.js";
+import { repoDoCatalogo } from "./catalogo.js";
 import type { EfeitoProjeto, PortasProjetos, Resposta } from "./portas.js";
 
 /**
@@ -7,10 +7,9 @@ import type { EfeitoProjeto, PortasProjetos, Resposta } from "./portas.js";
  * importação, responde o registro atual sem enfileirar outra vez.
  */
 export async function importarRepo(portas: PortasProjetos, repoId: number): Promise<Resposta> {
-  const app = await portas.github.status();
-  if (!app.configurado || app.erro) return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
-  const repo = catalogoDoApp(app).find((r) => r.id === repoId);
-  if (!repo) return { status: 404, body: { error: `repositório ${repoId} não está no catálogo do App` } };
+  const encontrado = await repoDoCatalogo(portas, repoId);
+  if ("erro" in encontrado) return encontrado.erro;
+  const { repo } = encontrado;
   const projeto = portas.projetoDoRepositorio(repo.nome);
   if (!projeto) {
     return {

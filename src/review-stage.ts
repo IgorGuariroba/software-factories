@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { configure, defineExtension, defineTool, type Harness } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Harness } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
 import {
@@ -13,8 +13,10 @@ import {
 import type { ChangeRequest } from "./code-host.js";
 import type { ModelRef, ProjectConfig } from "./config.js";
 import { copyOutOfCommit, type QueuedTask, StateDoc, type StepRuntime } from "./durable.js";
+import { tarefaDoEstado } from "./estado-fabrica.js";
 import { git, remoteDefaultRef } from "./git.js";
 import { StageBlocked } from "./implement-stage.js";
+import { chamadaDaUltimaRodada, criarConversaDaTarefa, EXECUCAO_DE_ENTREGA } from "./packages/modelo-etapa/index.js";
 import { redactSecrets } from "./secrets.js";
 import { assertFactoryWorktree, confine } from "./workspace.js";
 
@@ -38,7 +40,7 @@ const deliver = defineTool({
     resumo: str(),
     correcoes: arr(obj({ titulo: str(), aceite: str() }), { maxItems: 5 }),
   }),
-  execute: async () => ({ output: [{ type: "text", text: "Recebido." }], control: { terminate: true } }),
+  execute: EXECUCAO_DE_ENTREGA,
 });
 
 export function createReviewExtension(worktreesRoot: string) {
@@ -85,7 +87,7 @@ export async function runReview(opts: {
   const { runtime, config, agente } = opts;
   let task: QueuedTask | undefined;
   await runtime.commit(async (tx) => {
-    task = copyOutOfCommit((await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId));
+    task = copyOutOfCommit(tarefaDoEstado(await tx.doc(StateDoc), opts.taskId));
   });
   if (!task?.implementation) return;
   const progress = task.implementation;
@@ -128,9 +130,7 @@ export async function runReview(opts: {
   let conversationId = record?.conversationId;
   if (!conversationId) {
     await runtime.commit(async (tx) => {
-      const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
-      await configure(tx, conversation.id, {
-        model: { provider: reviewer.provider, modelId: reviewer.model },
+      const criada = await criarConversaDaTarefa(tx, runtime.taskId, reviewer, {
         extensions: [opts.tools.extension],
         tools: ferramentasParaEtapa(opts.tools.tools, agente.ferramentas, "review"),
         instructions: comPromptAdicional(
@@ -139,8 +139,8 @@ export async function runReview(opts: {
         ),
         maxTurns: 30,
       });
-      conversationId = conversation.id;
-      const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      conversationId = criada;
+      const queued = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (queued) queued.review = { head, status: "em-andamento", summary: "", conversationId, feedbackRevision };
     });
   }
@@ -159,17 +159,13 @@ export async function runReview(opts: {
   const settled = await submission.wait(runtime.context);
   if (settled.status !== "done") throw new Error(`review não concluído (${settled.status})`);
   const entries = await conversation.entries({ order: "descending" }, 100, undefined, runtime.context);
-  for (const entry of entries.items) {
-    const message = (entry as { model?: { role?: string; content?: unknown }[] }).model?.[0];
-    if (message?.role === "user") break;
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-    const call = message.content.find((b) => b?.type === "toolCall" && b.name === "entregar_review");
-    if (!call) continue;
+  const call = chamadaDaUltimaRodada(entries.items, ["entregar_review"]);
+  if (call) {
     const result = Delivery.parse(call.arguments);
     if (!opts.verification && result.status === "corrigir" && (task.correctionRounds ?? 0) >= 3)
       throw new StageBlocked("limite de 3 rodadas de correção atingido; preserve as evidências para decisão humana");
     await runtime.commit(async (tx) => {
-      const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const queued = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (queued?.review?.head === head) {
         queued.review.status = result.status;
         queued.review.summary = redactSecrets(

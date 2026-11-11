@@ -1,7 +1,14 @@
 import { readFile } from "node:fs/promises";
 import type { Harness } from "@earendil-works/pi-durable";
 import type { ProjectConfig } from "./config.js";
-import { copyOutOfCommit, type QueuedTask, StateDoc, type StepRuntime } from "./durable.js";
+import {
+  copyOutOfCommit,
+  type ImplementationProgress,
+  type QueuedTask,
+  StateDoc,
+  type StepRuntime,
+} from "./durable.js";
+import { tarefaDoEstado } from "./estado-fabrica.js";
 import { git, gitMaybe } from "./git.js";
 import { type ImplementationDeps, StageBlocked } from "./implement-stage.js";
 import { redactSecrets } from "./secrets.js";
@@ -19,7 +26,7 @@ export async function synchronizeBase(opts: {
   const { runtime, deps } = opts;
   let stored: QueuedTask | undefined;
   await runtime.commit(async (tx) => {
-    stored = copyOutOfCommit((await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId));
+    stored = copyOutOfCommit(tarefaDoEstado(await tx.doc(StateDoc), opts.taskId));
   });
   const task = stored;
   if (!task?.implementation) return false;
@@ -33,7 +40,7 @@ export async function synchronizeBase(opts: {
   const save = () =>
     runtime.commit(async (tx) => {
       runtime.signal.throwIfAborted();
-      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const current = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (current) current.implementation = copyOutOfCommit(progress);
     });
   const head = () => git(cwd, ["rev-parse", "HEAD"]).then((s) => s.trim());
@@ -54,7 +61,7 @@ export async function synchronizeBase(opts: {
     sync.status = "concluida";
     await runtime.commit(async (tx) => {
       runtime.signal.throwIfAborted();
-      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const current = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (current) {
         current.implementation = copyOutOfCommit(progress);
         current.review = undefined;
@@ -69,26 +76,10 @@ export async function synchronizeBase(opts: {
     return true;
   };
 
+  const ctx: ContextoBase = { task, progress, cwd, deps, runtime, opts, refuse, save, head, runSuite, accept, message };
   // Recibo persistido antes do merge permite recuperar queda entre commit Git e checkpoint.
   const pending = progress.synchronization?.status === "iniciada" ? progress.synchronization : undefined;
-  if ((await head()) !== progress.head) {
-    if (
-      !pending ||
-      pending.previousHead !== progress.head ||
-      (await git(cwd, ["log", "-1", "--format=%s"])).trim() !== message(pending.previousHead, pending.base) ||
-      (await git(cwd, ["show", "-s", "--format=%P", "HEAD"])).trim() !== `${pending.previousHead} ${pending.base}` ||
-      (await git(cwd, ["diff", "--name-only", "-z", pending.previousHead, "HEAD"]))
-        .split("\0")
-        .filter(Boolean)
-        .some((path) => !pending.paths.includes(path)) ||
-      (await changedPaths(cwd)).length
-    )
-      return refuse("HEAD divergiu; alterações humanas não são sobrescritas");
-    const run = await runSuite();
-    if (run.exitCode !== 0 || run.spawnError || run.timedOut)
-      return refuse("integração interrompida não passou na suíte");
-    return accept();
-  }
+  if ((await head()) !== progress.head) return recuperarIntegracao(ctx, pending);
   if (!pending && (await changedPaths(cwd)).length)
     return refuse("clone contém alterações pendentes; preserve o trabalho");
   await git(cwd, ["fetch", "--quiet", "origin"]);
@@ -110,6 +101,64 @@ export async function synchronizeBase(opts: {
     progress.synchronization = { base, previousHead: progress.head, status: "iniciada", attempts: 0, paths: [] };
     await save();
   }
+  const sync = await prepararMerge(ctx, base);
+  const conversation = await opts.harness.conversation(progress.conversationId, runtime.context);
+  if (!conversation) return refuse("conversa do implementador ausente");
+  return resolverConflitos(ctx, base, sync, conversation);
+}
+
+/** Contexto da sincronização: o que as fases compartilham (a Tarefa, o clone e as funções que gravam e validam). */
+interface ContextoBase {
+  task: QueuedTask;
+  progress: ImplementationProgress;
+  cwd: string;
+  deps: ImplementationDeps;
+  runtime: StepRuntime;
+  opts: { taskId: string; harness: Harness };
+  refuse(reason: string): never;
+  save(): Promise<void>;
+  head(): Promise<string>;
+  runSuite(): ReturnType<ImplementationDeps["testRunner"]["run"]>;
+  accept(): Promise<boolean>;
+  message(previous: string, base: string): string;
+}
+
+/**
+ * Retoma uma integração interrompida depois de o commit Git sair mas antes do checkpoint: só confirma o recibo, sem
+ * sobrescrever alterações humanas. Se o HEAD não bate com o recibo, recusa.
+ */
+async function recuperarIntegracao(
+  ctx: ContextoBase,
+  pending: ImplementationProgress["synchronization"] | undefined,
+): Promise<boolean> {
+  const { progress, cwd, refuse, runSuite, accept, message } = ctx;
+  if (
+    !pending ||
+    pending.previousHead !== progress.head ||
+    (await git(cwd, ["log", "-1", "--format=%s"])).trim() !== message(pending.previousHead, pending.base) ||
+    (await git(cwd, ["show", "-s", "--format=%P", "HEAD"])).trim() !== `${pending.previousHead} ${pending.base}` ||
+    (await git(cwd, ["diff", "--name-only", "-z", pending.previousHead, "HEAD"]))
+      .split("\0")
+      .filter(Boolean)
+      .some((path) => !pending.paths.includes(path)) ||
+    (await changedPaths(cwd)).length
+  )
+    return refuse("HEAD divergiu; alterações humanas não são sobrescritas");
+  const run = await runSuite();
+  if (run.exitCode !== 0 || run.spawnError || run.timedOut)
+    return refuse("integração interrompida não passou na suíte");
+  return accept();
+}
+
+/**
+ * Inicia o merge da base na branch da Tarefa e registra os caminhos que ele toca. Um merge já pendente é retomado; um
+ * merge que não bate com a base registrada recusa.
+ */
+async function prepararMerge(
+  ctx: ContextoBase,
+  base: string,
+): Promise<NonNullable<ImplementationProgress["synchronization"]>> {
+  const { progress, cwd, refuse, save } = ctx;
   const sync = progress.synchronization;
   if (!sync) return refuse("registro de integração ausente");
   let mergeHead = (await gitMaybe(cwd, ["rev-parse", "--verify", "MERGE_HEAD"]))?.trim();
@@ -127,8 +176,20 @@ export async function synchronizeBase(opts: {
     sync.paths = await changedPaths(cwd);
     await save();
   }
-  const conversation = await opts.harness.conversation(progress.conversationId, runtime.context);
-  if (!conversation) return refuse("conversa do implementador ausente");
+  return sync;
+}
+
+/**
+ * Resolve conflitos e valida a integração com o implementador, até a suíte passar (no máximo três tentativas de
+ * resolução). Depois da validação, faz o commit do merge e aceita a integração.
+ */
+async function resolverConflitos(
+  ctx: ContextoBase,
+  base: string,
+  sync: NonNullable<ImplementationProgress["synchronization"]>,
+  conversation: NonNullable<Awaited<ReturnType<Harness["conversation"]>>>,
+): Promise<boolean> {
+  const { task, cwd, runtime, refuse, save, head, runSuite, accept, message } = ctx;
   let diagnostic = sync.diagnostic ?? "";
   for (;;) {
     const conflicts = (await git(cwd, ["diff", "--name-only", "--diff-filter=U", "-z"])).split("\0").filter(Boolean);

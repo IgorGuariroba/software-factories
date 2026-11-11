@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { withAutomationMark } from "./effect-writer.js";
+import { withAutomationMark } from "./marca-automacao.js";
 
 /** A aprovação é vinculada ao destino, ao conteúdo exato e ao modo de escrita mostrado na prévia. */
 export function questionRevision(preview: {

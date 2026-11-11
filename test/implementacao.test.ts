@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_FILES, type RepoMapping } from "../src/config.js";
-import { AUTOMATION_MARK } from "../src/effect-writer.js";
+import { AUTOMATION_MARK } from "../src/marca-automacao.js";
 import { createHostTestRunner } from "../src/test-runner.js";
 import { FakeModel, type SpecDelivery, scriptImplementer, write } from "./fakes/fake-model.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";

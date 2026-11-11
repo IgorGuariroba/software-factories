@@ -1,52 +1,14 @@
 import type { ChangeRequest, CodeHost, RequestDraft } from "./code-host.js";
 import { type CardState, type ProjectConfig, STATE_ORDER } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
+import { criarEfeitosDeCodigo } from "./effect-writer-codigo.js";
+import { criarEfeitosDeRetro } from "./effect-writer-retro.js";
+import { criarMotorDeEscrita } from "./escrita-efeitos.js";
 import type { EventRecorder } from "./events.js";
-import { privateTerms, sanitizePublicText } from "./public-text.js";
+
+import { isAutomationText, mesmoTexto, stripAutomationMark, withAutomationMark } from "./marca-automacao.js";
 import type { RetroSink } from "./retro-sink.js";
 import { redactSecrets } from "./secrets.js";
-
-/** Marca de automação: vai no fim de todo texto que a fábrica escreve, depois de uma linha em branco. */
-export const AUTOMATION_MARK = "*mensagem automatizada*";
-const MARK_SUFFIX = `\n\n${AUTOMATION_MARK}`;
-/** Prefixos usados antes; reconhecidos para não duplicar nem tratar como humano o que a fábrica já escreveu. */
-const LEGACY_PREFIXES = ["\u{1F916} [mensagem automatizada]", "\u{1F916} [fábrica]"];
-
-/** Se o texto foi escrito pela fábrica (marca atual no fim ou prefixo antigo). */
-export function isAutomationText(body: string): boolean {
-  return body.trimEnd().endsWith(AUTOMATION_MARK) || LEGACY_PREFIXES.some((p) => body.startsWith(p));
-}
-
-/** O texto sem a marca de automação (atual ou antiga): o que a fábrica quis dizer. */
-export function stripAutomationMark(body: string): string {
-  const legacy = LEGACY_PREFIXES.find((p) => body.startsWith(p));
-  if (legacy) return body.slice(legacy.length).replace(/^ /, "");
-  const trimmed = body.trimEnd();
-  return trimmed.endsWith(AUTOMATION_MARK) ? trimmed.slice(0, -AUTOMATION_MARK.length).trimEnd() : body;
-}
-
-/**
- * Igualdade de texto que ignora linhas em branco: a Fonte pode devolver parágrafos sem a linha em branco que a fábrica
- * escreveu (o ADF do Jira separa blocos por quebra simples), e a deduplicação não pode repetir o comentário por isso.
- */
-export function mesmoTexto(a: string, b: string): boolean {
-  const semVazias = (t: string) =>
-    t
-      .split("\n")
-      .filter((l) => l.trim() !== "")
-      .join("\n");
-  return semVazias(a) === semVazias(b);
-}
-
-/** O texto com a marca de automação no fim. */
-export function withAutomationMark(body: string): string {
-  return `${body}${MARK_SUFFIX}`;
-}
-
-/** Uma escrita recusada por guardrail. Nunca chega à Fonte. */
-export class GuardrailViolation extends Error {
-  override name = "GuardrailViolation";
-}
 
 /**
  * Toda escrita externa da fábrica num projeto passa por aqui (ADR-0006).
@@ -110,7 +72,7 @@ export interface EffectWriter {
 }
 
 /** Branches em que a fábrica nunca faz push. */
-export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master", "develop"]);
+export { PROTECTED_BRANCHES } from "./effect-writer-codigo.js";
 
 export function createEffectWriter(opts: {
   config: ProjectConfig;
@@ -129,61 +91,18 @@ export function createEffectWriter(opts: {
 }): EffectWriter {
   const { config, source, events } = opts;
   const user = config.source.assignee;
-  const dryRunIds = new Set<string>();
-
-  /**
-   * Se o dry-run já registrou esta escrita (mesmo destino, ação e conteúdo). O log de eventos é durável, então a
-   * lembrança sobrevive a um reinício: no dry-run nada chega ao sistema, e é só por ela que uma escrita idempotente
-   * repetida (ex.: um passo refeito depois de um reinício) não aparece de novo.
-   */
-  const dryRunRegistered = (w: { target: string; action: string; content: string }) =>
-    events
-      .list()
-      .some(
-        (e) =>
-          e.type === "write" &&
-          e.dryRun &&
-          e.project === config.name &&
-          e.target === w.target &&
-          e.action === w.action &&
-          e.content === w.content,
+  // Comentário da própria fábrica com o mesmo texto (sem a marca), se já existe na Fonte.
+  const comentarioIgual = (cardKey: string, content: string) =>
+    source
+      .listComments(cardKey)
+      .then((comentarios) =>
+        comentarios.find(
+          (c) => c.author === user && mesmoTexto(withAutomationMark(stripAutomationMark(c.body)), content),
+        ),
       );
-
-  /** Autoriza inclusive operações idempotentes antes de procurar uma escrita anterior. */
-  async function authorize(
-    w: { target: string; action: string; content: string },
-    check: () => Promise<string | undefined>,
-  ): Promise<void> {
-    const reason = await check();
-    if (reason) {
-      await events.append({ type: "blocked", project: config.name, ...w, reason });
-      throw new GuardrailViolation(`Guardrail: ${w.action} em ${w.target} bloqueado: ${reason}`);
-    }
-  }
-
-  /**
-   * Aplica os guardrails, registra e executa (ou só registra, no dry-run). Com `once` (escritas idempotentes: todas
-   * menos `comment`), o dry-run não registra de novo uma escrita que já registrou.
-   */
-  async function write<T>(
-    w: { target: string; action: string; content: string },
-    check: () => Promise<string | undefined>,
-    run: () => Promise<T>,
-    dry: () => T,
-    once = true,
-  ): Promise<T> {
-    await authorize(w, check);
-    if (config.dryRun && once && dryRunRegistered(w)) return dry();
-    await events.append({ type: "write", project: config.name, ...w, dryRun: config.dryRun });
-    return config.dryRun ? dry() : run();
-  }
-
-  /** Id fictício de um comentário do dry-run, que `editComment` aceita sem procurar na Fonte. */
-  const dryRunComment = () => {
-    const id = `dry-run-${dryRunIds.size + 1}`;
-    dryRunIds.add(id);
-    return { id };
-  };
+  const motor = criarMotorDeEscrita({ config, events });
+  const { authorize, write, dryRunComment } = motor;
+  const dryRunIds = motor.dryRunIds;
 
   /** Cria um comentário próprio no card; `once` como em `write`. */
   function addOwnComment(cardKey: string, body: string, once: boolean): Promise<{ id: string }> {
@@ -209,34 +128,20 @@ export function createEffectWriter(opts: {
     const clean = redactSecrets(body);
     return withAutomationMark(isAutomationText(clean) ? stripAutomationMark(clean) : clean);
   };
-  /** Texto que vai ao repositório público: sem segredos e saneado dos valores do projeto e do card. */
-  async function publicText(cardKey: string, raw: string) {
-    const card = await source.getCard(cardKey);
-    return sanitizePublicText(redactSecrets(raw), {
-      terms: privateTerms(config, [cardKey, card?.title ?? ""]),
-      cardPrefix: config.source.project,
-    });
-  }
-  const retroSink = (): RetroSink => {
-    const sink = opts.retro?.sink;
-    if (!sink) throw new Error("RetroSink não configurado");
-    return sink;
-  };
-  function retroRefused(repo: string, leftovers: string[]): string | undefined {
-    const target = opts.retro?.repo;
-    if (!opts.retro?.sink || !target) return "nenhum repositório da fábrica configurado (FACTORY_RETRO_REPO)";
-    if (repo !== target) return `o RetroSink só escreve no repositório da fábrica (${target}), não em ${repo}`;
-    if (leftovers.length > 0) return `o texto público ainda cita valores do projeto: ${leftovers.join(", ")}`;
-    return undefined;
-  }
+  const efeitosDeCodigo = criarEfeitosDeCodigo({
+    codeHost: opts.codeHost,
+    isFactoryBranch: opts.isFactoryBranch,
+    isReviewedBranch: opts.isReviewedBranch,
+    write,
+    cardNotOwned,
+    outgoing,
+  });
+  const efeitosDeRetro = criarEfeitosDeRetro({ config, source, retro: opts.retro, write });
 
   const statusFor = (state: CardState) => Object.entries(config.statuses).find(([, s]) => s === state)?.[0];
 
   return {
-    async publicRetroText(cardKey, text) {
-      return (await publicText(cardKey, text)).text;
-    },
-    publicRetroPreview: publicText,
+    ...efeitosDeRetro,
     comment(cardKey, body) {
       return addOwnComment(cardKey, body, false);
     },
@@ -244,9 +149,7 @@ export function createEffectWriter(opts: {
     async commentOnce(cardKey, body) {
       if (!config.dryRun) {
         const content = outgoing(body);
-        const existing = (await source.listComments(cardKey)).find(
-          (c) => c.author === user && mesmoTexto(withAutomationMark(stripAutomationMark(c.body)), content),
-        );
+        const existing = await comentarioIgual(cardKey, content);
         if (existing) return { id: existing.id };
       }
       return addOwnComment(cardKey, body, true);
@@ -265,9 +168,7 @@ export function createEffectWriter(opts: {
       // ou o mesmo conteúdo pode agora ser dirigido a outra pessoa.
       await authorize(effect, check);
       if (!config.dryRun) {
-        const existing = (await source.listComments(cardKey)).find(
-          (c) => c.author === user && mesmoTexto(withAutomationMark(stripAutomationMark(c.body)), content),
-        );
+        const existing = await comentarioIgual(cardKey, content);
         if (existing) return { id: existing.id };
       }
       // Revalida também após a leitura assíncrona, antes do envio efetivo.
@@ -341,61 +242,6 @@ export function createEffectWriter(opts: {
       );
     },
 
-    pushBranch(repoPath, branch, pushOpts) {
-      const force = pushOpts?.force ?? false;
-      const name = branch.replace(/^refs\/heads\//, "");
-      return write(
-        { target: name, action: force ? "force-push" : "push", content: `${repoPath} -> origin/${name}` },
-        async () => {
-          if (PROTECTED_BRANCHES.has(name)) return `push na branch protegida "${name}" é proibido`;
-          if (force && !(await opts.isFactoryBranch?.(name)))
-            return `force-push só nas branches da fábrica; "${name}" não é uma delas`;
-          if (!opts.codeHost) return "projeto sem CodeHost configurado";
-          return undefined;
-        },
-        () => (opts.codeHost as CodeHost).pushBranch(repoPath, name, { force }),
-        () => undefined,
-      );
-    },
-
-    async ensureRequest(cardKey, repoPath, draft) {
-      const safe = { ...draft, title: redactSecrets(draft.title), body: outgoing(draft.body) };
-      return write<ChangeRequest | undefined>(
-        { target: cardKey, action: "pull-request", content: JSON.stringify(safe) },
-        async () => {
-          const notOwned = await cardNotOwned(cardKey);
-          if (notOwned) return notOwned;
-          if (PROTECTED_BRANCHES.has(draft.branch)) return "PR/MR não pode sair de branch protegida";
-          if (!opts.codeHost || !(await opts.isReviewedBranch?.(cardKey, repoPath, draft)))
-            return "a publicação exige branch da Tarefa com review aprovado do HEAD atual";
-          return undefined;
-        },
-        () => (opts.codeHost as CodeHost).ensureRequest(repoPath, safe),
-        () => undefined,
-      );
-    },
-
-    async openRetroIssue(cardKey, repo, issue) {
-      const title = await publicText(cardKey, issue.title);
-      const body = await publicText(cardKey, issue.body);
-      const content = withAutomationMark(body.text);
-      return write<{ number: number; url: string } | undefined>(
-        { target: `${cardKey}#retro`, action: "retro-issue", content: `${repo}: ${title.text}\n\n${content}` },
-        async () => retroRefused(repo, [...title.leftovers, ...body.leftovers]),
-        () => retroSink().create(repo, { title: title.text, body: content }),
-        () => undefined,
-      );
-    },
-
-    async commentRetroIssue(cardKey, repo, issue, raw) {
-      const body = await publicText(cardKey, raw);
-      const content = withAutomationMark(body.text);
-      return write(
-        { target: `${cardKey}#retro`, action: "retro-comment", content: `${repo}#${issue}: ${content}` },
-        async () => retroRefused(repo, body.leftovers),
-        () => retroSink().comment(repo, issue, content),
-        () => undefined,
-      );
-    },
+    ...efeitosDeCodigo,
   };
 }

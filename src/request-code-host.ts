@@ -2,8 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { ChangeRequest, RequestDraft } from "./code-host.js";
-import { isAutomationText } from "./effect-writer.js";
 import { git } from "./git.js";
+import { isAutomationText } from "./marca-automacao.js";
 
 const pexec = promisify(execFile);
 const Note = z.object({
@@ -95,42 +95,57 @@ export async function inspectRequest(cwd: string, number: number): Promise<Chang
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("número de PR/MR inválido");
   const t = await target(cwd);
   const endpoint = `${t.root}/${t.github ? "pulls" : "merge_requests"}/${number}`;
-  if (t.github) {
-    const request = GhRequest.parse(await t.api(endpoint));
-    const [issues, reviews, inline, runs, combined] = await Promise.all([
-      t.pages(`${t.root}/issues/${number}/comments`),
-      t.pages(`${endpoint}/reviews`),
-      t.pages(`${endpoint}/comments`),
-      t.pages(`${t.root}/commits/${request.head.sha}/check-runs`, "check_runs"),
-      t.api(`${t.root}/commits/${request.head.sha}/status`),
-    ]);
-    const checks = runs.map((r) => z.object({ status: z.string(), conclusion: z.string().nullable() }).parse(r));
-    const status = z.object({ state: z.string(), total_count: z.number() }).parse(combined);
-    const failed =
-      checks.some((c) => c.status === "completed" && !["success", "neutral", "skipped"].includes(c.conclusion ?? "")) ||
-      ["failure", "error"].includes(status.state);
-    const pending =
-      checks.some((c) => c.status !== "completed") ||
-      (status.total_count > 0 && status.state !== "success") ||
-      (checks.length === 0 && status.total_count === 0) ||
-      request.mergeable !== true;
-    return {
-      number,
-      url: request.html_url,
-      head: request.head.sha,
-      state: request.merged ? "merged" : request.state === "open" ? "open" : "closed",
-      checks: failed ? "failed" : pending ? "pending" : "passed",
-      conflicts: request.mergeable === false,
-      feedback: [issues, reviews, inline]
-        .flatMap((rows, i) =>
-          rows.map((raw) => {
-            const n = Note.parse(raw);
-            return { id: `${i}:${n.id}`, body: n.body ?? "", author: n.user?.login ?? "desconhecido" };
-          }),
-        )
-        .filter((n) => n.body.trim() && !isAutomationText(n.body)),
-    };
-  }
+  return t.github ? inspecionarGitHub(t, number, endpoint) : inspecionarGitLab(t, number, endpoint);
+}
+
+/** Leitura de uma PR do GitHub: estado, checks, conflitos e comentários que não são da automação. */
+async function inspecionarGitHub(
+  t: Awaited<ReturnType<typeof target>>,
+  number: number,
+  endpoint: string,
+): Promise<ChangeRequest> {
+  const request = GhRequest.parse(await t.api(endpoint));
+  const [issues, reviews, inline, runs, combined] = await Promise.all([
+    t.pages(`${t.root}/issues/${number}/comments`),
+    t.pages(`${endpoint}/reviews`),
+    t.pages(`${endpoint}/comments`),
+    t.pages(`${t.root}/commits/${request.head.sha}/check-runs`, "check_runs"),
+    t.api(`${t.root}/commits/${request.head.sha}/status`),
+  ]);
+  const checks = runs.map((r) => z.object({ status: z.string(), conclusion: z.string().nullable() }).parse(r));
+  const status = z.object({ state: z.string(), total_count: z.number() }).parse(combined);
+  const failed =
+    checks.some((c) => c.status === "completed" && !["success", "neutral", "skipped"].includes(c.conclusion ?? "")) ||
+    ["failure", "error"].includes(status.state);
+  const pending =
+    checks.some((c) => c.status !== "completed") ||
+    (status.total_count > 0 && status.state !== "success") ||
+    (checks.length === 0 && status.total_count === 0) ||
+    request.mergeable !== true;
+  return {
+    number,
+    url: request.html_url,
+    head: request.head.sha,
+    state: request.merged ? "merged" : request.state === "open" ? "open" : "closed",
+    checks: failed ? "failed" : pending ? "pending" : "passed",
+    conflicts: request.mergeable === false,
+    feedback: [issues, reviews, inline]
+      .flatMap((rows, i) =>
+        rows.map((raw) => {
+          const n = Note.parse(raw);
+          return { id: `${i}:${n.id}`, body: n.body ?? "", author: n.user?.login ?? "desconhecido" };
+        }),
+      )
+      .filter((n) => n.body.trim() && !isAutomationText(n.body)),
+  };
+}
+
+/** Leitura de uma MR do GitLab: estado, pipeline, conflitos e notas (com o contexto das discussões). */
+async function inspecionarGitLab(
+  t: Awaited<ReturnType<typeof target>>,
+  number: number,
+  endpoint: string,
+): Promise<ChangeRequest> {
   const request = GlRequest.parse(await t.api(endpoint));
   const [plain, discussions] = await Promise.all([t.pages(`${endpoint}/notes`), t.pages(`${endpoint}/discussions`)]);
   // Respostas de discussão levam as notas anteriores do mesmo fio como contexto; o id continua o da nota nova.

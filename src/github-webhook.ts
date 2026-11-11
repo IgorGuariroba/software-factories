@@ -1,162 +1,24 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { z } from "zod";
 import type { CardState, ProjectConfig } from "./config.js";
 import type { IssueSnapshot } from "./demand-source.js";
 import type { FactoryState, OrigemGitHub, QueuedTask } from "./durable.js";
+import { novaTarefa } from "./estado-fabrica.js";
 import { cardOfIssue, labelNames, type RawIssue } from "./github-demand-source.js";
+import type { InstallationDelivery, IssueAction, IssueDelivery } from "./github-entrega.js";
 import { tarefaDaIssue } from "./github-identidade.js";
+import { TERMINAIS } from "./packages/controle-tarefa/index.js";
+import { estadoElegivel } from "./packages/escalonador/index.js";
+import { temRotuloIgnorado } from "./packages/fonte-demanda/index.js";
 import { ativarProjeto, desativarProjeto, repoDesativado } from "./repositorios.js";
 
-const PREFIX = "sha256=";
-
-/**
- * Confere o cabeçalho `X-Hub-Signature-256` do GitHub: HMAC-SHA256 do corpo cru (bytes, não texto) com o secret do App.
- * Falha fechado: sem secret, sem cabeçalho, prefixo diferente ou formato inválido resultam em `false`, nunca em erro.
- * A comparação é em tempo constante.
- */
-export function verifyGitHubSignature(opts: { secret: string; body: Buffer; signature: string | undefined }): boolean {
-  const { secret, body, signature } = opts;
-  if (!secret || !signature?.startsWith(PREFIX)) return false;
-  const expected = createHmac("sha256", secret).update(body).digest();
-  const received = Buffer.from(signature.slice(PREFIX.length), "hex");
-  // `Buffer.from` ignora caracteres inválidos em hex: a conferência de tamanho e a re-codificação os barram.
-  if (received.length !== expected.length || received.toString("hex") !== signature.slice(PREFIX.length).toLowerCase())
-    return false;
-  return timingSafeEqual(expected, received);
-}
-
-// --- Parse do payload -----------------------------------------------------------------------------
-
-/** Ações de `issues` que a fábrica conhece. Outras (ex.: `labeled`, `transferred`) são ignoradas. */
-const ISSUE_ACTIONS = ["opened", "edited", "closed", "deleted", "reopened", "assigned", "unassigned"] as const;
-export type IssueAction = (typeof ISSUE_ACTIONS)[number];
-
-export type IssueDelivery = {
-  /** Identificador da entrega (`X-GitHub-Delivery`), para idempotência. */
-  deliveryId: string;
-  action: IssueAction;
-  /** Repositório "dono/nome", como veio no payload. */
-  repo: string;
-  /** Id numérico do repositório (estável; sobrevive a renomeação). Ausente só em entregas sem esse dado. */
-  repoId?: number;
-  /** Instalação do App que entregou o evento, quando o payload a traz. */
-  installationId?: number;
-  issue: RawIssue;
-};
-
-/** Ações de instalação que a fábrica trata: a instalação do App e os repositórios que ela alcança. */
-export type InstallationAction = "created" | "deleted" | "suspend" | "added" | "removed";
-
-export type InstallationDelivery = {
-  deliveryId: string;
-  action: InstallationAction;
-  installationId: number;
-  /** Repositórios "dono/nome" que a ação afeta (vazio quando o payload não os traz). */
-  repos: string[];
-  /** Id numérico de cada repositório afetado, pela chave em minúsculas (Fase 7: grava a identidade ao plugar). */
-  repoIds?: Record<string, number>;
-};
-
-export type ParsedDelivery =
-  | { kind: "issues"; delivery: IssueDelivery }
-  | { kind: "instalacao"; delivery: InstallationDelivery }
-  | { kind: "ignorado"; reason: string }
-  | { kind: "invalido"; reason: string };
-
-const InstallationPayload = z
-  .object({
-    action: z.string(),
-    installation: z.object({ id: z.number().int().positive() }).passthrough(),
-    repositories: z
-      .array(z.object({ full_name: z.string(), id: z.number().int().positive().optional() }).passthrough())
-      .optional(),
-    repositories_added: z
-      .array(z.object({ full_name: z.string(), id: z.number().int().positive().optional() }).passthrough())
-      .optional(),
-    repositories_removed: z
-      .array(z.object({ full_name: z.string(), id: z.number().int().positive().optional() }).passthrough())
-      .optional(),
-  })
-  .passthrough();
-
-/** Ações tratadas por evento. `unsuspend` fica de fora de propósito: o repositório volta pelo plugue, não sozinho. */
-const INSTALLATION_ACTIONS: Record<string, readonly InstallationAction[]> = {
-  installation: ["created", "deleted", "suspend"],
-  installation_repositories: ["added", "removed"],
-};
-
-const IssuesPayload = z
-  .object({
-    action: z.string(),
-    issue: z
-      .object({
-        number: z.number().int().positive(),
-        title: z.string(),
-        body: z.string().nullish(),
-        state: z.string(),
-        labels: z.array(z.union([z.string(), z.object({ name: z.string().optional() }).passthrough()])).optional(),
-        pull_request: z.unknown().optional(),
-        sub_issues_summary: z.object({ total: z.number().optional() }).passthrough().nullish(),
-      })
-      .passthrough(),
-    repository: z.object({ full_name: z.string().min(3), id: z.number().int().positive().optional() }).passthrough(),
-    installation: z.object({ id: z.number().int().positive() }).passthrough().optional(),
-  })
-  .passthrough();
-
-/** Interpreta uma entrega do GitHub: `issues`, e instalação do App (`installation`, `installation_repositories`). */
-export function parseGitHubDelivery(opts: {
-  event: string | undefined;
-  deliveryId: string | undefined;
-  body: unknown;
-}): ParsedDelivery {
-  if (opts.event && opts.event in INSTALLATION_ACTIONS) return parseInstallation(opts.event, opts);
-  if (opts.event !== "issues") return { kind: "ignorado", reason: `evento ${opts.event ?? "(sem nome)"} não tratado` };
-  if (!opts.deliveryId) return { kind: "invalido", reason: "entrega sem X-GitHub-Delivery" };
-  const parsed = IssuesPayload.safeParse(opts.body);
-  if (!parsed.success) return { kind: "invalido", reason: "payload de issues incompleto" };
-  const { action, issue, repository, installation } = parsed.data;
-  if (!(ISSUE_ACTIONS as readonly string[]).includes(action))
-    return { kind: "ignorado", reason: `ação issues.${action} não tratada` };
-  return {
-    kind: "issues",
-    delivery: {
-      deliveryId: opts.deliveryId,
-      action: action as IssueAction,
-      repo: repository.full_name,
-      ...(repository.id !== undefined ? { repoId: repository.id } : {}),
-      ...(installation ? { installationId: installation.id } : {}),
-      issue: issue as RawIssue,
-    },
-  };
-}
-
-function parseInstallation(event: string, opts: { deliveryId: string | undefined; body: unknown }): ParsedDelivery {
-  if (!opts.deliveryId) return { kind: "invalido", reason: "entrega sem X-GitHub-Delivery" };
-  const parsed = InstallationPayload.safeParse(opts.body);
-  if (!parsed.success) return { kind: "invalido", reason: `payload de ${event} incompleto` };
-  const { action, installation } = parsed.data;
-  if (!INSTALLATION_ACTIONS[event]?.includes(action as InstallationAction))
-    return { kind: "ignorado", reason: `ação ${event}.${action} não tratada` };
-  const repos =
-    (action === "added"
-      ? parsed.data.repositories_added
-      : action === "removed"
-        ? parsed.data.repositories_removed
-        : parsed.data.repositories) ?? [];
-  return {
-    kind: "instalacao",
-    delivery: {
-      deliveryId: opts.deliveryId,
-      action: action as InstallationAction,
-      installationId: installation.id,
-      repos: repos.map((r) => r.full_name),
-      repoIds: Object.fromEntries(
-        repos.flatMap((r) => (r.id !== undefined ? [[r.full_name.toLowerCase(), r.id] as const] : [])),
-      ),
-    },
-  };
-}
+export {
+  type InstallationAction,
+  type InstallationDelivery,
+  type IssueAction,
+  type IssueDelivery,
+  type ParsedDelivery,
+  parseGitHubDelivery,
+  verifyGitHubSignature,
+} from "./github-entrega.js";
 
 // --- Aplicação ao estado durável ------------------------------------------------------------------
 
@@ -178,9 +40,6 @@ export type WebhookProject = { name: string; config: ProjectConfig };
 export const CLOSED_REASON = "issue fechada no GitHub";
 export const REMOVED_REASON = "issue removida no GitHub";
 
-/** Estados em que a Tarefa é elegível para a fila (mesma regra da busca na Fonte). */
-const ELIGIBLE: ReadonlySet<CardState> = new Set<CardState>(["todo", "in_progress"]);
-const TERMINAL: ReadonlySet<string> = new Set(["concluida", "cancelada", "bloqueada", "vetada", "recusada"]);
 /** Estados em que a Tarefa já pode ter sido lida pelo agente: mudança de escopo aqui exige avisar. */
 const EXECUTING: ReadonlySet<string> = new Set(["ativa", "aguardando-entrega"]);
 
@@ -289,7 +148,6 @@ export function applyIssueDelivery(opts: {
   if (project.config.source.type !== "github") return [];
   // Repositório desativado: nenhum evento de issue cria ou muda Tarefa (ADR-0015).
   if (repoDesativado(state, project.name)) return [];
-  const source = project.config.source;
   const issue = delivery.issue;
   if (issue.pull_request || delivery.action === "assigned" || delivery.action === "unassigned") return [];
 
@@ -305,19 +163,30 @@ export function applyIssueDelivery(opts: {
         },
       ]
     : [];
+  return [...avisoRenomeado, ...efeitosDaIssue(state, project, delivery, newRef)];
+}
 
+/** Efeitos de uma issue que já tem projeto e passou pelas guardas: criar, encerrar, reabrir ou sinalizar mudança. */
+function efeitosDaIssue(
+  state: FactoryState,
+  project: WebhookProject,
+  delivery: IssueDelivery,
+  newRef: () => string,
+): WebhookEffect[] {
+  const source = project.config.source;
+  const issue = delivery.issue;
   const card = cardOfIssue({ project: source.project, assignee: source.assignee }, issue);
   const id = `${project.name}/${card.key}`;
   const { task, outraIdentidade } = tarefaDaEntrega(state, id, delivery);
-  if (outraIdentidade) return avisoRenomeado;
+  if (outraIdentidade) return [];
 
   if (delivery.action === "closed" || delivery.action === "deleted") {
-    if (!task || TERMINAL.has(task.status)) return avisoRenomeado;
+    if (!task || TERMINAIS.has(task.status)) return [];
     task.reason = delivery.action === "closed" ? CLOSED_REASON : REMOVED_REASON;
     // Mesma regra do cancelamento pelo usuário: sem execução durável, a Tarefa termina aqui; com ela, a parada a fecha.
-    if (task.durableId !== null) return [...avisoRenomeado, { type: "abortar", id }];
+    if (task.durableId !== null) return [{ type: "abortar", id }];
     task.status = "cancelada";
-    return avisoRenomeado;
+    return [];
   }
 
   if (task) {
@@ -325,7 +194,7 @@ export function applyIssueDelivery(opts: {
       task.status = "enfileirada";
       task.reason = null;
     }
-    if (TERMINAL.has(task.status)) return avisoRenomeado;
+    if (TERMINAIS.has(task.status)) return [];
     task.title = issue.title;
     task.scope = scopeOf(issue.body);
     // Com a Tarefa em execução (ou com entrega pendente), o texto que o agente já leu ficou velho: marca e avisa.
@@ -334,7 +203,6 @@ export function applyIssueDelivery(opts: {
       task.specDirty = true;
       if (task.status === "ativa") task.pauseRequested = true;
       return [
-        ...avisoRenomeado,
         {
           type: "notificar",
           project: project.name,
@@ -348,47 +216,38 @@ export function applyIssueDelivery(opts: {
         },
       ];
     }
-    return avisoRenomeado;
+    return [];
   }
 
   const cardState = project.config.statuses[card.status];
-  if (!cardState || !isEligible(project.config, cardState, issue)) return avisoRenomeado;
+  if (!cardState || !isEligible(project.config, cardState, issue)) return [];
   // A chave já existe com outra identidade: não cria duplicata (o caso foi tratado acima, mas a guarda fica).
-  if (state.tasks.some((t) => t.id === id)) return avisoRenomeado;
+  if (state.tasks.some((t) => t.id === id)) return [];
   const origem = origemDaEntrega(delivery);
-  state.tasks.push({
-    id,
-    project: project.name,
-    key: card.key,
-    title: issue.title,
-    ref: newRef(),
-    status: "enfileirada",
-    durableId: null,
-    gateId: null,
-    pauseRequested: false,
-    notBefore: null,
-    attempts: 0,
-    reason: null,
-    startedIn: cardState,
-    veto: null,
-    delivery: null,
-    implementation: null,
-    scope: scopeOf(issue.body),
-    ...(origem ? { origem } : {}),
-  });
-  return avisoRenomeado;
+  state.tasks.push(
+    novaTarefa({
+      id,
+      project: project.name,
+      key: card.key,
+      title: issue.title,
+      ref: newRef(),
+      startedIn: cardState,
+      scope: scopeOf(issue.body),
+      origem,
+    }),
+  );
+  return [];
 }
 
 /** Uma issue vira Tarefa só se está aberta, num estado elegível, fora dos épicos e dentro das chaves permitidas. */
 export function isEligible(config: ProjectConfig, cardState: CardState, issue: RawIssue): boolean {
   if (config.source.type !== "github") return false;
   if (issue.state !== "open") return false;
-  if (!ELIGIBLE.has(cardState)) return false;
+  if (!estadoElegivel(cardState)) return false;
   const key = `${config.source.project}-${issue.number}`;
   if (config.source.keys && !config.source.keys.includes(key)) return false;
   if ((issue.sub_issues_summary?.total ?? 0) > 0) return false;
-  const ignored = new Set((config.source.ignoreLabels ?? ["epic"]).map((l) => l.toLowerCase()));
-  return !labelNames(issue).some((l) => ignored.has(l.toLowerCase()));
+  return !temRotuloIgnorado(labelNames(issue), config.source.ignoreLabels);
 }
 
 /**
@@ -484,12 +343,12 @@ export function reconciliarIssues(opts: {
     const task = state.tasks.find((t) => t.id === `${project.name}/${source.project}-${s.number}`);
     let action: IssueAction | undefined;
     if (s.state === "closed") {
-      if (task && !TERMINAL.has(task.status)) action = "closed";
+      if (task && !TERMINAIS.has(task.status)) action = "closed";
     } else if (!task) {
       action = "opened";
     } else if (task.status === "cancelada" && task.reason === CLOSED_REASON) {
       action = "reopened";
-    } else if (!TERMINAL.has(task.status)) {
+    } else if (!TERMINAIS.has(task.status)) {
       // Sem `scope` (Tarefa criada pela busca), o corpo não é conhecido: só o título conta.
       const bodyChanged = task.scope !== undefined && task.scope !== null && task.scope.description !== (s.body ?? "");
       if (task.title !== s.title || bodyChanged) action = "edited";

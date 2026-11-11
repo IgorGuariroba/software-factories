@@ -7,6 +7,6 @@ it("prioriza o detalhe da falha e remove escapes ANSI", () => {
 });
 
 it("limita o diagnóstico sem perder o início da falha", () => {
-  expect(testDiagnostic("FAIL " + "x".repeat(100), 20)).toBe("FAIL " + "x".repeat(15) + "\n[…diagnóstico truncado]");
+  expect(testDiagnostic(`FAIL ${"x".repeat(100)}`, 20)).toBe(`FAIL ${"x".repeat(15)}\n[…diagnóstico truncado]`);
   expect(testDiagnostic("bwrap: permissão negada")).toBe("bwrap: permissão negada");
 });

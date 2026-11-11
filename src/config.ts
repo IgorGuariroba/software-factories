@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { DISPONIVEIS_DA_ETAPA, FERRAMENTAS, type NomeFerramenta } from "./ferramentas-catalogo.js";
+import { EtapasConfig, ModelRef, ServidorMcp, SkillDoProjeto } from "./config-agentes.js";
+import { BusinessCalendar } from "./config-calendario.js";
+import { GitHubSourceConfig, GitLabSourceConfig, JiraSourceConfig } from "./config-fontes.js";
+import { DISPONIVEIS_DA_ETAPA } from "./ferramentas-catalogo.js";
+
+export * from "./config-agentes.js";
+export * from "./config-calendario.js";
+export * from "./config-fontes.js";
 
 /** Estados do workflow que a fábrica entende. */
 export const CardState = z.enum([
@@ -12,15 +19,6 @@ export const CardState = z.enum([
   "done",
 ]);
 export type CardState = z.infer<typeof CardState>;
-
-/** Um modelo específico de um provedor (ex.: `{ provider: anthropic, model: claude-… }`). */
-export const ModelRef = z.object({
-  provider: z.string().min(1),
-  model: z.string().min(1),
-  /** Família explícita para modelos cujo nome não identifica a linhagem (ex.: aliases privados). */
-  family: z.string().min(1).optional(),
-});
-export type ModelRef = z.infer<typeof ModelRef>;
 
 /** Padrões (glob) que identificam arquivos de teste quando a config não diz outros. */
 export const DEFAULT_TEST_FILES = [
@@ -76,7 +74,6 @@ export const ConventionsConfig = z.object({
 });
 export type ConventionsConfig = z.infer<typeof ConventionsConfig>;
 
-/** Uma das pessoas do projeto: as únicas com quem a fábrica conversa neste projeto. */
 /** Perfil do projeto, com nome livre (fatia 06). O papel diz o que ele recebe no roteamento (fatia 07). */
 export const Profile = z.object({
   nome: z.string().min(1).max(60),
@@ -115,36 +112,6 @@ export const Person = z.object({
 });
 export type Person = z.infer<typeof Person>;
 
-const isTimeZone = (tz: string) => {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-};
-const HourMinute = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "use HH:MM, de 00:00 a 23:59");
-
-/** Dias da semana, na ordem de `Date.getUTCDay()`. */
-export const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
-
-/** Expediente do projeto: os prazos das perguntas (lembrete, aviso) contam só horas dentro dele. */
-export const BusinessCalendar = z
-  .object({
-    /** Fuso IANA do expediente (ex.: America/Sao_Paulo). */
-    /** Inclui feriados legais BR/SP/Mogi; obrigatório implicitamente para activity: business-hours. */
-    legalHolidays: z.boolean().optional(),
-    timezone: z.string().refine(isTimeZone, { message: "fuso horário IANA desconhecido" }).default("UTC"),
-    workdays: z.array(z.enum(WEEKDAYS)).min(1).default(["mon", "tue", "wed", "thu", "fri"]),
-    /** Início e fim do expediente, no fuso do calendário. */
-    start: HourMinute.default("09:00"),
-    end: HourMinute.default("18:00"),
-    /** Datas sem expediente (feriados), como AAAA-MM-DD no fuso do calendário. */
-    holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "use AAAA-MM-DD")).default([]),
-  })
-  .refine((c) => c.start < c.end, { message: "start precisa ser antes de end", path: ["end"] });
-export type BusinessCalendar = z.infer<typeof BusinessCalendar>;
-
 /**
  * Quanto do conteúdo do projeto vai nas mensagens ao Telegram (ADR-0009). Toda mensagem passa pelo filtro de segredos.
  * - `full`: o texto completo (títulos de card, avisos, motivos de bloqueio);
@@ -152,125 +119,6 @@ export type BusinessCalendar = z.infer<typeof BusinessCalendar>;
  */
 export const TelegramContent = z.enum(["full", "minimal"]);
 export type TelegramContent = z.infer<typeof TelegramContent>;
-
-const JiraSourceConfig = z.object({
-  type: z.literal("jira"),
-  /** Chave do projeto na Fonte (ex.: "PROJ"). */
-  project: z.string().min(1),
-  /** Identificador do usuário na Fonte; a fábrica só trabalha nos cards dele. */
-  assignee: z.string().min(1),
-  /** Restrição opcional da busca a cards específicos; use estado novo para ensaios isolados. */
-  keys: z.array(z.string().min(1)).min(1).optional(),
-  /** E-mail da conta Atlassian usada com a credencial (autenticação básica). */
-  email: z.string().email().optional(),
-  /** Nome da credencial no cofre da fábrica (token da API), sem o valor (ADR-0018). */
-  credential: z.string().min(1).optional(),
-  /** Origem HTTPS do Jira: link no aviso ao PO e download dos anexos. */
-  baseUrl: z
-    .string()
-    .url()
-    .refine((value) => {
-      if (!URL.canParse(value)) return false;
-      const url = new URL(value);
-      return (
-        url.protocol === "https:" && !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash
-      );
-    }, "use a origem HTTPS do Jira")
-    .optional(),
-});
-
-/** Repositório GitHub monitorado: toda issue aberta é candidata (ADR-0014). */
-const GitHubSourceConfig = z.object({
-  type: z.literal("github"),
-  /** Prefixo das chaves dos cards (ex.: "SF" → "SF-12"). */
-  project: z.string().min(1),
-  /** Repositório "dono/nome". */
-  repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "use dono/nome"),
-  /** Login do dono no GitHub; a fábrica age com a conta dele. */
-  assignee: z.string().min(1),
-  keys: z.array(z.string().min(1)).min(1).optional(),
-  baseUrl: z.undefined().optional(),
-  /** Nome da credencial no cofre (token do GitHub), sem o valor (ADR-0018). */
-  credential: z.string().min(1).optional(),
-  /** Toda recusa da triagem passa por prévia na página local antes de comentar e fechar a issue. */
-  triageApproval: z.boolean().default(true),
-  /** Quantas issues deste repositório a fábrica toca ao mesmo tempo (Tarefas não terminadas). */
-  maxActive: z.number().int().positive().default(1),
-  /** Issues com algum destes labels ficam fora da fila; issues com sub-issues (épicos) também. */
-  ignoreLabels: z.array(z.string().min(1)).default(["epic"]),
-});
-
-/** Projeto do GitLab monitorado (fatia 05): issues abertas atribuídas ao usuário, com o status por label `fabrica:`. */
-const GitLabSourceConfig = z.object({
-  type: z.literal("gitlab"),
-  /** Prefixo das chaves dos cards (ex.: "GL" → "GL-12"). */
-  project: z.string().min(1),
-  /** Projeto no GitLab, como caminho completo (ex.: "grupo/projeto"). */
-  repo: z.string().regex(/^[\w.-]+(\/[\w.-]+)+$/, "use grupo/projeto"),
-  /** Usuário do GitLab dono das issues; a fábrica age com a conta dele. */
-  assignee: z.string().min(1),
-  keys: z.array(z.string().min(1)).min(1).optional(),
-  /** A origem vem de `hostname`; `baseUrl` não se aplica ao GitLab. */
-  baseUrl: z.undefined().optional(),
-  /** Nome da credencial no cofre (token do GitLab), sem o valor (ADR-0018). */
-  credential: z.string().min(1).optional(),
-  /** Servidor quando não é gitlab.com (self-hosted), como nome de host (ex.: "gitlab.empresa.com"). */
-  hostname: z
-    .string()
-    .regex(/^[a-z0-9.-]+(:\d+)?$/i, "use só o nome do host, sem https://")
-    .optional(),
-  /** Issues com algum destes labels ficam fora da fila; épicos também (padrão: `epic`). */
-  ignoreLabels: z.array(z.string().min(1)).default(["epic"]),
-});
-
-const NOMES_FERRAMENTAS = Object.keys(FERRAMENTAS) as [NomeFerramenta, ...NomeFerramenta[]];
-
-/** Servidor MCP liberado para uma etapa, com as tools que ela pode usar (fatia 09). */
-const McpDaEtapa = z.object({
-  servidor: z.string().min(1),
-  ferramentas: z.array(z.string().min(1)).default([]),
-});
-
-/**
- * Configuração gravada de uma etapa (Agente da etapa, ADR-0021). Campo ausente usa o padrão embutido de cada etapa.
- * Ferramentas só aceitam nomes do catálogo fechado.
- */
-export const AgenteDaEtapaConfig = z.object({
-  modelo: ModelRef.optional(),
-  /** Texto acrescentado ao prompt base da etapa. Ausente: nenhum. */
-  promptAdicional: z.string().optional(),
-  ferramentas: z.array(z.enum(NOMES_FERRAMENTAS)).optional(),
-  mcp: z.array(McpDaEtapa).optional(),
-  /** Skills do projeto ativadas nesta etapa (fatia 10). Devem existir em `skills` do projeto. */
-  skills: z.array(z.string().min(1)).optional(),
-});
-export type AgenteDaEtapaConfig = z.infer<typeof AgenteDaEtapaConfig>;
-
-export const EtapasConfig = z
-  .object({
-    spec: AgenteDaEtapaConfig.optional(),
-    review: AgenteDaEtapaConfig.optional(),
-    implementacao: AgenteDaEtapaConfig.optional(),
-    retro: AgenteDaEtapaConfig.optional(),
-  })
-  .strict();
-export type EtapasConfig = z.infer<typeof EtapasConfig>;
-
-/** Servidor MCP do projeto, iniciado por comando local em stdio (fatia 09). */
-export const ServidorMcp = z.object({
-  nome: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/, "use minúsculas, números e hífen (2 a 64 caracteres)"),
-  comando: z.string().min(1),
-  argumentos: z.array(z.string()).default([]),
-});
-export type ServidorMcp = z.infer<typeof ServidorMcp>;
-
-/** Skill do projeto: bloco de instruções que uma etapa pode ativar (fatia 10). */
-export const SkillDoProjeto = z.object({
-  nome: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/, "use minúsculas, números e hífen (2 a 64 caracteres)"),
-  descricao: z.string().optional(),
-  conteudo: z.string().min(1),
-});
-export type SkillDoProjeto = z.infer<typeof SkillDoProjeto>;
 
 const ProjectConfigBase = z.object({
   name: z.string().min(1),

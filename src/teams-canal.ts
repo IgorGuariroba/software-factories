@@ -1,5 +1,5 @@
 import type { Channel, QuestionRef } from "./channel.js";
-import { withAutomationMark } from "./effect-writer.js";
+import { withAutomationMark } from "./marca-automacao.js";
 import { redactSecrets } from "./secrets.js";
 import type { TeamsConversation } from "./teams-conversa.js";
 

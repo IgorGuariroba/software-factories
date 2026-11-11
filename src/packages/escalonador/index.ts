@@ -1,9 +1,26 @@
 // Entry point público do escalonador: serializa buscas e sincronizações, reage a mudanças de estado, registra mudanças de
 // status e escolhe a próxima Tarefa a ativar. A execução dessas ações é dada pelas portas.
+import { ESTADOS_QUE_ESPERAM_ATIVACAO } from "./lib/ativacao.js";
 import { criarFila } from "./lib/fila.js";
 import type { EventoEscalonador, PortasEscalonador, TarefaEscalonador } from "./lib/portas.js";
 import { criarReacao } from "./lib/reacao.js";
 
+export {
+  type AlvoExecucao,
+  ativarTarefa,
+  type EstadoAtivacao,
+  type PortasAtivacao,
+  type TarefaAtivacao,
+} from "./lib/ativacao.js";
+export {
+  buscarNaFonte,
+  type CardBusca,
+  cardsElegiveis,
+  type ItemBusca,
+  type PortasBusca,
+  type PortasBuscaCompleta,
+  type ProjetoBusca,
+} from "./lib/busca.js";
 export type { EstadoEscalonador, EventoEscalonador, PortasEscalonador, TarefaEscalonador } from "./lib/portas.js";
 
 export interface Escalonador {
@@ -13,6 +30,8 @@ export interface Escalonador {
   sincronizar(tarefa: () => Promise<void>): Promise<void>;
   /** Buscas pedidas e ainda não concluídas (o timer pula o tick enquanto houver alguma). */
   buscasPendentes(): number;
+  /** Tick periódico: pede uma busca, salvo se ainda houver uma pendente (não acumula buscas com a Fonte lenta). */
+  pedirBuscaPeriodica(): void;
   /** Pede uma reação: registra mudanças de status e tenta ativar a próxima Tarefa. */
   pedirReacao(): void;
   /** Encerra: cancela o despertar e impede novas reações. As que já rodam terminam antes de `ociosa` resolver. */
@@ -21,7 +40,6 @@ export interface Escalonador {
   ociosa(): Promise<void>;
 }
 
-const ESTADOS_QUE_ESPERAM_ATIVACAO = ["enfileirada", "aguardando-entrega"];
 const MOTIVOS_VISIVEIS = ["bloqueada", "enfileirada", "vetada", "aguardando-entrega"];
 
 export async function criarEscalonador(portas: PortasEscalonador): Promise<Escalonador> {
@@ -107,6 +125,10 @@ export async function criarEscalonador(portas: PortasEscalonador): Promise<Escal
     pedirBusca: () => fila.executar(() => portas.buscar(), true),
     sincronizar: (tarefa) => fila.executar(tarefa, false),
     buscasPendentes: () => fila.buscasPendentes(),
+    pedirBuscaPeriodica: () => {
+      if (fila.buscasPendentes() > 0) return;
+      fila.executar(() => portas.buscar(), true).catch((err) => console.error("[fábrica] erro na busca:", err));
+    },
     pedirReacao: () => reacao.pedir(),
     parar() {
       encerrando = true;
@@ -118,3 +140,4 @@ export async function criarEscalonador(portas: PortasEscalonador): Promise<Escal
     },
   };
 }
+export { estadoElegivel, tarefasNovas } from "./lib/busca.js";

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createEffectWriter, GuardrailViolation } from "../src/effect-writer.js";
+import { createEffectWriter } from "../src/effect-writer.js";
 import { EventLog } from "../src/events.js";
+import { GuardrailViolation } from "../src/marca-automacao.js";
 import { FakeCodeHost } from "./fakes/fake-code-host.js";
 import { createRemoteRepo, git, type RemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
 import { MemoryDemandSource } from "./fakes/memory-demand-source.js";

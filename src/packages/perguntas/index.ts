@@ -4,6 +4,26 @@ import { avisarTeams } from "./lib/aviso.js";
 import type { PortasPerguntas } from "./lib/portas.js";
 import { conferirResposta, verificarRespostas } from "./lib/respostas.js";
 
+export {
+  type AlvoCriacao,
+  type ConfiguracaoPergunta,
+  type Destinatario,
+  HORAS_ATE_LEMBRETE,
+  levarPergunta,
+  MAX_PERGUNTAS_PO,
+  type OrigemPergunta,
+  PerguntaBloqueada,
+  type PerguntaCriada,
+  type PortasCriacao,
+} from "./lib/criar.js";
+export {
+  type AlvoEscalonamento,
+  type EventoEscalonamento,
+  escalonarPergunta,
+  type PerguntaEscalonavel,
+  type PortasEscalonamento,
+} from "./lib/escalonar.js";
+export { textoDoLembrete } from "./lib/lembrete.js";
 export type {
   EstadoPerguntas,
   EventoPergunta,
@@ -12,6 +32,14 @@ export type {
   ProjetoPerguntas,
   TarefaPerguntas,
 } from "./lib/portas.js";
+export {
+  type EstadoResposta,
+  type EventoResposta,
+  type PerguntaResposta,
+  type PortasResposta,
+  responderPergunta,
+  type TarefaResposta,
+} from "./lib/responder.js";
 
 export interface Perguntas {
   /** Uma passada de verificação: avisos pendentes ao Teams e respostas chegadas pelo Canal. */
@@ -29,3 +57,9 @@ export function criarPerguntas(portas: PortasPerguntas): Perguntas {
     avisarTeams: (tarefaId, projeto, chave, n) => avisarTeams(portas, tarefaId, projeto, chave, n),
   };
 }
+export {
+  type PerguntaComResposta,
+  pendingQuestion,
+  registrarRespostaNoEstado,
+  type TarefaRespondivel,
+} from "./lib/estado.js";

@@ -4,7 +4,6 @@ export interface Resposta {
   body: unknown;
 }
 
-/** Um pedido já lido pelo servidor: o caminho sem query, e o corpo lido sob demanda. */
 /**
  * Resposta de fluxo (stream): o adaptador não escreve na conexão. O servidor escreve os cabeçalhos, chama `assinar`
  * com a função que envia cada evento e guarda a função que desliga; `assinar` devolve essa função.
