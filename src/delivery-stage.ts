@@ -2,6 +2,7 @@ import type { CodeHost } from "./code-host.js";
 import type { ProjectConfig } from "./config.js";
 import { copyOutOfCommit, type QueuedTask, StateDoc, type StepRuntime } from "./durable.js";
 import type { EffectWriter } from "./effect-writer.js";
+import { tarefaDoEstado } from "./estado-fabrica.js";
 import { defaultBranch, git } from "./git.js";
 import { StageBlocked } from "./implement-stage.js";
 import { redactSecrets } from "./secrets.js";
@@ -19,7 +20,7 @@ export async function runDelivery(opts: {
   const { runtime, config, writer } = opts;
   let task: QueuedTask | undefined;
   await runtime.commit(async (tx) => {
-    task = copyOutOfCommit((await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId));
+    task = copyOutOfCommit(tarefaDoEstado(await tx.doc(StateDoc), opts.taskId));
   });
   if (!task?.implementation) return;
   if (config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== config.dryRun))
@@ -37,7 +38,7 @@ export async function runDelivery(opts: {
     await writer.pushBranch(cwd, progress.branch);
     progress.pushed = true;
     await runtime.commit(async (tx) => {
-      const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const queued = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (queued?.implementation) queued.implementation.pushed = true;
     });
   }
@@ -46,7 +47,7 @@ export async function runDelivery(opts: {
     // Tarefa anterior ao registro da branch padrão: guarda a descoberta para as retomadas não consultarem o remoto.
     progress.defaultBranch = base;
     await runtime.commit(async (tx) => {
-      const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const queued = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (queued?.implementation && !queued.implementation.defaultBranch) queued.implementation.defaultBranch = base;
     });
   }
@@ -79,7 +80,7 @@ export async function runDelivery(opts: {
           ? "aguardando-merge"
           : "aguardando-ci";
   await runtime.commit(async (tx) => {
-    const queued = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+    const queued = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
     if (queued) {
       queued.publication = {
         number: remote?.number ?? null,

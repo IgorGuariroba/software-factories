@@ -124,3 +124,18 @@ export async function remoteDefaultRef(cwd: string, branch?: string): Promise<st
   if (!exists) await git(cwd, ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${name}:${ref}`]);
   return ref;
 }
+
+/**
+ * Roda git sem `cwd` (clone e outras operações fora de um repositório de trabalho), com prazo de 5 min e sem perguntar
+ * credenciais. `envExtra` leva o que a chamada precisa (ex.: o cabeçalho de autenticação), e só ele.
+ */
+export function rodarGit(args: string[], envExtra: Record<string, string>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      { env: { ...process.env, ...envExtra, GIT_TERMINAL_PROMPT: "0" }, timeout: 300_000 },
+      (err) => (err ? reject(err) : resolve()),
+    );
+  });
+}

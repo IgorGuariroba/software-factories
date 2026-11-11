@@ -1,77 +1,50 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import type { Context } from "@earendil-works/chord/context";
-import {
-  configure,
-  defineExtension,
-  defineTool,
-  type Harness,
-  type ToolExecutionApi,
-} from "@earendil-works/pi-durable";
-import { obj, str } from "@earendil-works/pi-schema";
-import {
-  type AgenteDaEtapa,
-  comPromptAdicional,
-  ferramentasParaEtapa,
-  textoAdicionalDoAgente,
-} from "./agente-etapa-config.js";
+import type { Harness } from "@earendil-works/pi-durable";
+import type { AgenteDaEtapa } from "./agente-etapa-config.js";
 import type { CodeHost } from "./code-host.js";
 import type { ProjectConfig } from "./config.js";
-import { formatBranchName, formatCommitMessage, resolveConventions } from "./conventions.js";
+import { formatCommitMessage } from "./conventions.js";
 import type { Card } from "./demand-source.js";
-import {
-  copyOutOfCommit,
-  type ImplementationProgress,
-  type QueuedTask,
-  StateDoc,
-  type StepRuntime,
-  type TddPhase,
-} from "./durable.js";
+import { copyOutOfCommit, type ImplementationProgress, StateDoc, type StepRuntime, type TddPhase } from "./durable.js";
 import type { EffectWriter } from "./effect-writer.js";
-import type { EventRecorder } from "./events.js";
-import { git } from "./git.js";
-import { recoverRepair } from "./repair.js";
+import { tarefaDoEstado } from "./estado-fabrica.js";
+import {
+  aceitarCorrecoesSatisfeitas,
+  aceitarFaseFormatada,
+  type ContextoAceitacao,
+  reconciliarHead,
+  renderTicketsProgress,
+} from "./implement-aceitacao.js";
+import { iniciarImplementacao } from "./implement-inicio.js";
+import { commitarFase, rodarSuite, verificarFase } from "./implement-tdd.js";
+import {
+  aplicarFormatador,
+  type ContextoVerificacao,
+  StageBlocked,
+  verificarLinhaDeBase,
+} from "./implement-verificacao.js";
+import {
+  MAX_RECUSAS_TDD,
+  passoFeito,
+  passosDoTdd,
+  recusasEsgotadas,
+  registrarCommitAceito,
+  registrarRecusaTdd,
+} from "./packages/tdd-etapa/index.js";
 import { resolveRepository } from "./repo-resolver.js";
-import { executarNoSandbox, sandboxDisponivel } from "./sandbox.js";
 import { redactSecrets } from "./secrets.js";
 import type { SpecDelivery } from "./spec-stage.js";
 import { testDiagnostic } from "./test-diagnostic.js";
-import type { TestRun, TestRunner } from "./test-runner.js";
-import {
-  assertFactoryWorktree,
-  changedPaths,
-  checkoutFactoryBranch,
-  cloneForFactory,
-  confine,
-  isTestFile,
-  isValidBranchName,
-  PathRefused,
-  worktreePathFor,
-} from "./workspace.js";
+import { assertFactoryWorktree } from "./workspace.js";
 
-/** A Tarefa não pode seguir sem uma decisão humana (ex.: repositório sem mapeamento, TDD recusado no limite). */
-export class StageBlocked extends Error {
-  override name = "StageBlocked";
-}
-
-/** Motivo persistido usado para reconhecer uma retomada que só precisa medir novamente o baseline. */
-export const baselineBlockedReason = (branch: string): string =>
-  `a suíte de testes já falha na branch ${branch} antes do primeiro teste novo (linha de base ` +
-  "vermelha); a fábrica não tem como verificar o TDD até a suíte voltar a passar";
-
-/** Bloqueio recuperável sem descartar um reparo versionado feito pela pessoa no clone. */
-export const baselineWorkspaceBlockedReason = (branch: string): string =>
-  `a branch ${branch} tem alterações versionadas pendentes antes da linha de base; ` +
-  "preserve o reparo fora deste clone e deixe índice e arquivos versionados limpos antes de retomar";
+export { baselineBlockedReason, baselineWorkspaceBlockedReason, StageBlocked } from "./implement-verificacao.js";
 
 /** Quantas vezes seguidas a fábrica recusa uma fase do TDD antes de bloquear a Tarefa. */
-export const MAX_TDD_REJECTIONS = 3;
+export const MAX_TDD_REJECTIONS = MAX_RECUSAS_TDD;
 
 /** Rodadas de ferramenta de um pedido ao modelo. */
 const MAX_TURNS = 30;
 
 /** Maior arquivo que `ler_arquivo` devolve inteiro. */
-const MAX_READ_CHARS = 100_000;
 
 const INSTRUCTIONS = `Você é o papel implementador de uma fábrica de software autônoma e trabalha com TDD, ticket a ticket.
 Você só tem as ferramentas ler_arquivo, escrever_arquivo e rodar_testes, sempre dentro do repositório.
@@ -86,132 +59,11 @@ Não há shell nem git: a fábrica verifica cada fase, roda os testes e faz os c
   nenhum arquivo de teste mude e que os testes passem.
 Quando terminar a fase, responda em texto, sem chamar ferramentas.`;
 
-export interface ImplementationDeps {
-  /** Raiz dos clones da fábrica, sob o diretório de estado. */
-  worktreesRoot: string;
-  testRunner: TestRunner;
-  events: EventRecorder;
-}
+export { createImplementationExtension, type ImplementationDeps } from "./implement-ferramentas.js";
 
-const text = (value: string) => ({ output: [{ type: "text" as const, text: value }] });
+import type { ImplementationDeps, ImplementationExtension } from "./implement-ferramentas.js";
 
-const describeRun = (run: TestRun) =>
-  run.spawnError
-    ? `o comando de teste não executou: ${run.spawnError}`
-    : `${run.timedOut ? "tempo esgotado" : `código de saída ${run.exitCode}`}\n${run.output}`;
-
-/**
- * As ferramentas do implementador. Elas não guardam o clone em memória: a cada chamada, acham pela conversa a Tarefa
- * no estado durável e usam o clone registrado nela (dentro da raiz da fábrica). Assim continuam no lugar certo depois
- * de um reinício, e recusam qualquer conversa que não seja de uma Tarefa em implementação.
- */
-export function createImplementationExtension(deps: ImplementationDeps) {
-  async function workspaceOf(api: ToolExecutionApi, context: Context) {
-    const state = await api.snapshot(StateDoc, context);
-    const task = state?.tasks.find((t) => t.implementation?.conversationId === api.conversationId);
-    if (!task?.implementation) throw new Error("recusado: esta conversa não pertence a uma Tarefa em implementação");
-    const worktree = await assertFactoryWorktree(deps.worktreesRoot, task.implementation.worktree);
-    return { task: task as QueuedTask, progress: task.implementation as ImplementationProgress, worktree };
-  }
-
-  /** Resolve o caminho pedido; uma recusa vira evento `blocked` (aviso ao usuário) e erro para o modelo. */
-  async function pathFor(task: QueuedTask, worktree: string, tool: string, requested: string): Promise<string> {
-    try {
-      return await confine(worktree, requested);
-    } catch (err) {
-      if (!(err instanceof PathRefused)) throw err;
-      await deps.events.append({
-        type: "blocked",
-        project: task.project,
-        target: task.key,
-        action: tool,
-        content: requested,
-        reason: err.message,
-      });
-      throw new Error(`recusado: ${err.message}`);
-    }
-  }
-
-  const readTool = defineTool({
-    name: "ler_arquivo",
-    description: "Lê um arquivo de texto do repositório.",
-    parameters: obj({ caminho: str({ description: "Caminho relativo à raiz do repositório." }) }),
-    execute: async (args, api, context) => {
-      const { task, worktree } = await workspaceOf(api, context);
-      const path = await pathFor(task, worktree, "ler_arquivo", args.caminho);
-      const content = await readFile(path, "utf8").catch((err: NodeJS.ErrnoException) => {
-        throw new Error(err.code === "ENOENT" ? `${args.caminho} não existe` : `não foi possível ler: ${err.message}`);
-      });
-      return text(content.length > MAX_READ_CHARS ? `${content.slice(0, MAX_READ_CHARS)}\n[…truncado]` : content);
-    },
-  });
-
-  const writeTool = defineTool({
-    name: "escrever_arquivo",
-    description: "Cria ou substitui um arquivo do repositório com o conteúdo completo.",
-    parameters: obj({
-      caminho: str({ description: "Caminho relativo à raiz do repositório." }),
-      conteudo: str({ description: "Conteúdo completo do arquivo." }),
-    }),
-    execute: async (args, api, context) => {
-      const { task, worktree } = await workspaceOf(api, context);
-      const path = await pathFor(task, worktree, "escrever_arquivo", args.caminho);
-      if ((await stat(path).catch(() => undefined))?.isDirectory()) throw new Error(`${args.caminho} é um diretório`);
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, args.conteudo, "utf8");
-      return text(`${args.caminho} salvo.`);
-    },
-  });
-
-  const testTool = defineTool({
-    name: "rodar_testes",
-    description: "Roda o comando de teste configurado no repositório e devolve o código de saída e o fim da saída.",
-    parameters: obj({}),
-    execute: async (_args, api, context) => {
-      const { progress, worktree } = await workspaceOf(api, context);
-      const run = await deps.testRunner.run({
-        cwd: worktree,
-        command: progress.test.command,
-        timeoutMs: progress.test.timeoutSeconds * 1000,
-        signal: context.abortSignal,
-      });
-      return text(describeRun(run));
-    },
-  });
-
-  // Bash do modelo: roda só dentro do sandbox (ADR-0006). Sem o bwrap, a chamada é recusada, nunca executada direto.
-  const shellTool = defineTool({
-    name: "executar_comando",
-    description:
-      "Roda um comando de shell no clone da Tarefa, dentro de sandbox: sem rede, com o clone como único lugar gravável.",
-    parameters: obj({ comando: str({ description: "Comando de shell, executado na raiz do repositório." }) }),
-    execute: async (args, api, context) => {
-      const { progress, worktree } = await workspaceOf(api, context);
-      if (!sandboxDisponivel()) throw new Error("recusado: o sandbox bubblewrap não está disponível neste host");
-      const run = await executarNoSandbox({
-        cwd: worktree,
-        comando: args.comando,
-        timeoutMs: progress.test.timeoutSeconds * 1000,
-        signal: context.abortSignal,
-      });
-      if (run.timedOut) return text(`tempo esgotado\n${run.output}`);
-      return text(`código ${run.exitCode}\n${run.output}`);
-    },
-  });
-
-  const tools = [readTool, writeTool, testTool, shellTool];
-  return { extension: defineExtension({ name: "fabrica.implementacao", tools }), tools };
-}
-
-type ImplementationExtension = ReturnType<typeof createImplementationExtension>;
-
-/** Renderiza o checklist de Tickets marcando os tickets já implementados. */
-export const renderTicketsProgress = (tickets: SpecDelivery["tickets"], done: ReadonlySet<number>): string =>
-  tickets.map((t, i) => `- [${done.has(i) ? "x" : " "}] **${i + 1}. ${t.titulo}**: ${t.aceite}`).join("\n");
-
-/** Os passos do TDD, na ordem: teste e implementação de cada ticket. */
-const stepsOf = (delivery: SpecDelivery) =>
-  delivery.tickets.flatMap((_, ticket) => (["teste", "implementacao"] as const).map((phase) => ({ ticket, phase })));
+export { renderTicketsProgress } from "./implement-aceitacao.js";
 
 function phasePrompt(delivery: SpecDelivery, ticket: number, phase: TddPhase, feedback: string | null): string {
   const t = delivery.tickets[ticket];
@@ -259,7 +111,7 @@ export async function runImplementation(opts: {
   const readProgress = async () => {
     let progress: ImplementationProgress | undefined;
     await runtime.commit(async (tx) => {
-      const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId)?.implementation;
+      const stored = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId)?.implementation;
       progress = stored ? copyOutOfCommit(stored) : undefined;
     });
     return progress;
@@ -268,7 +120,7 @@ export async function runImplementation(opts: {
     runtime.commit(async (tx) => {
       // Depois do fechamento do daemon, o passo cancelado não grava mais nada: a retomada é de outro processo.
       runtime.signal.throwIfAborted();
-      const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const task = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (task) task.implementation = copyOutOfCommit(progress);
     });
 
@@ -278,10 +130,39 @@ export async function runImplementation(opts: {
     throw new StageBlocked(`o clone da fábrica ${worktree} sumiu; os commits não enviados se perderam`);
   });
   const conventions = { commit: progress.commitPattern };
+  // O que a verificação do clone (linha de base, formatador) precisa desta etapa.
+  const verificacao = (): ContextoVerificacao => {
+    const base = {
+      worktree,
+      progress,
+      signal: runtime.signal,
+      testRunner: deps.testRunner,
+      events: deps.events,
+      projeto: config.name,
+      alvo: card.key,
+      salvar: () => save(progress),
+      styleMessage,
+      formatoDoRepositorio: () => resolveRepository(config.repositories, card)?.format,
+    };
+    return { ...base, runSuite: (requireExecutable) => rodarSuite(base, requireExecutable) };
+  };
+  const aceitacao = (): ContextoAceitacao => ({
+    ...verificacao(),
+    totalTickets: delivery.tickets.length,
+    tickets: delivery.tickets,
+    feitos: () => done(),
+    atualizarChecklist: () =>
+      writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done())).then(() => undefined),
+    correcoes: {
+      originalTicketCount: opts.originalTicketCount,
+      canReassessCorrections: opts.canReassessCorrections,
+      reassessCorrections: opts.reassessCorrections,
+    },
+  });
 
-  await reconcile();
+  await reconciliarHead(aceitacao());
   // Retomada: o que ficou fora do padrão (ex.: testes de antes do formatador) entra antes do próximo passo.
-  await applyFormatter();
+  await aplicarFormatador(verificacao());
   const done = () =>
     new Set([
       ...progress.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket),
@@ -289,22 +170,18 @@ export async function runImplementation(opts: {
     ]);
   await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
 
-  await checkBaseline();
+  await verificarLinhaDeBase(verificacao());
 
   const conversation = await harness.conversation(progress.conversationId, context);
   if (!conversation) throw new Error("conversa da etapa de implementação não encontrada");
 
-  for (const step of stepsOf(delivery)) {
-    if (
-      progress.commits.some((c) => c.ticket === step.ticket && c.phase === step.phase) ||
-      progress.verifiedTickets?.some((c) => c.ticket === step.ticket)
-    )
-      continue;
-    if (step.phase === "teste" && (await acceptSatisfiedCorrections())) continue;
+  for (const step of passosDoTdd(delivery.tickets.length)) {
+    if (passoFeito(progress, step)) continue;
+    if (step.phase === "teste" && (await aceitarCorrecoesSatisfeitas(aceitacao()))) continue;
     for (;;) {
       // Uma retomada pode ter aplicado formatação que resolveu o RED já registrado.
       // Só reconhece commits mecânicos, sem alterações pendentes ou mudança efetiva nos testes.
-      if (step.phase === "implementacao" && (await acceptFormattedPhase(step.ticket))) break;
+      if (step.phase === "implementacao" && (await aceitarFaseFormatada(aceitacao(), step.ticket))) break;
       const requestId = `implementacao-${progress.requests}`;
       const submission = await conversation.submit(
         { type: "input", content: phasePrompt(delivery, step.ticket, step.phase, progress.feedback), requestId },
@@ -320,11 +197,9 @@ export async function runImplementation(opts: {
         );
       }
       runtime.signal.throwIfAborted();
-      const verdict = await verify(step.phase);
+      const verdict = await verificarFase(verificacao(), step.phase);
       if (typeof verdict === "string") {
-        progress.requests++;
-        progress.rejections++;
-        progress.feedback = verdict;
+        registrarRecusaTdd(progress, verdict);
         await save(progress);
         await deps.events.append({
           type: "progress",
@@ -332,7 +207,7 @@ export async function runImplementation(opts: {
           target: card.key,
           message: `TDD recusado no ticket ${step.ticket + 1} (${step.phase}): ${testDiagnostic(redactSecrets(verdict), 2000)}`,
         });
-        if (progress.rejections >= MAX_TDD_REJECTIONS)
+        if (recusasEsgotadas(progress))
           // Só a primeira linha do veredito: o motivo vai para o Telegram, e a saída da suíte já está no progresso.
           throw new StageBlocked(
             `TDD recusado ${progress.rejections} vezes na fase ${step.phase} do ticket ${step.ticket + 1}: ${redactSecrets(verdict.split("\n")[0] ?? "").slice(0, 160)}. Detalhes na atividade da Tarefa.`,
@@ -340,24 +215,19 @@ export async function runImplementation(opts: {
         continue;
       }
       const ticket = delivery.tickets[step.ticket];
-      const sha = await commit(verdict, step.phase, ticket?.titulo ?? "");
-      progress.commits.push({ ...step, sha });
+      const sha = await commitarFase({ ...verificacao(), conventions }, verdict, step.phase, ticket?.titulo ?? "");
       await deps.events.append({
         type: "progress",
         project: config.name,
         target: card.key,
         message: `Commit ${sha.slice(0, 8)}: ticket ${step.ticket + 1}/${delivery.tickets.length} (${step.phase === "teste" ? "teste RED" : "implementação GREEN"}) — ${redactSecrets(ticket?.titulo ?? "")}`,
       });
-      progress.head = sha;
-      progress.pushed = false;
-      progress.requests++;
-      progress.rejections = 0;
-      progress.feedback = null;
+      registrarCommitAceito(progress, step, sha);
       // O checklist sai antes do registro: se a fábrica cair aqui, a retomada reconhece o commit pelo HEAD.
       if (step.phase === "implementacao")
         await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
       await save(progress);
-      if (step.phase === "implementacao") await applyFormatter();
+      if (step.phase === "implementacao") await aplicarFormatador(verificacao());
       break;
     }
   }
@@ -365,177 +235,25 @@ export async function runImplementation(opts: {
   // O envio acontece na etapa de entrega, somente depois do review do HEAD final.
 
   /** Primeira vez: resolve o repositório, clona, cria a branch e a conversa, e registra tudo num commit só. */
+  // Início: clone, branch e conversa, no módulo implement-inicio.
   async function start(): Promise<ImplementationProgress> {
-    const mapping =
-      opts.repositoryPath !== undefined
-        ? config.repositories?.find((candidate) => candidate.path === opts.repositoryPath)
-        : resolveRepository(config.repositories, card);
-    if (!mapping) {
-      const reason = `nenhum repositório mapeado para o card ${card.key} ("${card.title}")`;
-      await deps.events.append({
-        type: "blocked",
-        project: config.name,
-        target: card.key,
-        action: "resolver-repositorio",
-        content: card.title,
-        reason,
-      });
-      throw new StageBlocked(reason);
-    }
-    const repoPath = resolve(mapping.path);
-    const worktree = worktreePathFor(deps.worktreesRoot, config.name, card.key);
-    const { defaultBranch } = await cloneForFactory(repoPath, worktree);
-    const conventions = resolveConventions(await opts.codeHost.discoverConventions(worktree), config.conventions);
-    const branch = formatBranchName(conventions, card);
-    if (!(await isValidBranchName(worktree, branch)))
-      throw new StageBlocked(`a convenção de branch gerou um nome inválido: "${branch}"`);
-    const { head, adopted } = await checkoutFactoryBranch(worktree, branch, defaultBranch);
-
-    let created: ImplementationProgress | undefined;
-    await runtime.commit(async (tx) => {
-      const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
-      const modelo = opts.agente.modelo;
-      if (!modelo) throw new Error("a implementação não tem modelo configurado");
-      await configure(tx, conversation.id, {
-        model: { provider: modelo.provider, modelId: modelo.model },
-        extensions: [opts.tools.extension],
-        tools: ferramentasParaEtapa(opts.tools.tools, opts.agente.ferramentas, "implementacao"),
-        instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(opts.agente)),
-        maxTurns: MAX_TURNS,
-      });
-      created = {
-        repoPath,
-        worktree,
-        branch,
-        branchOrigin: adopted ? "adotada" : "criada",
-        commitPattern: conventions.commit,
-        test: copyOutOfCommit(mapping.test),
-        ...(mapping.format ? { format: copyOutOfCommit(mapping.format) } : {}),
-        conversationId: conversation.id,
-        head,
-        baseHead: head,
-        defaultBranch,
-        commits: [],
-        baseline: null,
-        requests: 0,
-        rejections: 0,
-        feedback: null,
-        pushed: false,
-      };
-      const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-      if (task) task.implementation = copyOutOfCommit(created);
+    return iniciarImplementacao({
+      taskId: opts.taskId,
+      repositoryPath: opts.repositoryPath,
+      repositories: config.repositories,
+      projectName: config.name,
+      conventions: config.conventions,
+      card,
+      worktreesRoot: deps.worktreesRoot,
+      events: deps.events,
+      codeHost: opts.codeHost,
+      runtime,
+      agente: opts.agente,
+      tools: opts.tools,
+      instructions: INSTRUCTIONS,
+      maxTurns: MAX_TURNS,
+      bloqueio: (mensagem) => new StageBlocked(mensagem),
     });
-    if (!created) throw new Error("progresso da implementação não foi criado");
-    return created;
-  }
-
-  /**
-   * Um HEAD à frente do registrado por exatamente um commit é o commit do próximo passo, feito antes de a fábrica cair:
-   * ele é registrado em vez de refeito. Só a fábrica commita neste clone, então qualquer outra divergência bloqueia.
-   */
-  async function reconcile(): Promise<void> {
-    const head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
-    if (head === progress.head) return;
-    if (await recoverRepair(progress, head, deps.testRunner, runtime.signal)) {
-      await save(progress);
-      return;
-    }
-    const parent = (await git(worktree, ["rev-parse", "HEAD^"]).catch(() => "")).trim();
-    // Commit de estilo que caiu antes do registro: não é passo do TDD, só avança o HEAD.
-    if (parent === progress.head && (await git(worktree, ["log", "-1", "--format=%s"])).trim() === styleMessage()) {
-      progress.head = head;
-      progress.pushed = false;
-      await save(progress);
-      return;
-    }
-    const next = stepsOf(delivery).find(
-      (s) =>
-        !progress.commits.some((c) => c.ticket === s.ticket && c.phase === s.phase) &&
-        !progress.verifiedTickets?.some((c) => c.ticket === s.ticket),
-    );
-    if (parent !== progress.head || !next)
-      throw new StageBlocked(`o histórico do clone ${worktree} divergiu do registrado (HEAD ${head})`);
-    progress.commits.push({ ...next, sha: head });
-    progress.head = head;
-    progress.pushed = false;
-    progress.requests++;
-    progress.rejections = 0;
-    progress.feedback = null;
-    await save(progress);
-  }
-
-  /** Não inventa RED/GREEN: registra critérios já atendidos, provados por suíte e review de outra família. */
-  async function acceptSatisfiedCorrections(): Promise<boolean> {
-    const originalCount = opts.originalTicketCount;
-    if (!opts.reassessCorrections || originalCount === undefined) return false;
-    const missing = delivery.tickets.map((_, ticket) => ticket).filter((ticket) => !done().has(ticket));
-    if (!missing.length || missing.some((ticket) => ticket < originalCount)) return false;
-    // Um RED pendente continua exigindo implementação; trabalho não aceito não entra na evidência.
-    if (
-      progress.commits.some((c) => c.phase === "teste" && missing.includes(c.ticket)) ||
-      (await changedPaths(worktree)).length > 0
-    )
-      return false;
-    const before = (await git(worktree, ["rev-parse", "HEAD"])).trim();
-    if (before !== progress.head) throw new StageBlocked("HEAD divergiu antes da reavaliação de correções");
-    if (opts.canReassessCorrections && !(await opts.canReassessCorrections(before))) return false;
-    const run = await runSuite();
-    if (run.timedOut || run.spawnError || run.exitCode !== 0) return false;
-    const diagnostic = redactSecrets(testDiagnostic(describeRun(run)));
-    const assessment = await opts.reassessCorrections(before, diagnostic);
-    if (!assessment.approved) {
-      if (assessment.feedback) {
-        progress.feedback = redactSecrets(assessment.feedback);
-        await save(progress);
-      }
-      return false;
-    }
-    if ((await git(worktree, ["rev-parse", "HEAD"])).trim() !== before || (await changedPaths(worktree)).length)
-      throw new StageBlocked("clone mudou durante a reavaliação de correções; preserve as alterações");
-    progress.verifiedTickets ??= [];
-    for (const ticket of missing) progress.verifiedTickets.push({ ticket, sha: before, diagnostic });
-    progress.rejections = 0;
-    progress.feedback = null;
-    await save(progress);
-    await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
-    await deps.events.append({
-      type: "progress",
-      project: config.name,
-      target: card.key,
-      message: `Correções ${missing.map((ticket) => ticket + 1).join(", ")}: critério já atendido no HEAD ${before.slice(0, 8)}; suíte GREEN e review independente. Sem RED artificial ou commit vazio.`,
-    });
-    return true;
-  }
-
-  async function acceptFormattedPhase(ticket: number): Promise<boolean> {
-    const red = progress.commits.find((commit) => commit.ticket === ticket && commit.phase === "teste");
-    if (!red || red.sha === progress.head || (await changedPaths(worktree)).length > 0) return false;
-    const subjects = (await git(worktree, ["log", "--format=%s", `${red.sha}..${progress.head}`])).trim().split("\n");
-    if (!subjects.length || subjects.some((subject) => subject !== styleMessage())) return false;
-    const paths = (await git(worktree, ["diff", "--name-only", "-z", red.sha, progress.head]))
-      .split("\0")
-      .filter(Boolean);
-    if (!paths.length) return false;
-    // O formatador pode mudar espaços dos testes, mas nunca seu conteúdo não branco.
-    if (
-      (await git(worktree, ["diff", "--ignore-all-space", "--format=", red.sha, progress.head, "--", ...paths])).trim()
-    )
-      return false;
-    const run = await runSuite();
-    if (run.timedOut || run.exitCode !== 0) return false;
-    progress.commits.push({ ticket, phase: "implementacao", sha: progress.head });
-    progress.rejections = 0;
-    progress.feedback = null;
-    progress.pushed = false;
-    await save(progress);
-    await writer.upsertComment(card.key, "Tickets", renderTicketsProgress(delivery.tickets, done()));
-    await deps.events.append({
-      type: "progress",
-      project: config.name,
-      target: card.key,
-      message: `Ticket ${ticket + 1}: RED resolvido pelo formatador, suíte GREEN verificada; commit ${progress.head.slice(0, 8)}. Nenhum commit vazio criado.`,
-    });
-    return true;
   }
 
   function styleMessage(): string {
@@ -544,169 +262,5 @@ export async function runImplementation(opts: {
       summary: "aplica o formatador do repositório",
       key: card.key,
     });
-  }
-
-  /**
-   * Passo mecânico: roda o formatador do repositório e commita o que mudou como estilo, inclusive em testes. O código
-   * de saída não importa (formatadores saem com erro quando sobra achado que não sabem corrigir); não executar, sim.
-   */
-  async function applyFormatter(): Promise<void> {
-    const format = progress.format ?? resolveRepository(config.repositories, card)?.format;
-    if (!format) return;
-    // Só sobre o HEAD limpo: não mistura tentativa não aceita do implementador num commit de estilo.
-    if ((await changedPaths(worktree)).length > 0) return;
-    const run = await deps.testRunner.run({
-      cwd: worktree,
-      command: format.command,
-      timeoutMs: format.timeoutSeconds * 1000,
-      signal: runtime.signal,
-    });
-    if (run.spawnError || run.timedOut || runtime.signal.aborted) {
-      // Formatação pela metade não pode sobrar na árvore: entraria na próxima fase do TDD (inclusive em testes).
-      const partial = await changedPaths(worktree);
-      if (partial.length > 0) await discard(partial);
-      runtime.signal.throwIfAborted();
-      throw new StageBlocked(`o formatador do repositório não concluiu: ${run.spawnError ?? "tempo esgotado"}`);
-    }
-    // Só o que a Tarefa já tocou: formatar o resto do repositório poluiria a entrega com arquivos alheios.
-    const first = progress.commits[0]?.sha;
-    const base = progress.baseHead ?? (first ? `${first}^` : undefined);
-    const touched = base
-      ? new Set((await git(worktree, ["diff", "--name-only", "-z", base, "HEAD"])).split("\0").filter(Boolean))
-      : new Set<string>();
-    const changed = await changedPaths(worktree);
-    const outside = changed.filter((p) => !touched.has(p));
-    if (outside.length > 0) await discard(outside);
-    const paths = changed.filter((p) => touched.has(p));
-    if (paths.length === 0) return;
-    runtime.signal.throwIfAborted();
-    await git(worktree, ["--literal-pathspecs", "add", "-A", "--", ...paths]);
-    await git(worktree, ["commit", "--quiet", "-m", styleMessage()]);
-    progress.head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
-    progress.pushed = false;
-    await save(progress);
-    await deps.events.append({
-      type: "progress",
-      project: config.name,
-      target: card.key,
-      message: `Commit ${progress.head.slice(0, 8)}: formatador do repositório (${paths.length} arquivo(s))`,
-    });
-  }
-
-  /** Roda a suíte configurada no clone. Um comando que nem executa bloqueia a Tarefa. */
-  async function runSuite(requireExecutable = true): Promise<TestRun> {
-    const run = await deps.testRunner.run({
-      cwd: worktree,
-      command: progress.test.command,
-      timeoutMs: progress.test.timeoutSeconds * 1000,
-      signal: runtime.signal,
-    });
-    if (run.spawnError && requireExecutable)
-      throw new StageBlocked(`o comando de teste não executa: ${run.spawnError}`);
-    return run;
-  }
-
-  /**
-   * Linha de base: antes do primeiro teste novo, a suíte precisa passar no estado da branch. Se ela já falha, a falha
-   * da fase de teste não provaria nada sobre o teste novo, e a Tarefa bloqueia para uma pessoa decidir.
-   */
-  async function checkBaseline(): Promise<void> {
-    if (!progress.baseline) {
-      // Progresso anterior à linha de base, já com commits: a fase de teste dele já foi aceita.
-      if (progress.commits.length > 0) return;
-      // Não mede sobre reparos humanos que a verificação de fase poderia descartar depois.
-      // diff HEAD cobre índice e working tree, inclusive arquivos adicionados ao índice.
-      const pending = await git(worktree, ["diff", "--name-only", "-z", "--no-renames", "HEAD"]);
-      if (pending.length > 0) throw new StageBlocked(baselineWorkspaceBlockedReason(progress.branch));
-      let run = await runSuite(false);
-      run = await recoverEnvironment(run);
-      progress.baselineDiagnostic = redactSecrets(describeRun(run));
-      progress.baseline = run.exitCode === 0 && !run.timedOut && !run.spawnError ? "verde" : "vermelha";
-      await save(progress);
-    }
-    if (progress.baseline === "vermelha") throw new StageBlocked(baselineBlockedReason(progress.branch));
-  }
-
-  /** Recuperação limitada: só dependência de pacote ausente, com npm lockfile, sem shell nem scripts. */
-  async function recoverEnvironment(run: TestRun): Promise<TestRun> {
-    if (run.exitCode === 0 || run.timedOut || progress.environmentRecovery?.attempts) return run;
-    const missingPackage = /(?:Cannot find (?:package|module)|Could not resolve) ['"]@?[\w-]+(?:\/[\w.-]+)?['"]/;
-    if (!missingPackage.test(run.output)) return run;
-    const manifest = JSON.parse(await readFile(await confine(worktree, "package.json"), "utf8").catch(() => "null"));
-    const lock = JSON.parse(await readFile(await confine(worktree, "package-lock.json"), "utf8").catch(() => "null"));
-    if (!manifest || !lock?.lockfileVersion || (manifest.packageManager && !manifest.packageManager.startsWith("npm@")))
-      return run;
-    // A instalação não pode introduzir dependências que depois sejam incluídas nos commits do TDD.
-    const ignored = await git(worktree, ["check-ignore", "node_modules/"]).catch(() => "");
-    if (!ignored.trim()) return run;
-    progress.baselineDiagnostic = redactSecrets(describeRun(run));
-    progress.environmentRecovery = { attempts: 1, status: "iniciada", diagnostic: progress.baselineDiagnostic };
-    await save(progress);
-    const setup = await deps.testRunner.run({
-      cwd: worktree,
-      command: ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
-      timeoutMs: 120_000,
-      signal: runtime.signal,
-    });
-    progress.environmentRecovery.diagnostic = redactSecrets(describeRun(setup));
-    progress.environmentRecovery.status = "falhou";
-    await save(progress);
-    const pending = await git(worktree, ["diff", "--name-only", "-z", "--no-renames", "HEAD"]);
-    if (pending.length > 0) throw new StageBlocked(baselineWorkspaceBlockedReason(progress.branch));
-    if (setup.exitCode !== 0 || setup.timedOut || setup.spawnError) return run;
-    const measured = await runSuite(false);
-    if (measured.exitCode === 0 && !measured.timedOut && !measured.spawnError)
-      progress.environmentRecovery.status = "recuperado";
-    await save(progress);
-    return measured;
-  }
-
-  /** Confere a fase: devolve os caminhos a commitar, ou por que recusou. */
-  async function verify(phase: TddPhase): Promise<string[] | string> {
-    const paths = await changedPaths(worktree);
-    if (paths.length === 0) return "nenhum arquivo mudou";
-    // Cada fase só toca o seu lado: o teste não traz código, e o código não afrouxa nem apaga o teste que falhava.
-    const outside = paths.filter((p) => isTestFile(p, progress.test.files) !== (phase === "teste"));
-    if (outside.length > 0) {
-      // O que a fase não pode tocar volta ao último commit: o modelo não tem como apagar um arquivo novo.
-      await discard(outside);
-      const rule =
-        phase === "teste"
-          ? `na fase de teste só arquivos de teste podem mudar (padrões: ${progress.test.files.join(", ")})`
-          : "na fase de implementação os arquivos de teste não podem mudar nem ser apagados";
-      return `${rule}; a fábrica descartou as mudanças em: ${outside.join(", ")}`;
-    }
-    const run = await runSuite();
-    if (run.timedOut) return `os testes estouraram ${progress.test.timeoutSeconds}s\n${run.output}`;
-    if (run.exitCode === null) return `os testes foram interrompidos por um sinal\n${run.output}`;
-    if (phase === "teste" && run.exitCode === 0)
-      return `os testes passaram; o teste novo precisa falhar antes da implementação\n${run.output}`;
-    if (phase === "implementacao" && run.exitCode !== 0)
-      return `os testes falharam\n${testDiagnostic(describeRun(run))}`;
-    return paths;
-  }
-
-  /** Devolve os caminhos ao estado do último commit: os que existem nele são restaurados, os novos são apagados. */
-  async function discard(paths: string[]): Promise<void> {
-    const tracked = (
-      await git(worktree, ["--literal-pathspecs", "ls-tree", "-z", "--name-only", "HEAD", "--", ...paths])
-    )
-      .split("\0")
-      .filter(Boolean);
-    if (tracked.length > 0) await git(worktree, ["--literal-pathspecs", "checkout", "HEAD", "--", ...tracked]);
-    for (const path of paths.filter((p) => !tracked.includes(p))) await rm(join(worktree, path), { force: true });
-  }
-
-  /** Commita exatamente os caminhos verificados, na convenção do repositório. Nunca um commit vazio. */
-  async function commit(paths: string[], phase: TddPhase, title: string): Promise<string> {
-    runtime.signal.throwIfAborted();
-    await git(worktree, ["--literal-pathspecs", "add", "-A", "--", ...paths]);
-    const message = formatCommitMessage(conventions, {
-      type: phase === "teste" ? "test" : "feat",
-      summary: phase === "teste" ? `adiciona teste para ${title}` : title,
-      key: card.key,
-    });
-    await git(worktree, ["commit", "--quiet", "-m", message]);
-    return (await git(worktree, ["rev-parse", "HEAD"])).trim();
   }
 }

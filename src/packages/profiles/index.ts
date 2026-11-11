@@ -2,9 +2,12 @@
 export {
   avisoTeamsDe,
   type CanalPessoa,
-  type ConfigPerfis,
   canalDaPessoa,
+  identidadeDoCanalTeams,
   identidadeTeams,
+} from "./lib/canal.js";
+export {
+  type ConfigPerfis,
   type PapelPerfil,
   PERFIS_PRONTOS,
   type Perfil,

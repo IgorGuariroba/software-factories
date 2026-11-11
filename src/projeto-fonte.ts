@@ -1,19 +1,16 @@
 import type { ProjectConfig } from "./config.js";
-import type { FactoryState } from "./durable.js";
 
 /** Pendência enquanto a troca de Fonte ou de repositório não foi confirmada (ticket 10). */
 export const PENDENCIA_CONFIRMAR_FONTE = "confirme a nova Fonte ou repositório";
 
 /** O projeto trocou a Fonte ou o repositório e ainda não confirmou a configuração nova (ticket 10). */
-export const aguardandoConfirmacao = (
-  state: Pick<FactoryState, "projetosAguardandoConfirmacao">,
-  project: string,
-): boolean => state.projetosAguardandoConfirmacao?.includes(project) === true;
+export const aguardandoConfirmacao = (state: { projetosAguardandoConfirmacao?: string[] }, project: string): boolean =>
+  state.projetosAguardandoConfirmacao?.includes(project) === true;
 
 /** Acrescenta a pendência de confirmação às da configuração, quando a troca ainda não foi confirmada. */
 export const comConfirmacaoPendente = (
   pendencias: string[],
-  state: Pick<FactoryState, "projetosAguardandoConfirmacao">,
+  state: { projetosAguardandoConfirmacao?: string[] },
   project: string,
 ): string[] => (aguardandoConfirmacao(state, project) ? [...pendencias, PENDENCIA_CONFIRMAR_FONTE] : pendencias);
 

@@ -1,149 +1,92 @@
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { mkdir, stat } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
-  type ConversationId,
   createRegistry,
   defineExtension,
   Harness,
   ROOT_CONVERSATION_ID,
   type SetTimer,
-  type TaskId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { resolverAgenteDaEtapa } from "./agente-etapa-config.js";
 import { API_SCHEMA } from "./api-schema.js";
 import { AvisoLote } from "./aviso-lote.js";
-import { synchronizeBase } from "./base-sync.js";
-import { addBusinessHours, nextProjectActivity, workdayHours } from "./business-hours.js";
-import { type Channel, createCardCommentChannel, createPersonChannel } from "./channel.js";
+import { type Channel, createCardCommentChannel } from "./channel.js";
 import type { CodeHost } from "./code-host.js";
-import { type CardState, ProjectConfig } from "./config.js";
-import { runDelivery } from "./delivery-stage.js";
+import type { CardState, ProjectConfig } from "./config.js";
 import type { DemandSource } from "./demand-source.js";
-import { validarDestinatarioDoProjeto } from "./destinatarios-projeto.js";
 import type { ImportacaoRepo } from "./durable.js";
 import {
-  copyOutOfCommit,
-  createTarefaTask,
   DeadlineGateTask,
   EventEntry,
   eventToJson,
   type FactoryState,
   GateTask,
-  InspectionBlocked,
-  ManagementDoc,
-  pendingQuestion,
-  type Question,
   type QueuedTask,
-  RETRO_STEP,
-  type RetroStage,
-  recordAnswer,
   StateDoc,
-  type TriageRecord,
 } from "./durable.js";
-import { createEffectWriter, type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
-import { encaminharPerguntaTecnica, prazoPerguntaTecnica } from "./encaminhamento-tecnico.js";
+import type { EffectWriter } from "./effect-writer.js";
+import { tarefaDoEstado } from "./estado-fabrica.js";
 import type { EventRecorder, FactoryEvent, NewEvent } from "./events.js";
+import { criarCarregadorDeProjetos } from "./factory-carga.js";
+import { comandosDeConfiguracao } from "./factory-comandos-config.js";
+import { comandosDeTarefa } from "./factory-comandos-tarefa.js";
+import { montarEscalonador } from "./factory-escalonador.js";
+import { montarFluxosHumanos } from "./factory-fluxos.js";
+import { iniciarGestao } from "./factory-gestao.js";
+import { criarIntegracaoGitHub } from "./factory-github.js";
+import { criarServidorHttp } from "./factory-http.js";
+import { montarProjetoDaFabrica } from "./factory-projeto.js";
 import { catalogoDeFerramentas } from "./ferramentas-catalogo.js";
-import { defaultBranch, git } from "./git.js";
-import { gitCodeHost } from "./git-code-host.js";
-import {
-  type CatalogoRepo,
-  catalogoDoApp,
-  cobertura,
-  createGitHubAppChecker,
-  type GitHubAppPanel,
-} from "./github-app.js";
-import { ESQUEMA_FONTE as ESQUEMA_GITHUB } from "./github-demand-source.js";
-import {
-  applyInstallationDelivery as applyInstallationToState,
-  applyIssueDelivery as applyToState,
-  type InstallationDelivery,
-  type IssueDelivery,
-  reconciliarIssues,
-  type WebhookEffect,
-  type WebhookProject,
-} from "./github-webhook.js";
+import { criarPassosDaTarefa } from "./fiacao-tarefa.js";
+import { type CatalogoRepo, catalogoDoApp, createGitHubAppChecker, type GitHubAppPanel } from "./github-app.js";
+import { ESQUEMA_FONTE as ESQUEMA_GITHUB, type RawIssue } from "./github-demand-source.js";
+import type { InstallationDelivery, IssueDelivery, WebhookEffect } from "./github-webhook.js";
 import { ESQUEMA_FONTE as ESQUEMA_GITLAB } from "./gitlab-demand-source.js";
-import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
+import { createImplementationExtension } from "./implement-stage.js";
 import { aplicarImportacao } from "./importacao-issues.js";
 import { ESQUEMA_FONTE as ESQUEMA_JIRA } from "./jira-demand-source.js";
-import { type ManagementInterface, startManagementBridge } from "./management.js";
-import { ferramentasMcpDaEtapa } from "./mcp-etapa.js";
-import {
-  createApiLocal,
-  criarRotasApi,
-  type FactoryCommands,
-  type Resposta,
-  type VetoResult,
-} from "./packages/api-local/index.js";
-import {
-  camposAlterados,
-  estadoDoProjeto,
-  lerConfiguracao,
-  pendenciasDeConfiguracao,
-  semearConfiguracoes,
-} from "./packages/config-store/index.js";
-import { criarEscalonador } from "./packages/escalonador/index.js";
+import type { ManagementInterface } from "./management.js";
+import { criarAcoes, type TarefaAcoes } from "./packages/acoes/index.js";
+import { criarRotasApi, type FactoryCommands } from "./packages/api-local/index.js";
+import { lerConfiguracao, pendenciasDeConfiguracao, semearConfiguracoes } from "./packages/config-store/index.js";
+import { criarConfiguracaoProjetos, type EstadoConfiguracao } from "./packages/configuracao-projeto/index.js";
+import { decidirInspecao } from "./packages/controle-tarefa/index.js";
+import { criarCredenciais } from "./packages/credenciais/index.js";
+import { partesDoId } from "./packages/decisoes/index.js";
+import { criarImportacao, type EstadoImportacao, importacoesParaRetomar } from "./packages/importacao/index.js";
 import { createIntegrationRegistry, testarConexaoJira } from "./packages/integracoes/index.js";
-import { criarPerguntas } from "./packages/perguntas/index.js";
 import {
-  avisoTeamsDe,
-  canalDaPessoa,
-  identidadeTeams,
-  PERFIS_PRONTOS,
-  pessoasDoPapel,
-  proximaPessoaDoPapel,
-  validarPerfis,
-} from "./packages/profiles/index.js";
+  HORAS_ATE_LEMBRETE,
+  type PortasResposta,
+  registrarRespostaNoEstado,
+  responderPergunta,
+} from "./packages/perguntas/index.js";
+import { PERFIS_PRONTOS } from "./packages/profiles/index.js";
 import { createProjetos, type EstadoProjetos } from "./packages/projetos/index.js";
 import { createSecretStore } from "./packages/secret-store/index.js";
-import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
-import { aguardandoConfirmacao, comConfirmacaoPendente, trocouFonteOuRepositorio } from "./projeto-fonte.js";
+import { criarConfiguracaoTelegram } from "./packages/telegram-config/index.js";
+import { findMergedWork } from "./prior-work.js";
+import { aguardandoConfirmacao, comConfirmacaoPendente } from "./projeto-fonte.js";
 import { projetoPausado } from "./projeto-pausa.js";
 import { projetosReservados } from "./projeto-remocao.js";
-import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
-import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
+import { resolveRepository } from "./repo-resolver.js";
 import { ativarProjeto, desativarProjeto, repoDesativado, tarefasAtivas, tarefasEmAndamento } from "./repositorios.js";
-import { respostaNaoSei } from "./resposta-tecnica.js";
-import { isRetroRepository } from "./retro-settings.js";
 import type { RetroSink } from "./retro-sink.js";
-import { newTaskRef, previewFactoryRetro, publishFactoryRetro, RetroExtension, runRetro } from "./retro-stage.js";
-import { createReviewExtension, runReview } from "./review-stage.js";
+import { newTaskRef, RetroExtension } from "./retro-stage.js";
+import { createReviewExtension } from "./review-stage.js";
 import { redactSecrets } from "./secrets.js";
-import {
-  answerFollowUp,
-  isShallowCard,
-  renderTickets,
-  requestSpec,
-  SHALLOW_CARD_QUESTION,
-  type SpecDelivery,
-  SpecExtension,
-  specInput,
-} from "./spec-stage.js";
-import { blockedResumeKind } from "./task-resume.js";
-import { taskDetail, taskEvents, taskSummary } from "./task-view.js";
+import { SpecExtension } from "./spec-stage.js";
+import { createTarefaTask } from "./tarefa-task.js";
+import { taskSummary } from "./task-view.js";
 import { createTeamsChannel } from "./teams-canal.js";
 import type { TeamsConversation } from "./teams-conversa.js";
 import type { TeamsNotifier } from "./teams-mcp.js";
 import { createHostTestRunner, type TestRunner } from "./test-runner.js";
-import { conversasDaTarefa, traceDaTarefa } from "./trace-tarefa.js";
-import {
-  classifyTriage,
-  deterministicTriage,
-  refusalComment,
-  requestTriage,
-  TriageExtension,
-  type TriageResult,
-  triageInput,
-  trustedContext,
-} from "./triage.js";
-import { webFile } from "./web.js";
+import { TriageExtension } from "./triage-modelo.js";
 import { startWebhookListener } from "./webhook-listener.js";
 
 export interface FactoryProject {
@@ -153,17 +96,6 @@ export interface FactoryProject {
   knowledgeDir?: string;
   /** Remoto de código (descoberta de convenções e push). Padrão: o adaptador git. */
   codeHost?: CodeHost;
-}
-
-/** Lê o conhecimento do projeto a cada etapa; sem o arquivo, a etapa segue sem ele. */
-async function readKnowledge(dir: string | undefined): Promise<string | undefined> {
-  if (!dir) return undefined;
-  try {
-    return await readFile(join(dir, "knowledge.md"), "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw err;
-  }
 }
 
 export interface QueueItem {
@@ -218,20 +150,11 @@ export interface RunningFactory {
   close(): Promise<void>;
 }
 
-/** Estados em que a fábrica assume um card. */
-const ELIGIBLE: ReadonlySet<CardState> = new Set(["todo", "in_progress"]);
-
-/** Quantas entregas do webhook a fábrica lembra para não reaplicar reenvios (ver `FactoryState.deliveries`). */
-const DELIVERY_MEMORY = 1000;
-
 /** Estado mais avançado para onde a fábrica move cards no M1. */
 const TRANSITION_LIMIT: CardState = "in_progress";
 
-/** Texto do lembrete de uma pergunta sem resposta. */
-const reminderText = (q: Question) => `Lembrete da pergunta ${q.n}: ainda aguardo a sua resposta neste card. ${q.text}`;
-
 /** Horas úteis sem resposta até o lembrete à pessoa perguntada. */
-export const REMINDER_BUSINESS_HOURS = 4;
+export const REMINDER_BUSINESS_HOURS = HORAS_ATE_LEMBRETE;
 
 /** Perguntas ao PO numa mesma Tarefa; na seguinte, a Tarefa fica bloqueada para o usuário decidir. */
 export const MAX_PO_QUESTIONS = 5;
@@ -285,60 +208,6 @@ class DurableEventLog implements EventRecorder {
   }
 }
 
-/** O relato que o modelo da retrô recebe: o que aconteceu na etapa (ou, na consolidada, as retrôs das etapas). */
-function retroInput(stage: RetroStage, task: QueuedTask, all: FactoryEvent[]): string {
-  const incidents = taskEvents(task, all)
-    .filter((e) => e.type === "error" || e.type === "blocked")
-    .map((e) => (e.type === "error" ? `- erro: ${e.message}` : e.type === "blocked" ? `- barrada: ${e.reason}` : ""));
-  const questions = task.questions ?? [];
-  const common = [
-    `Tentativas da Tarefa depois de falhas: ${task.attempts}.`,
-    `Perguntas ao PO: ${questions.length}.`,
-    ...questions.map((q) => `- pergunta ${q.n} (${q.origin}): ${q.text}`),
-    `Incidentes registrados: ${incidents.length}.`,
-    ...incidents,
-  ];
-  if (stage === "spec")
-    return [
-      "# Retrô da etapa SPEC (grill → SPEC → Tickets)",
-      ...common,
-      "## SPEC entregue",
-      task.delivery?.spec ?? "(nenhuma)",
-      `## Tickets (${task.delivery?.tickets.length ?? 0})`,
-      ...(task.delivery?.tickets ?? []).map((t, i) => `${i + 1}. ${t.titulo}: ${t.aceite}`),
-    ].join("\n");
-  if (stage === "implementacao") {
-    const impl = task.implementation;
-    const commits = impl?.commits ?? [];
-    return [
-      "# Retrô da etapa de implementação (TDD ticket a ticket)",
-      ...common,
-      `Pedidos ao implementador: ${impl?.requests ?? 0}; commits aceitos: ${commits.length}; ` +
-        `pedidos recusados ou sem resposta: ${Math.max(0, (impl?.requests ?? 0) - commits.length)}.`,
-      ...commits.map((c) => `- ticket ${c.ticket + 1}, fase ${c.phase}`),
-      `Push da branch: ${impl?.pushed ? "feito" : "não feito"}.`,
-    ].join("\n");
-  }
-  if (stage === "triagem" || stage === "review" || stage === "mr")
-    return [
-      `# Retrô da etapa ${stage}`,
-      ...common,
-      JSON.stringify(stage === "triagem" ? task.triage : stage === "review" ? task.review : task.publication),
-    ].join("\n");
-  const retros = (task.retros ?? []).filter((r) => r.stage !== "tarefa");
-  return [
-    "# Retrô consolidada da Tarefa",
-    ...common,
-    "## Retrôs das etapas",
-    ...retros.flatMap((r) => [
-      `### ${r.stage} (${r.status})`,
-      r.summary ?? "(sem resumo)",
-      ...(r.proposals ?? []).map((p) => `- [${p.kind}] ${p.title}: ${p.description}`),
-    ]),
-  ].join("\n");
-}
-
-/** Sobe a fábrica: estado durável, agendador da fila única e API local, sempre só em localhost. */
 /** Se `caminho` existe e é um diretório (fatia 10: caminho de repositório local). */
 async function ehDiretorio(caminho: string): Promise<boolean> {
   try {
@@ -348,6 +217,7 @@ async function ehDiretorio(caminho: string): Promise<boolean> {
   }
 }
 
+/** Sobe a fábrica: estado durável, agendador da fila única e API local, sempre só em localhost. */
 export async function startFactory(opts: {
   projects: FactoryProject[];
   /** Arquivo SQLite do estado durável. */
@@ -453,85 +323,27 @@ export async function startFactory(opts: {
   const eventRecorder: EventRecorder = { append: (e) => events.append(e), list: () => events.list() };
   /** Monta o que o daemon precisa de um projeto (escritor, canal, código). Usado no startup e ao criar um projeto. */
   function montarProjeto(p: FactoryProject) {
-    // Execução e SLAs usam o mesmo calendário efetivo, inclusive feriados legais.
-    if (p.config.activity === "business-hours") {
-      p = { ...p, config: { ...p.config, calendar: { ...p.config.calendar, legalHolidays: true } } };
-    }
-    const codeHost = p.codeHost ?? gitCodeHost;
-    const writer: EffectWriter = createEffectWriter({
-      ...p,
-      events: eventRecorder,
+    return montarProjetoDaFabrica(p, {
+      eventRecorder,
+      readState: () => readState(),
+      retroSettings,
+      canais,
       transitionLimit: TRANSITION_LIMIT,
-      codeHost,
-      // Branch da fábrica é a que ela criou, registrada no estado durável de uma Tarefa deste projeto; não um padrão
-      // de nome, nem uma branch adotada do remoto (que pode ser de uma pessoa).
-      isFactoryBranch: async (branch) =>
-        (await readState()).tasks.some(
-          (t) =>
-            t.project === p.config.name &&
-            t.implementation?.branch === branch &&
-            t.implementation.branchOrigin === "criada",
-        ),
-      isReviewedBranch: async (cardKey, cwd, draft) => {
-        const task = (await readState()).tasks.find((t) => t.project === p.config.name && t.key === cardKey);
-        const progress = task?.implementation;
-        if (
-          !progress ||
-          (await realpath(progress.worktree).catch(() => null)) !== cwd ||
-          progress.branch !== draft.branch ||
-          task.review?.status !== "aprovado"
-        )
-          return false;
-        if (p.config.specApproval && (task.specReview !== "approved" || task.specApprovedDryRun !== p.config.dryRun))
-          return false;
-        const base = progress.defaultBranch ?? (await defaultBranch(cwd));
-        return (
-          draft.base === base &&
-          (await git(cwd, ["rev-parse", "HEAD"])).trim() === task.review.head &&
-          task.review.head === progress.head
-        );
-      },
-      retro: retroSettings,
+      teamsConversation: opts.teamsConversation,
     });
-    const pessoaDe = (personId: string) => p.config.people.find((x) => x.id === personId);
-    const padrao = canais.create("card-comment", { source: p.source, writer });
-    const channel: Channel = createPersonChannel({
-      padrao,
-      escolheTeams: (personId) => {
-        const pessoa = pessoaDe(personId);
-        return pessoa !== undefined && canalDaPessoa(pessoa) === "teams";
-      },
-      teamsDe: (personId) => {
-        const pessoa = pessoaDe(personId);
-        const personMri = pessoa && identidadeTeams(pessoa);
-        if (!pessoa || !personMri || !opts.teamsConversation) return undefined;
-        return canais.create("teams", {
-          source: p.source,
-          writer,
-          conversation: opts.teamsConversation,
-          personMri,
-          dryRun: p.config.dryRun,
-        });
-      },
-    });
-    return { ...p, codeHost, writer, channel };
   }
   const projects = new Map(opts.projects.map((p) => [p.config.name, montarProjeto(p)] as const));
   /** Base de cada projeto (Fonte e conhecimento): a configuração muda sem trocar essas peças (ADR-0017). */
   const bases = new Map(opts.projects.map((p) => [p.config.name, p] as const));
-  /** Troca a configuração de um projeto carregado, mantendo a Fonte e o conhecimento dele. */
-  function aplicarConfiguracao(config: ProjectConfig): boolean {
-    const base = bases.get(config.name);
-    if (!base) return false;
-    // Trocar o tipo da Fonte cria a Fonte nova; mudar só os campos mantém a que já existe.
-    const trocouTipo = base.config.source.type !== config.source.type && opts.createSource;
-    const nova: FactoryProject = trocouTipo
-      ? { ...base, config, source: opts.createSource?.(config) ?? base.source }
-      : { ...base, config };
-    bases.set(config.name, nova);
-    projects.set(config.name, montarProjeto(nova));
-    return true;
-  }
+  const criadosPelaInterface = new Set<string>();
+  const carga = criarCarregadorDeProjetos({
+    opts,
+    projects,
+    bases,
+    criadosPelaInterface,
+    montarProjeto,
+    readState: () => readState(),
+  });
   // Os clones da fábrica ficam ao lado do estado durável, nunca na cópia de trabalho do usuário.
   const implementationDeps = {
     worktreesRoot: join(dirname(resolvePath(opts.statePath)), "worktrees"),
@@ -546,750 +358,42 @@ export async function startFactory(opts: {
     return project;
   };
 
-  const Tarefa = createTarefaTask({
-    retryDelayMs,
-    availableAt(input) {
-      const config = projectOf(input.project).config;
-      return nextProjectActivity(config, clock.now());
-    },
-    async run(input, step, runtime) {
-      const project = projectOf(input.project);
-      const { writer, source } = project;
-      if (step === "triar") return triage();
-      if (step === "comentar") {
-        if (project.config.announceAssume) await writer.commentOnce(input.key, "Assumindo este card.");
-        // Uma nova tentativa recomeça deste passo; o aviso de que assumiu sai uma vez só.
-        const announced = events
-          .list()
-          .some((e) => e.type === "assumed" && e.project === input.project && e.target === input.key);
-        if (!announced) {
-          let task: QueuedTask | undefined;
-          await runtime.commit(async (tx) => {
-            const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-            task = stored && copyOutOfCommit(stored);
-          });
-          await events.append({
-            type: "assumed",
-            project: input.project,
-            target: input.key,
-            title: task?.title ?? "",
-            waitsVeto: task?.startedIn === "in_progress",
-          });
-        }
-        return undefined;
-      }
-      if (step === "transicionar") {
-        await writer.transition(input.key, "in_progress", { from: "todo" });
-        return undefined;
-      }
-      const retroStage = (Object.entries(RETRO_STEP) as [RetroStage, string][]).find(
-        ([, value]) => value === step,
-      )?.[0];
-      if (retroStage) {
-        if ((await retro(retroStage)) && project.config.retroApproval && retroStage !== "tarefa")
-          await holdAfterRetro(retroStage);
-        return undefined;
-      }
-      if (step === "revisar") {
-        await reviewLoop();
-        return undefined;
-      }
-      if (step === "entregar") {
-        for (let batch = 0; batch < 3; batch++) {
-          const publishProgress = async () => {
-            const publication = (await readState()).tasks.find((t) => t.id === input.id)?.publication;
-            if (publication)
-              await progressOnce(`PR/MR ${publication.status}${publication.url ? `: ${publication.url}` : ""}`);
-          };
-          let outcome: Awaited<ReturnType<typeof runDelivery>>;
-          try {
-            const currentTask = (await readState()).tasks.find((t) => t.id === input.id);
-            const remote =
-              currentTask?.publication?.number && currentTask.implementation && !project.config.dryRun
-                ? await project.codeHost.inspectRequest(
-                    currentTask.implementation.worktree,
-                    currentTask.publication.number,
-                  )
-                : undefined;
-            if (!remote || remote.state === "open") {
-              const resumed = await resumeCorrections();
-              if ((await syncBase()) || resumed) await reviewLoop();
-            }
-            outcome = await runDelivery({
-              taskId: input.id,
-              runtime,
-              config: project.config,
-              codeHost: project.codeHost,
-              writer,
-              worktreesRoot: implementationDeps.worktreesRoot,
-            });
-          } catch (err) {
-            // Bloqueio na entrega (ex.: CI reprovada): o motivo aparece no progresso e o bloqueio segue.
-            if (err instanceof StageBlocked) await progressOnce(`Entrega bloqueada: ${redactSecrets(err.message)}`);
-            else await publishProgress();
-            throw err;
-          }
-          await publishProgress();
-          if (outcome !== "revisar") return outcome;
-          const feedback = (await readState()).tasks.find((t) => t.id === input.id)?.publication?.pendingFeedback ?? [];
-          await reviewLoop(feedback);
-          await runtime.commit(async (tx) => {
-            const publication = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.publication;
-            if (publication) {
-              publication.feedbackIds = [...new Set([...publication.feedbackIds, ...feedback.map((f) => f.id)])];
-              publication.pendingFeedback = [];
-            }
-          });
-        }
-        return "acompanhar";
-      }
-
-      // Uma tentativa anterior já obteve a entrega: republica a mesma, sem chamar o modelo de novo.
-      let delivery: SpecDelivery | undefined;
-      await runtime.commit(async (tx) => {
-        const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.delivery;
-        delivery = stored ? copyOutOfCommit(stored) : undefined;
-      });
-
-      if (step === "implementar") {
-        const current = (await readState()).tasks.find((task) => task.id === input.id);
-        const card = await source.getCard(input.key);
-        if (!card) throw new Error(`card ${input.key} não existe mais`);
-        const repository =
-          current?.repositoryPath !== undefined
-            ? project.config.repositories?.find((candidate) => candidate.path === current.repositoryPath)
-            : resolveRepository(project.config.repositories, card);
-        if (project.config.repositories?.length && !repository) {
-          if (current && pendingQuestion(current)) return "aguardar";
-          await ask(
-            current?.questions ?? [],
-            repositoryQuestion(card, project.config.repositories),
-            "tecnica",
-            "repositorio",
-          );
-          return "aguardar";
-        }
-        await implement(repository?.path);
-        return undefined;
-      }
-
-      if (!delivery) {
-        const outcome = await grill();
-        if (outcome === "aguardar") return "aguardar";
-        delivery = outcome;
-      }
-      if (project.config.specApproval) {
-        let approved = false;
-        await runtime.commit(async (tx) => {
-          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-          if (!task) return;
-          approved = task.specReview === "approved" && task.specApprovedDryRun === project.config.dryRun;
-          if (!approved) task.specReview = "draft";
-        });
-        if (!approved) return "aguardar";
-      }
-      await writer.upsertComment(input.key, "SPEC", delivery.spec);
-      await writer.upsertComment(input.key, "Tickets", renderTickets(delivery.tickets));
-      return undefined;
-
-      async function implement(repositoryPath?: string): Promise<void> {
-        const current = (await readState()).tasks.find((t) => t.id === input.id);
-        if (!current?.delivery) throw new Error(`a etapa SPEC não deixou Tickets para ${input.key}`);
-        const card = await source.getCard(input.key);
-        if (!card) throw new Error(`card ${input.key} não existe mais`);
-        if (current.implementation?.synchronization?.status === "iniciada") await syncBase();
-        await runImplementation({
-          repositoryPath,
-          harness,
-          runtime,
-          taskId: input.id,
-          config: project.config,
-          codeHost: project.codeHost,
-          writer,
-          card,
-          delivery: {
-            ...current.delivery,
-            tickets: [...current.delivery.tickets, ...(current.correctionTickets ?? [])],
-          },
-          agente: resolverAgenteDaEtapa(project.config, "implementacao"),
-          deps: implementationDeps,
-          tools: implementationTools,
-          originalTicketCount: current.delivery.tickets.length,
-          canReassessCorrections: async (head) => {
-            const latest = (await readState()).tasks.find((t) => t.id === input.id);
-            // A guarda vem antes da suíte; um review em andamento deve ser retomado, não descartado.
-            return Boolean(latest?.review && (latest.review.head !== head || latest.review.status !== "corrigir"));
-          },
-          reassessCorrections: async (head, diagnostic) => {
-            const verdict = await runReview({
-              harness,
-              runtime,
-              taskId: input.id,
-              config: project.config,
-              worktreesRoot: implementationDeps.worktreesRoot,
-              tools: reviewTools,
-              agente: resolverAgenteDaEtapa(project.config, "review"),
-              verification: { head, diagnostic },
-            });
-            const latest = (await readState()).tasks.find((t) => t.id === input.id);
-            return {
-              approved: verdict === "aprovado",
-              feedback: `Review de reavaliação: ${latest?.review?.summary ?? "evidência insuficiente"}`,
-            };
-          },
-        });
-      }
-
-      /** Registra progresso sem repetir: `ever` compara com todo o histórico (review recuperado), senão só com o último. */
-      async function progressOnce(message: string, ever = false): Promise<void> {
-        const previous = events
-          .list()
-          .filter((e) => e.type === "progress" && e.project === input.project && e.target === input.key)
-          .map((e) => (e.type === "progress" ? e.message : ""));
-        if (ever ? !previous.includes(message) : previous.at(-1) !== message)
-          await events.append({ type: "progress", project: input.project, target: input.key, message });
-      }
-
-      async function syncBase(): Promise<boolean> {
-        return synchronizeBase({
-          taskId: input.id,
-          runtime,
-          harness,
-          config: project.config,
-          deps: implementationDeps,
-        });
-      }
-
-      async function resumeCorrections(): Promise<boolean> {
-        // Retoma o TDD pendente antes de exigir clone limpo para sincronização ou review.
-        const interrupted = (await readState()).tasks.find((t) => t.id === input.id);
-        if (interrupted?.implementation && interrupted.delivery) {
-          const done = new Set([
-            ...interrupted.implementation.commits.filter((c) => c.phase === "implementacao").map((c) => c.ticket),
-            ...(interrupted.implementation.verifiedTickets ?? []).map((c) => c.ticket),
-          ]);
-          const originalCount = interrupted.delivery.tickets.length;
-          if (interrupted.correctionTickets?.some((_, index) => !done.has(originalCount + index))) {
-            await implement();
-            return true;
-          }
-        }
-        return false;
-      }
-
-      async function reviewLoop(feedback: { id: string; body: string; author: string }[] = []): Promise<void> {
-        await resumeCorrections();
-        await syncBase();
-        for (;;) {
-          const verdict = await runReview({
-            harness,
-            runtime,
-            taskId: input.id,
-            config: project.config,
-            worktreesRoot: implementationDeps.worktreesRoot,
-            tools: reviewTools,
-            agente: resolverAgenteDaEtapa(project.config, "review"),
-            feedback,
-          });
-          const reviewed = (await readState()).tasks.find((t) => t.id === input.id)?.review;
-          if (verdict && reviewed)
-            await progressOnce(
-              `Review ${verdict} do HEAD ${reviewed.head.slice(0, 8)}: ${reviewed.summary.slice(0, 400)}`,
-              true,
-            );
-          if (verdict !== "corrigir") return;
-          await implement();
-        }
-      }
-
-      /**
-       * Triagem da issue (ADR-0014), só nos repositórios monitorados: checagens determinísticas e, sem decisão, o
-       * modelo. `aceita` segue; `recusa` dá baixa (com prévia se `triageApproval`); `duvidosa` espera o usuário.
-       */
-      async function triage(): Promise<"aguardar" | "recusada" | "adiar" | undefined> {
-        const { source: sourceConfig } = project.config;
-        if (sourceConfig.type !== "github") return undefined;
-        let record: TriageRecord | null = null;
-        let conversation: ConversationId | null = null;
-        await runtime.commit(async (tx) => {
-          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-          record = task?.triage ? copyOutOfCommit(task.triage) : null;
-          conversation = task?.triageConversation ?? null;
-        });
-        if (!record) {
-          const result = await evaluate(conversation);
-          const fresh: TriageRecord = { result, review: null };
-          await runtime.commit(async (tx) => {
-            const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-            if (task && !task.triage) task.triage = fresh;
-          });
-          record = fresh;
-        }
-        const { result, review } = record as TriageRecord;
-        const needsUser = result.verdict === "duvidosa" || (result.verdict === "recusa" && sourceConfig.triageApproval);
-        const decision = !needsUser ? (result.verdict === "aceita" ? "aceitar" : "recusar") : review;
-        if (decision === null || decision === "draft") {
-          if (decision === null) {
-            await runtime.commit(async (tx) => {
-              const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-              if (task?.triage && task.triage.review === null) task.triage.review = "draft";
-            });
-            await events.append({
-              type: "notify",
-              project: input.project,
-              target: input.key,
-              reason: "triagem",
-              message:
-                `A triagem da issue ${input.key} ${result.verdict === "recusa" ? "propõe recusar" : "ficou em dúvida"}` +
-                ` (${result.reason}). Revise e decida na página da Tarefa.`,
-            });
-          }
-          return "aguardar";
-        }
-        if (decision === "aceitar") return (await hasRoom(sourceConfig.maxActive)) ? undefined : "adiar";
-        await writer.commentOnce(input.key, refusalComment(result, duplicateRef(result)));
-        await writer.dismiss(input.key, closeReason(result));
-        return "recusada";
-      }
-
-      /**
-       * Se cabe mais uma issue depois da triagem: `maxActive` conta só as Tarefas que já passaram dela. A triagem corre
-       * em todas, e uma issue à espera da sua revisão não segura as outras. Cabendo, a vaga fica reservada no mesmo
-       * commit (a etapa sai de `triagem`): uma pausa antes do passo seguinte não a libera para outra Tarefa.
-       */
-      async function hasRoom(maxActive: number): Promise<boolean> {
-        let busy = 0;
-        await runtime.commit(async (tx) => {
-          const tasks = (await tx.doc(StateDoc)).tasks;
-          busy = tasks.filter(
-            (t) =>
-              t.project === input.project &&
-              t.id !== input.id &&
-              !TERMINAL.has(t.status) &&
-              t.stage != null &&
-              t.stage !== "triagem",
-          ).length;
-          const own = tasks.find((t) => t.id === input.id);
-          if (own && busy < maxActive) own.stage = "assumir";
-        });
-        return busy < maxActive;
-      }
-
-      /** Junta os sinais da issue e decide: pelas regras ou, sem decisão, pelo modelo. */
-      async function evaluate(conversation: ConversationId | null): Promise<TriageResult> {
-        const card = await source.getCard(input.key);
-        if (!card) throw new Error(`card ${input.key} não existe mais`);
-        const others = (await source.listAssignedCards(project.config.source.assignee)).filter(
-          (c) => c.key !== card.key,
-        );
-        const mapping = resolveRepository(project.config.repositories, card);
-        const repoPath = mapping && resolvePath(mapping.path);
-        const n = Number(input.key.slice(input.key.lastIndexOf("-") + 1));
-        const comments = await source.listComments(input.key);
-        const decided = deterministicTriage({
-          card,
-          others,
-          comments,
-          pullRequests: (await source.linkedPullRequests?.(input.key)) ?? [],
-          mergedCommit: repoPath ? await findClosingCommit(repoPath, input.key, n) : null,
-        });
-        if (decided) return decided;
-        // Só o contexto sem frases de injeção vai ao modelo (classificador ou LLM).
-        const context = trustedContext(others, repoPath ? await recentSubjects(repoPath) : []);
-        const role = project.config.roles.triage ?? project.config.roles.spec;
-        const classifier = opts.models
-          .getModelsOfType("classifier", role.provider)
-          .find((m) => m.id === role.model && m.provider === role.provider);
-        if (classifier)
-          return classifyTriage({
-            card,
-            comments,
-            others: context.others,
-            recentCommits: context.recentCommits,
-            knowledge: await readKnowledge(project.knowledgeDir),
-            classify: (ctx) => opts.models.classify(classifier, ctx),
-          });
-        return requestTriage({
-          harness,
-          commit: runtime.commit,
-          taskId: runtime.taskId,
-          model: role,
-          card,
-          others: context.others,
-          context: runtime.context,
-          conversationId: conversation,
-          remember: async (tx, id) => {
-            const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-            if (task) task.triageConversation = id;
-          },
-          input: triageInput({
-            card,
-            comments,
-            others: context.others,
-            recentCommits: context.recentCommits,
-            knowledge: await readKnowledge(project.knowledgeDir),
-          }),
-        });
-      }
-
-      /** Grill → SPEC. Devolve a entrega, ou `"aguardar"` depois de levar uma pergunta ao PO. */
-      async function grill(): Promise<SpecDelivery | "aguardar"> {
-        let questions: Question[] = [];
-        await runtime.commit(async (tx) => {
-          const stored = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id)?.questions;
-          questions = stored ? copyOutOfCommit(stored) : [];
-        });
-        // Uma pergunta já registrada e sem resposta (ex.: reinício logo depois de perguntar): só volta a esperar.
-        if (questions.some((q) => q.answer === null)) return "aguardar";
-
-        const card = await source.getCard(input.key);
-        if (!card) throw new Error(`card ${input.key} não existe mais`);
-        const comments = await source.listComments(input.key);
-        const attachments = await source.listTextAttachments(input.key);
-        if (questions.length === 0 && isShallowCard(card, comments, attachments)) {
-          await ask(questions, SHALLOW_CARD_QUESTION, "card-raso");
-          return "aguardar";
-        }
-
-        const answered = questions.map((q) => ({ text: q.text, answer: q.answer ?? "" }));
-        const last = answered.at(-1);
-        const outcome = await requestSpec({
-          harness,
-          commit: runtime.commit,
-          taskId: runtime.taskId,
-          agente: resolverAgenteDaEtapa(project.config, "spec"),
-          ferramentasExtras: await ferramentasMcpDaEtapa(project.config, resolverAgenteDaEtapa(project.config, "spec")),
-          instalarExtensao: (extensao) => registry.install(extensao),
-          registrarConversa: (conversa) =>
-            runtime.commit(async (tx) => {
-              const atual = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-              if (atual) atual.specConversationId = conversa;
-            }),
-          context: runtime.context,
-          // Uma SPEC refeita por mudança de escopo tem outro identificador: o motor não reaproveita a resposta antiga.
-          requestId: `spec-${questions.length}-r${(await readState()).tasks.find((t) => t.id === input.id)?.specRevision ?? 0}`,
-          exclude: await triageConversations(),
-          input: specInput({
-            card,
-            comments,
-            attachments,
-            knowledge: await readKnowledge(project.knowledgeDir),
-            answered,
-          }),
-          followUp:
-            last && questions.at(-1)?.origin === "tecnica"
-              ? `Resposta do usuário à pergunta técnica "${last.text}":\n\n${last.answer}\n\nSiga com a SPEC.`
-              : last && questions.at(-1)?.origin === "grill"
-                ? answerFollowUp(last)
-                : undefined,
-        });
-        if (outcome.kind === "question") {
-          await ask(questions, outcome.text, outcome.technical ? "tecnica" : "grill");
-          return "aguardar";
-        }
-        if (project.config.questionApproval && !project.config.specApproval)
-          throw new StageBlocked("ensaio de revisão: modelo não propôs pergunta; SPEC não publicada");
-        const delivered = outcome.delivery;
-        await runtime.commit(async (tx) => {
-          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-          if (task) task.delivery = delivered;
-        });
-        return delivered;
-      }
-
-      /** A conversa da triagem desta Tarefa, que a SPEC não pode reaproveitar. */
-      /** Conversas que a SPEC não deve retomar: a da triagem e as que o usuário esqueceu. */
-      async function triageConversations(): Promise<string[]> {
-        const task = (await readState()).tasks.find((t) => t.id === input.id);
-        const excluidas = [
-          ...(task?.triageConversation ? [task.triageConversation] : []),
-          ...(task?.conversasEsquecidas ?? []),
-        ];
-        return excluidas.map((c) => String(c));
-      }
-
-      /** A retrô de uma etapa de modelo, ou a consolidada. A implementação que não rodou não tem retrô. */
-      async function retro(stage: RetroStage): Promise<boolean> {
-        const task = (await readState()).tasks.find((t) => t.id === input.id);
-        if (
-          !task ||
-          (stage === "implementacao" && !task.implementation) ||
-          (stage === "triagem" && !task.triage) ||
-          (stage === "review" && !task.review) ||
-          (stage === "mr" && !task.publication)
-        )
-          return false;
-        await runRetro({
-          harness,
-          runtime,
-          taskId: input.id,
-          cardKey: input.key,
-          stage,
-          config: project.config,
-          writer,
-          events: eventRecorder,
-          agente: resolverAgenteDaEtapa(project.config, "retro"),
-          input: async () => {
-            const current = (await readState()).tasks.find((t) => t.id === input.id) ?? task;
-            return retroInput(stage, current, events.list());
-          },
-          sink: opts.retro?.sink,
-          repo: opts.retro?.repo,
-        });
-        return true;
-      }
-
-      /** Portão `retroApproval`: pede pausa (o próximo passo espera) e avisa o usuário, uma vez por etapa. */
-      async function holdAfterRetro(stage: RetroStage): Promise<void> {
-        let held = false;
-        await runtime.commit(async (tx) => {
-          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-          if (!task || task.retroHeld?.includes(stage)) return;
-          task.retroHeld = [...(task.retroHeld ?? []), stage];
-          task.pauseRequested = true;
-          held = true;
-        });
-        if (!held) return;
-        await events.append({
-          type: "notify",
-          project: input.project,
-          target: input.key,
-          reason: "retro-pronta",
-          message:
-            `A retrô da etapa ${stage} do card ${input.key} está pronta. ` +
-            "A Tarefa está pausada antes da próxima etapa: revise e retome para continuar.",
-        });
-      }
-
-      /** Leva a pergunta ao PO pelo Canal e a registra com os prazos de escalonamento em horas úteis. */
-      async function ask(
-        previous: Question[],
-        text: string,
-        origin: Question["origin"],
-        purpose?: Question["purpose"],
-      ): Promise<void> {
-        const tecnica = origin === "tecnica";
-        if (tecnica) {
-          try {
-            validarDestinatarioDoProjeto(
-              project.config.people.map((p) => p.id),
-              project.config.source.assignee,
-            );
-          } catch (erro) {
-            throw new StageBlocked((erro as Error).message);
-          }
-        }
-        const po = tecnica
-          ? project.config.people.find((p) => p.id === project.config.source.assignee)
-          : pessoasDoPapel(project.config, "po")[0];
-        if (!po)
-          throw new StageBlocked(`o grill precisa perguntar ao PO, mas o projeto ${input.project} não declara um`);
-        if (!tecnica && avisoTeamsDe(po) && (!project.config.source.baseUrl || !opts.teams))
-          throw new StageBlocked("aviso ao PO no Teams configurado sem origem Jira ou conexão MCP");
-        if (previous.length >= MAX_PO_QUESTIONS)
-          throw new StageBlocked(
-            `o grill já fez ${MAX_PO_QUESTIONS} perguntas ao PO e ainda quer perguntar: "${text}"`,
-          );
-        const n = previous.length + 1;
-        const ref =
-          tecnica || project.config.questionApproval
-            ? { card: input.key, to: po.id, before: [] }
-            : await project.channel.ask({ card: input.key, to: po.id, text: `Pergunta ${n}: ${text}` });
-        const askedAt = clock.now();
-        const { calendar } = project.config;
-        const question: Question = {
-          n,
-          origin,
-          ...(purpose ? { purpose } : {}),
-          to: po.id,
-          text,
-          ref,
-          askedAt,
-          remindAt: tecnica
-            ? prazoPerguntaTecnica(askedAt)
-            : addBusinessHours(calendar, askedAt, REMINDER_BUSINESS_HOURS),
-          notifyAt: addBusinessHours(calendar, askedAt, workdayHours(calendar)),
-          reminded: false,
-          notified: false,
-          answer: null,
-          ...(!tecnica && project.config.questionApproval ? { publication: "draft" as const } : {}),
-          ...(!tecnica && avisoTeamsDe(po) && project.config.source.baseUrl && !project.config.dryRun
-            ? {
-                teamsNotice: {
-                  userId: avisoTeamsDe(po) as string,
-                  link: `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(input.key)}`,
-                  status: "pending" as const,
-                },
-              }
-            : {}),
-        };
-        await runtime.commit(async (tx) => {
-          const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-          if (task && !task.questions?.some((q) => q.n === n)) task.questions = [...(task.questions ?? []), question];
-        });
-        if (!tecnica && project.config.questionApproval) return;
-        await perguntas.avisarTeams(input.id, input.project, input.key, n);
-        await events.append({
-          type: "question",
-          project: input.project,
-          target: input.key,
-          n,
-          to: po.id,
-          text,
-          status: "enviada",
-        });
-      }
-    },
-    async escalate(input, runtime) {
-      const project = projectOf(input.project);
-      if (project.config.activity === "business-hours") {
-        const next = nextProjectActivity(project.config, runtime.now());
-        if (next > runtime.now()) return next;
-      }
-      let question: Question | undefined;
-      await runtime.commit(async (tx) => {
-        const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === input.id);
-        const pending = task && pendingQuestion(task);
-        question = pending ? copyOutOfCommit(pending) : undefined;
-      });
-      if (!question) return null;
-      const q = question;
-      // As perguntas técnicas são respondidas localmente, não pelo comentário no card.
-      // O encaminhamento ao tech lead é tratado pelo fluxo técnico, não pelo lembrete ao PO.
-      if (q.origin === "tecnica") {
-        await forwardTechnical(input.id, q.n);
-        return !q.forwarding && runtime.now() < q.remindAt ? q.remindAt : null;
-      }
-      if (q.publication === "draft" || q.publication === "sending") return runtime.now() + 60_000;
-      if (await perguntas.conferir(input.id, q.n)) return null;
-
-      const now = runtime.now();
-      if (!q.reminded && now >= q.remindAt && project.config.questionApproval) {
-        // Com revisão, o lembrete não sai sozinho: vira rascunho e o usuário o aprova pela página.
-        await markQuestion(input.id, q.n, (stored) => {
-          stored.reminded = true;
-          stored.reminder ??= "draft";
-        });
-        await events.append({
-          type: "notify",
-          project: input.project,
-          target: input.key,
-          reason: "pergunta-sem-resposta",
-          message: `O lembrete da pergunta ${q.n} no card ${input.key} aguarda a sua revisão antes de ser publicado.`,
-        });
-        q.reminded = true;
-      }
-      if (!q.reminded && now >= q.remindAt) {
-        await project.channel.remind(q.ref, reminderText(q));
-        await markQuestion(input.id, q.n, (stored) => {
-          stored.reminded = true;
-        });
-        await events.append({
-          type: "question",
-          project: input.project,
-          target: input.key,
-          n: q.n,
-          to: q.to,
-          text: q.text,
-          status: "lembrete",
-        });
-        q.reminded = true;
-      }
-      // Fatia 07: pergunta de negócio sem resposta no prazo escalona à pessoa seguinte do perfil PO. Com revisão de
-      // perguntas, o escalonamento vira rascunho: só sai no card depois da aprovação, como a pergunta original.
-      const seguinte = !q.notified && now >= q.notifyAt ? proximaPessoaDoPapel(project.config, "po", q.to) : undefined;
-      if (seguinte) {
-        const revisao = project.config.questionApproval;
-        const ref = revisao
-          ? { card: input.key, to: seguinte.id, before: [] }
-          : await project.channel.ask({
-              card: input.key,
-              to: seguinte.id,
-              // O texto nomeia a pessoa: sem isso, a deduplicação do escritor trataria a repetição como a mesma mensagem.
-              text: `Pergunta ${q.n} (encaminhada a ${seguinte.name ?? seguinte.id}): ${q.text}`,
-            });
-        const { calendar } = project.config;
-        await markQuestion(input.id, q.n, (stored) => {
-          stored.to = seguinte.id;
-          stored.ref = ref;
-          stored.reminded = false;
-          stored.notified = false;
-          if (revisao) stored.publication = "draft";
-          stored.remindAt = addBusinessHours(calendar, now, REMINDER_BUSINESS_HOURS);
-          stored.notifyAt = addBusinessHours(calendar, now, workdayHours(calendar));
-        });
-        await events.append(
-          revisao
-            ? {
-                type: "notify",
-                project: input.project,
-                target: input.key,
-                reason: "pergunta-sem-resposta",
-                message: `A pergunta ${q.n} no card ${input.key} foi encaminhada a ${seguinte.name ?? seguinte.id} e aguarda a sua revisão.`,
-              }
-            : {
-                type: "question",
-                project: input.project,
-                target: input.key,
-                n: q.n,
-                to: seguinte.id,
-                text: q.text,
-                status: "escalonada",
-              },
-        );
-        return addBusinessHours(calendar, now, REMINDER_BUSINESS_HOURS);
-      }
-      if (!q.notified && now >= q.notifyAt) {
-        await events.append({
-          type: "notify",
-          project: input.project,
-          target: input.key,
-          reason: "pergunta-sem-resposta",
-          message: `A pergunta ${q.n} ao PO no card ${input.key} está há 1 dia útil sem resposta: ${q.text}`,
-        });
-        await markQuestion(input.id, q.n, (stored) => {
-          stored.notified = true;
-        });
-        q.notified = true;
-      }
-      const next = [!q.reminded ? q.remindAt : null, !q.notified ? q.notifyAt : null].filter((t) => t !== null);
-      return next.length > 0 ? Math.min(...next) : null;
-    },
-    inspect: (input) => inspectCard(input),
-    vetoMs: (input) => projectOf(input.project).config.vetoMinutes * 60_000,
-    async announceVeto(input, until) {
-      const { vetoMinutes } = projectOf(input.project).config;
-      await events.append({
-        type: "notify",
-        project: input.project,
-        target: input.key,
-        reason: "aguardando-veto",
-        until: new Date(until).toISOString(),
-        message:
-          `A fábrica assumiu o card ${input.key}, que já estava em andamento, e continua o trabalho nele em ` +
-          `${vetoMinutes} min (${new Date(until).toISOString()}) se você não vetar.`,
-      });
-    },
-    classify: (err) =>
-      err instanceof GuardrailViolation || err instanceof StageBlocked || err instanceof InspectionBlocked
-        ? { kind: "blocked", reason: err.message }
-        : { kind: "error", message: err instanceof Error ? err.message : String(err) },
-    onError: (input, message) => events.append({ type: "error", project: input.project, target: input.key, message }),
-  });
-
-  /** Referência do GitHub (`#n`) à issue de que esta é duplicata. */
-  function duplicateRef(result: TriageResult): string | undefined {
-    const key = result.duplicateOf;
-    return key && /-\d+$/.test(key) ? `#${key.slice(key.lastIndexOf("-") + 1)}` : undefined;
-  }
-
-  /** Como fechar a issue recusada. */
-  function closeReason(result: TriageResult): "completed" | "not_planned" | "duplicate" {
-    if (result.closeAs) return result.closeAs;
-    if (result.category === "duplicata") return "duplicate";
-    if (result.category === "ja-feito" || result.category === "resolvida") return "completed";
-    return "not_planned";
-  }
+  const Tarefa = createTarefaTask(
+    criarPassosDaTarefa({
+      retryDelayMs,
+      clock,
+      eventRecorder,
+      implementationDeps,
+      implementationTools,
+      reviewTools,
+      projectOf,
+      opts,
+      get harness() {
+        return harness;
+      },
+      get events() {
+        return events;
+      },
+      get registry() {
+        return registry;
+      },
+      get readState() {
+        return readState;
+      },
+      get forwardTechnical() {
+        return forwardTechnical;
+      },
+      get markQuestion() {
+        return markQuestion;
+      },
+      get perguntas() {
+        return perguntas;
+      },
+      get inspectCard() {
+        return inspectCard;
+      },
+    }),
+  );
 
   /** Inspeção do repositório de um card que já estava em andamento (ADR-0013). */
   async function inspectCard(input: {
@@ -1299,13 +403,12 @@ export async function startFactory(opts: {
     const project = projectOf(input.project);
     const card = await project.source.getCard(input.key);
     const mapping = card && resolveRepository(project.config.repositories, card);
-    if (!mapping) return { kind: "veto" };
-    const merged = await findMergedWork(resolvePath(mapping.path), input.key);
-    if (!merged) return { kind: "seguir" };
-    return {
-      kind: "bloquear",
-      reason: `card já implementado: o commit ${merged.sha} ("${merged.subject}") da branch padrão cita ${input.key}`,
-    };
+    // A decisão (veto, bloqueio por trabalho já mesclado, ou seguir) está no pacote controle-tarefa.
+    return decidirInspecao({
+      key: input.key,
+      temRepositorio: Boolean(mapping),
+      trabalhoMesclado: mapping ? await findMergedWork(resolvePath(mapping.path), input.key) : null,
+    });
   }
 
   const registry = createRegistry();
@@ -1336,7 +439,6 @@ export async function startFactory(opts: {
     (await harness.snapshot(StateDoc, context)) ?? { daemonPaused: false, tasks: [] };
 
   /** Projetos criados pela UI (ADR-0022). Só eles são barrados enquanto incompletos; os do YAML seguem como estão. */
-  const criadosPelaInterface = new Set<string>();
   /** Pendências que barram ações: as de um projeto criado pela UI, e a confirmação de uma troca de Fonte (ticket 10). */
   const pendenciasBloqueantes = (nome: string, state: FactoryState): string[] =>
     comConfirmacaoPendente(
@@ -1346,19 +448,6 @@ export async function startFactory(opts: {
     );
 
   /** Registra um projeto criado pela UI no processo, com a Fonte e o conhecimento do mesmo jeito que os do YAML. */
-  function registrarProjeto(config: ProjectConfig): void {
-    if (!opts.createSource) throw new Error("este daemon não cria a Fonte de projetos da interface");
-    criadosPelaInterface.add(config.name);
-    const knowledgeDir = opts.knowledgeDirFor?.(config.name);
-    const base: FactoryProject = {
-      config,
-      source: opts.createSource(config),
-      ...(knowledgeDir ? { knowledgeDir } : {}),
-    };
-    bases.set(config.name, base);
-    projects.set(config.name, montarProjeto(base));
-  }
-
   /** O estado da fábrica tem os campos que o módulo usa; as regras leem os mesmos objetos, sem cópia. */
   const comoEstadoDaFabrica = (estado: EstadoProjetos) => estado as unknown as FactoryState;
   /**
@@ -1375,7 +464,7 @@ export async function startFactory(opts: {
       ler: readState,
       alterar: (fn) => harness.commit(async (tx) => fn(await tx.doc(StateDoc)), context),
     },
-    registrar: registrarProjeto,
+    registrar: carga.registrarProjeto,
     projetosAtivos: () => [...projects.values()].map((p) => p.config),
     agora: () => clock.now(),
     fetchFonte: opts.fetchFonte,
@@ -1384,7 +473,7 @@ export async function startFactory(opts: {
     clonarGitlab: opts.clonarRepositorioGitlab,
     projetoDoRepositorio: (repo) => projectByRepo(repo),
     pendenciasBloqueantes: (nome, state) => pendenciasBloqueantes(nome, comoEstadoDaFabrica(state)),
-    importacao: { enfileirar: (repoId) => enfileirarImportacao(repoId) },
+    importacao: { enfileirar: (repoId) => importacao.enfileirar(repoId) },
     efeitos: { executar: (efeitos) => runWebhookEffects(efeitos as WebhookEffect[]) },
     regras: {
       projetosReservados: (s) => projetosReservados(comoEstadoDaFabrica(s)),
@@ -1416,247 +505,41 @@ export async function startFactory(opts: {
       opts.projects.map((p) => p.config).filter((config) => !(config.name in removidos)),
     );
   }, context);
-  for (const p of opts.projects) {
-    const guardada = lerConfiguracao((await readState()).projetos?.[p.config.name]);
-    if (guardada) aplicarConfiguracao(guardada);
-  }
-  for (const nome of Object.keys((await readState()).projetosRemovidos ?? {})) {
-    projects.delete(nome);
-    bases.delete(nome);
-    criadosPelaInterface.delete(nome);
-  }
-
-  // Projetos criados pela UI voltam com o estado. Um nome que o YAML já usa não é sobrescrito (o YAML manda).
-  for (const [nome, salvo] of Object.entries((await readState()).projetosGitHub ?? {})) {
-    if (projects.has(nome)) continue;
-    const lido = ProjectConfig.safeParse(JSON.parse(salvo));
-    if (!lido.success) {
-      console.error(`[fábrica] projeto ${nome} salvo pela interface está inválido e não foi carregado`);
-      continue;
-    }
-    if (!opts.createSource) {
-      console.error(`[fábrica] projeto ${nome} salvo pela interface não carregado: este daemon não cria Fontes`);
-      continue;
-    }
-    // A configuração guardada é a que vale: a edição pela interface grava em `projetos`, depois da criação.
-    registrarProjeto(lerConfiguracao((await readState()).projetos?.[nome]) ?? lido.data);
-  }
+  await carga.carregarSalvos();
   retroSettings.repo = (await readState()).retroRepo ?? retroSettings.repo;
   if (!retroSettings.repo)
     console.warn(
       "[fábrica] Configure o repositório das retrôs em Configurar publicações na web; nenhuma issue será publicada sem aprovação.",
     );
-  await reinspectPendingVetoes();
-
-  /**
-   * Tarefas que já dormiam no prazo de veto quando o daemon subiu (ex.: assumidas antes da ADR-0013): reinspeciona o
-   * repositório e, sem trabalho anterior, encerra o prazo agora; a Tarefa acorda, volta à fila e segue para a SPEC.
-   */
-  async function reinspectPendingVetoes(): Promise<void> {
-    const waiting = (await readState()).tasks.filter(
-      (t) => t.status === "aguardando-veto" && t.veto && !t.veto.expired && clock.now() < t.veto.until,
-    );
-    for (const t of waiting) {
-      let inspection: Awaited<ReturnType<typeof inspectCard>>;
-      try {
-        inspection = await inspectCard(t);
-      } catch (err) {
-        console.error(`[fábrica] reinspeção de ${t.id} falhou; o prazo de veto continua:`, err);
-        continue;
-      }
-      if (inspection.kind !== "seguir") continue;
-      let gate: number | null = null;
-      await harness.commit(async (tx) => {
-        const task = (await tx.doc(StateDoc)).tasks.find((x) => x.id === t.id);
-        if (task?.status !== "aguardando-veto" || !task.veto) return;
-        task.veto.until = clock.now();
-        gate = task.gateId;
-      }, context);
-      if (gate !== null) await harness.abortTask(gate as TaskId, context);
-    }
-  }
-
-  // --- Perguntas -------------------------------------------------------------------------------
-
-  /** Encaminhamento comum a respostas locais e ao timer durável da Tarefa. */
-  async function forwardTechnical(id: string, n: number): Promise<void> {
-    const task = (await readState()).tasks.find((t) => t.id === id);
-    if (!task) return;
-    const project = projectOf(task.project);
-    await encaminharPerguntaTecnica(
-      {
-        config: project.config,
-        channel: project.channel,
-        events: eventRecorder,
-        now: clock.now,
-        commit: (change) => harness.commit(async (tx) => change(await tx.doc(StateDoc)), context),
-      },
-      id,
-      n,
-    );
-  }
-
-  /** Altera uma pergunta registrada no estado durável. */
-  async function markQuestion(id: string, n: number, change: (q: Question) => void): Promise<void> {
-    await harness.commit(async (tx) => {
-      const question = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id)?.questions?.find((q) => q.n === n);
-      if (question) change(question);
-    }, context);
-  }
-
-  /** Reserva antes de enviar: uma falha ambígua ou reinício nunca repetem automaticamente uma mensagem. */
-  /** Lê a resposta pelo Canal; se chegou, registra e devolve a Tarefa à fila. */
-  /** Confere, na Fonte, a resposta de cada Tarefa que aguarda uma pessoa. */
-  // --- Fila ------------------------------------------------------------------------------------
-
-  /** Cards elegíveis na Fonte agora. Num repositório monitorado, as issues mais antigas primeiro. */
-  async function queue(): Promise<QueueItem[]> {
-    const items: QueueItem[] = [];
-    const state = await readState();
-    for (const { config, source } of projects.values()) {
-      // Repositório desativado não entra na busca: nenhuma Tarefa nova dele (ADR-0015).
-      if (repoDesativado(state, config.name)) continue;
-      // Projeto pausado pelo usuário não busca cards novos (ticket 09).
-      if (projetoPausado(state, config.name)) continue;
-      // Projeto criado pela UI e incompleto não executa: a interface mostra o que falta (ADR-0022).
-      if (pendenciasBloqueantes(config.name, state).length > 0) continue;
-      const cards = await source.listAssignedCards(config.source.assignee);
-      if (config.source.type === "github") cards.sort((a, b) => issueOrder(a.key) - issueOrder(b.key));
-      for (const card of cards) {
-        const state = config.statuses[card.status];
-        if (card.assignee !== config.source.assignee || !state || !ELIGIBLE.has(state)) continue;
-        if (config.source.keys && !config.source.keys.includes(card.key)) continue;
-        items.push({ project: config.name, key: card.key, title: card.title, status: card.status, state });
-      }
-    }
-    return items;
-  }
-
-  /** Número da issue na chave `<projeto>-<n>`, para ordenar das mais antigas para as mais novas. */
-  const issueOrder = (key: string) => Number(key.slice(key.lastIndexOf("-") + 1)) || 0;
-
-  /**
-   * Busca na Fonte: enfileira os cards elegíveis que ainda não viraram Tarefa e confere as respostas esperadas. Num
-   * repositório monitorado, no máximo `maxActive` Tarefas não terminadas por vez.
-   */
-  async function poll(): Promise<void> {
-    try {
-      await reconcileRepos();
-    } catch (err) {
-      // Uma falha do GitHub nesta consulta não pode impedir a busca dos cards.
-      console.error("[fábrica] sincronização com o GitHub falhou:", redactSecrets(String(err)));
-    }
-    await perguntas.verificar();
-    const eligible = await queue();
-    await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      for (const item of eligible) {
-        const id = `${item.project}/${item.key}`;
-        if (state.tasks.some((t) => t.id === id)) continue;
-        state.tasks.push({
-          id,
-          project: item.project,
-          key: item.key,
-          title: item.title,
-          ref: newTaskRef(),
-          status: "enfileirada",
-          durableId: null,
-          gateId: null,
-          pauseRequested: false,
-          notBefore: null,
-          attempts: 0,
-          reason: null,
-          startedIn: item.state,
-          veto: null,
-          delivery: null,
-          implementation: null,
-        });
-      }
-    }, context);
-  }
-
-  // --- Perguntas ----------------------------------------------------------------------------------
-  // Conferência de respostas pelo Canal e aviso ao Teams: no pacote perguntas. A fábrica fornece o estado, o Canal de
-  // cada projeto e a gravação dos eventos.
-  const perguntas = criarPerguntas({
-    estado: () => readState(),
-    alterar: (fn) => harness.commit(async (tx) => fn(await tx.doc(StateDoc)), context),
-    agora: () => clock.now(),
-    projeto: (nome) => {
-      const projeto = projects.get(nome);
-      if (!projeto) return undefined;
-      return {
-        canal: projeto.channel,
-        dryRun: projeto.config.dryRun,
-        chavesDaFonte: projeto.config.source.keys,
-        proximaAtividade: (agora) => nextProjectActivity(projeto.config, agora),
-        pessoaPO: (id) => {
-          const po = pessoasDoPapel(projeto.config, "po").find((p) => p.id === id);
-          return po ? { nome: po.name, identidadeTeams: identidadeTeams(po) } : undefined;
-        },
-      };
-    },
-    projetoPausado: (state, nome) => projetoPausado(comoEstadoDaFabrica(state), nome),
-    perguntaPendente: (tarefa) => pendingQuestion(tarefa as unknown as QueuedTask),
-    registrarResposta: (state, id, n, resposta) => recordAnswer(comoEstadoDaFabrica(state), id, n, resposta),
-    avisoTeams: opts.teams
-      ? async (userId, texto) => {
-          await canaisDeAviso.create("teams", { notifier: opts.teams }).send({ userId, text: texto });
-        }
-      : undefined,
-    registrarEvento: async (evento) => {
-      await events.append(evento as NewEvent);
-    },
+  // Controle, perguntas e decisões humanas: no módulo factory-fluxos.
+  const fluxos = await montarFluxosHumanos({
+    harness,
+    context,
+    readState,
+    clock,
+    events,
+    eventRecorder,
+    projects,
+    projectOf,
+    inspectCard,
+    canaisDeAviso,
+    retroSettings,
+    teams: opts.teams,
   });
+  const { controleTarefas, perguntas, decisoes, alterarEstado, forwardTechnical, markQuestion } = fluxos;
 
-  // --- Escalonador ------------------------------------------------------------------------------
-  // Fila de buscas e sincronizações, reações a mudanças de estado e escolha da próxima Tarefa: no pacote escalonador.
-  // A fábrica fornece a execução: buscar na Fonte, gravar a ativação e publicar eventos.
-  async function ativarTarefa(id: string): Promise<void> {
-    let gateToOpen: number | null = null;
-    await harness.commit(async (tx) => {
-      const draft = await tx.doc(StateDoc);
-      const task = draft.tasks.find((t) => t.id === id);
-      if (
-        !task ||
-        !["enfileirada", "aguardando-entrega"].includes(task.status) ||
-        draft.tasks.some((t) => t.status === "ativa")
-      )
-        return;
-      task.status = "ativa";
-      task.notBefore = null;
-      if (task.gateId !== null) {
-        gateToOpen = task.gateId;
-        task.gateId = null;
-      } else {
-        task.durableId = await tx.createTask(
-          Tarefa,
-          { id: task.id, project: task.project, key: task.key },
-          { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID },
-        );
-      }
-    }, context);
-    if (gateToOpen !== null) await harness.abortTask(gateToOpen as TaskId, context);
-  }
-
-  const escalonador = await criarEscalonador({
-    buscar: () => poll(),
-    estado: () => readState(),
-    agora: () => clock.now(),
+  const { escalonador, filaElegivel } = await montarEscalonador({
+    harness,
+    context,
+    Tarefa,
+    projects,
+    readState,
+    events,
+    clock,
     armTimer,
-    proximaAtividade: (nome, agora) => {
-      const projeto = projects.get(nome);
-      return projeto ? nextProjectActivity(projeto.config, agora) : agora;
-    },
-    projetoConfigurado: (nome) => projects.has(nome),
-    pendenciasBloqueantes: (nome, estado) => pendenciasBloqueantes(nome, comoEstadoDaFabrica(estado)),
-    repoDesativado: (estado, projeto) => repoDesativado(comoEstadoDaFabrica(estado), projeto),
-    projetoPausado: (estado, projeto) => projetoPausado(comoEstadoDaFabrica(estado), projeto),
-    ativar: ativarTarefa,
-    registrarEvento: async (evento) => {
-      await events.append(evento as NewEvent);
-    },
-    registrarErro: (mensagem, erro) => console.error(mensagem, erro),
+    perguntas,
+    reconcileRepos: () => reconcileRepos(),
+    pendenciasBloqueantes,
   });
   const observation = harness.observeCommits({
     advance: () => queueMicrotask(() => escalonador.pedirReacao()),
@@ -1683,720 +566,179 @@ export async function startFactory(opts: {
   });
 
   /** Projetos monitorados como os reducers do webhook os veem. */
-  const webhookProjects = (): WebhookProject[] =>
-    [...projects.values()].map((p) => ({ name: p.config.name, config: p.config }));
+  // Integração com o GitHub (webhook, reconciliação e leituras de repositório): no módulo factory-github.
+  const integracao = criarIntegracaoGitHub({
+    projects,
+    readState,
+    alterar: alterarEstado,
+    clock,
+    harness,
+    context,
+    avisos,
+    appChecker,
+    webhook: opts.webhook,
+  });
+  const {
+    webhookProjects,
+    runWebhookEffects,
+    reconcileRepos,
+    applyGitHubDelivery,
+    projectByRepo,
+    listRepos,
+    githubReposCatalog,
+    githubAppPanel,
+  } = integracao;
 
-  /**
-   * Executa os efeitos que o estado não executa sozinho: parar uma execução durável e registrar um aviso ao usuário.
-   */
-  async function runWebhookEffects(effects: WebhookEffect[]): Promise<void> {
-    for (const effect of effects) {
-      if (effect.type === "abortar") {
-        const durableId = (await readState()).tasks.find((t) => t.id === effect.id)?.durableId;
-        if (durableId !== null && durableId !== undefined) await harness.abortTask(durableId as TaskId, context);
-        continue;
-      }
-      await avisos.add({
-        type: "notificar",
-        project: effect.project,
-        target: effect.target,
-        reason: effect.reason,
-        message: effect.message,
-      });
-    }
-  }
-
-  /** Janela de sobreposição da consulta de alterações: cobre edições feitas enquanto a própria consulta rodava. */
-  const SYNC_OVERLAP_MS = 60_000;
-
-  /**
-   * Reconciliação (ADR-0015): para cada repositório ativo, consulta o que mudou desde a última sincronização e aplica o
-   * que o webhook não entregou. Sem sincronização anterior, só grava a linha de base: a busca cuida dos cards abertos.
-   */
-  async function reconcileRepos(): Promise<void> {
-    const startedAt = new Date(clock.now()).toISOString();
-    for (const { config, source } of projects.values()) {
-      if (config.source.type !== "github" || !source.listChangedSince) continue;
-      const state = await readState();
-      if (repoDesativado(state, config.name)) continue;
-      const since = state.sincronizadoEm?.[config.name];
-      if (since !== undefined) {
-        const snapshots = await source.listChangedSince(new Date(Date.parse(since) - SYNC_OVERLAP_MS).toISOString());
-        const deliveries = reconciliarIssues({ state, project: { name: config.name, config }, snapshots });
-        for (const delivery of deliveries) await applyGitHubDelivery(delivery);
-      }
-      await harness.commit(async (tx) => {
-        const current = await tx.doc(StateDoc);
-        current.sincronizadoEm = { ...current.sincronizadoEm, [config.name]: startedAt };
-      }, context);
-    }
-  }
-
-  /**
-   * Aplica uma entrega do GitHub (issue ou instalação do App) ao estado e executa os efeitos. Um reenvio de entrega já
-   * aplicada não muda nada (ver `FactoryState.deliveries`).
-   */
-  async function applyGitHubDelivery(delivery: IssueDelivery | InstallationDelivery): Promise<void> {
-    let effects: WebhookEffect[] = [];
-    let duplicate = false;
-    await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      if (state.deliveries?.includes(delivery.deliveryId)) {
-        duplicate = true;
-        return;
-      }
-      effects =
-        "repo" in delivery
-          ? applyToState({ state, delivery, projects: webhookProjects(), newRef: newTaskRef })
-          : applyInstallationToState({ state, delivery, projects: webhookProjects() });
-      state.deliveries = [...(state.deliveries ?? []), delivery.deliveryId].slice(-DELIVERY_MEMORY);
-      state.ultimoWebhookEm = new Date(clock.now()).toISOString();
-    }, context);
-    if (!duplicate) await runWebhookEffects(effects);
-  }
-
-  /** Acha o projeto monitorado de um repositório (`dono/nome`, sem diferenciar caixa). */
-  const projectByRepo = (repo: string): string | undefined => {
-    for (const { config } of projects.values()) {
-      if (config.source.type === "github" && config.source.repo.toLowerCase() === repo.toLowerCase())
-        return config.name;
-    }
-    return undefined;
-  };
-
-  /** Vínculos dos projetos monitorados: o que está ativo, o que foi desativado e de qual instalação veio. */
-  async function listRepos(): Promise<RepoListItem[]> {
-    const state = await readState();
-    const repos: RepoListItem[] = [];
-    for (const { config } of projects.values()) {
-      if (config.source.type !== "github") continue;
-      const binding = state.repos?.[config.name];
-      repos.push({
-        project: config.name,
-        repo: config.source.repo,
-        status: binding?.status ?? "ativo",
-        installationId: binding?.installationId ?? null,
-        motivo: binding?.motivo ?? null,
-      });
-    }
-    return repos;
-  }
-
-  /**
-   * Painel do GitHub App. A cobertura só é dita quando a consulta ao App deu certo: sem ela, `coberto` é `null`, e a
-   * página não afirma nada que não sabe.
-   */
-  /**
-   * Catálogo de repositórios do App (Fase 2): só leitura, sem token nem chave. `plugado` diz se algum projeto de
-   * repositório monitorado já aponta para o repositório (comparação sem caixa), com o status do vínculo.
-   */
-  async function githubReposCatalog(): Promise<GitHubReposCatalog> {
-    const app = await appChecker.status();
-    const plugados = new Map((await listRepos()).map((r) => [r.repo.toLowerCase(), r]));
-    const importacoes = (await readState()).importacoes ?? {};
-    const repos = app.configurado && !app.erro ? catalogoDoApp(app) : [];
-    return {
-      configurado: app.configurado,
-      ...(app.erro ? { erro: app.erro } : {}),
-      consultadoEm: app.consultadoEm,
-      repos: repos.map((r) => {
-        const plugado = plugados.get(r.nome.toLowerCase());
-        return {
-          ...r,
-          plugado: plugado ? { projeto: plugado.project, status: plugado.status } : null,
-          importacao: importacoes[String(r.id)] ?? null,
-        };
-      }),
-    };
-  }
-
-  /**
-   * Fila de importações (Fase 3): uma por vez, em ordem, separada da fila de buscas. Cada item relê o estado antes de
-   * rodar, para não repetir um repositório que já terminou.
-   */
-  let importando: Promise<void> = Promise.resolve();
-  function enfileirarImportacao(repoId: number): void {
-    importando = importando
-      .then(() => executarImportacao(repoId))
-      .catch((err) => console.error("[fábrica] importação falhou:", redactSecrets(String(err))));
-  }
-
-  /** Lê as issues abertas do repositório e aplica tudo numa só escrita: se a leitura falhar, nada muda. */
-  async function executarImportacao(repoId: number): Promise<void> {
-    const registro = (await readState()).importacoes?.[String(repoId)];
-    if (registro?.status !== "importando") return;
-    const repo = registro.repo;
-    try {
+  // --- Importação do GitHub App --------------------------------------------------------------------
+  // Fila e execução das importações de repositórios: no pacote importacao. A fábrica fornece o App, o catálogo, as
+  // issues abertas, a aplicação no estado (importacao-issues) e a execução dos efeitos.
+  const importacao = criarImportacao<RawIssue, WebhookEffect>({
+    estado: () => readState() as unknown as Promise<EstadoImportacao>,
+    alterar: alterarEstado,
+    agora: () => clock.now(),
+    statusDoApp: async () => {
       const app = await appChecker.status();
-      if (!app.configurado || app.erro) throw new Error(app.erro ?? "GitHub App não configurado");
-      const atual = catalogoDoApp(app).find((r) => r.id === repoId);
-      if (!atual) throw new Error(`${repo} não está mais no catálogo do App`);
-      const project = projectByRepo(atual.nome);
-      if (!project) throw new Error(`nenhum projeto monitora ${atual.nome}`);
-      const issues = await appChecker.issuesAbertas(atual.nome, atual.instalacaoId);
-      let effects: WebhookEffect[] = [];
-      await harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        const projeto = webhookProjects().find((p) => p.name === project);
-        if (!projeto) throw new Error(`projeto ${project} não está carregado`);
-        const aplicado = aplicarImportacao({
-          state,
-          project: projeto,
-          repoId,
-          repo: atual.nome,
-          installationId: atual.instalacaoId,
-          issues,
-          newRef: newTaskRef,
-        });
-        effects = aplicado.effects;
-        state.importacoes = {
-          ...state.importacoes,
-          [String(repoId)]: {
-            repoId,
-            repo: atual.nome,
-            status: "ok",
-            ultimaImportacaoEm: new Date(clock.now()).toISOString(),
-            installationId: atual.instalacaoId,
-            ultimoResultado: aplicado.resultado,
-          },
-        };
-      }, context);
-      await runWebhookEffects(effects);
-    } catch (err) {
-      await harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        const anterior = state.importacoes?.[String(repoId)];
-        state.importacoes = {
-          ...state.importacoes,
-          [String(repoId)]: {
-            repoId,
-            repo,
-            ...(anterior?.installationId !== undefined ? { installationId: anterior.installationId } : {}),
-            status: "erro",
-            ...(anterior?.ultimaImportacaoEm ? { ultimaImportacaoEm: anterior.ultimaImportacaoEm } : {}),
-            ...(anterior?.ultimoResultado ? { ultimoResultado: anterior.ultimoResultado } : {}),
-            ultimoErro: redactSecrets(err instanceof Error ? err.message : "falha desconhecida"),
-          },
-        };
-      }, context);
-    }
-  }
+      return { configurado: app.configurado, erro: app.erro };
+    },
+    repoDoApp: async (repoId) => {
+      const app = await appChecker.status();
+      return catalogoDoApp(app).find((r) => r.id === repoId);
+    },
+    projetoDoRepo: (nome) => projectByRepo(nome),
+    issuesAbertas: (nome, instalacaoId) => appChecker.issuesAbertas(nome, instalacaoId),
+    aplicar: (estado, alvo) => {
+      const projeto = webhookProjects().find((p) => p.name === alvo.projeto);
+      if (!projeto) throw new Error(`projeto ${alvo.projeto} não está carregado`);
+      const aplicado = aplicarImportacao({
+        state: estado as unknown as FactoryState,
+        project: projeto,
+        repoId: alvo.repoId,
+        repo: alvo.repo,
+        installationId: alvo.instalacaoId,
+        issues: alvo.issues,
+        newRef: newTaskRef,
+      });
+      return { resultado: aplicado.resultado, efeitos: aplicado.effects };
+    },
+    executarEfeitos: (efeitos) => runWebhookEffects(efeitos),
+    redigir: (texto) => redactSecrets(texto),
+  });
 
-  /** Confere a Fonte antes de gravar: credencial no cofre e, no Jira, a conexão (ADR-0018). Devolve o erro, se houver. */
+  // --- Ações humanas sobre a Tarefa -------------------------------------------------------------
+  // Esquecer a memória de uma etapa e reparo humano de Tarefa bloqueada: no pacote acoes. A fábrica fornece o estado, a
+  // transação, a integração do reparo (com o test runner) e o progresso.
+  const acoes = criarAcoes({
+    tarefa: async (id) => (await readState()).tasks.find((t) => t.id === id) as unknown as TarefaAcoes | undefined,
+    alterar: (id, fn) =>
+      harness.commit(async (tx) => {
+        const alvo = tarefaDoEstado(await tx.doc(StateDoc), id);
+        if (alvo) fn(alvo as unknown as TarefaAcoes);
+      }, context),
+    previaReparo: (tarefa) => repairPreview(tarefa as unknown as QueuedTask, implementationDeps.worktreesRoot),
+    integrarReparo: (id, revisao) =>
+      harness.commit(async (tx) => {
+        const current = tarefaDoEstado(await tx.doc(StateDoc), id);
+        if (!current) throw new RepairConflict("tarefa inexistente");
+        return integrateRepair(
+          current as QueuedTask,
+          implementationDeps.worktreesRoot,
+          revisao,
+          implementationDeps.testRunner,
+          context.abortSignal,
+        );
+      }, context),
+    registrarProgresso: async (id, mensagem) => {
+      const { projectName, cardKey } = partesDoId(id);
+      await events.append({ type: "progress", project: projectName, target: cardKey, message: mensagem });
+    },
+  });
 
-  /**
-   * Grava um projeto novo cujo repositório a fábrica clona antes. Nome, prefixo e a Fonte de issues não podem repetir o
-   * que já existe, nas duas pontas (antes e depois do clone). O clone sai antes da gravação: se a clonagem falhar,
-   * nada fica salvo pela metade.
-   */
-  /** Projetos já existentes: os ativos na memória e os salvos pela interface (incluindo os ainda não carregados). */
+  // --- Configuração de projetos ------------------------------------------------------------------
+  // Leitura, confirmação da Fonte, histórico e salvamento da configuração: no pacote configuracao-projeto. A fábrica
+  // fornece o estado, a transação, o sistema de arquivos, a checagem da Fonte e a aplicação aos projetos carregados.
+  const configProjetos = criarConfiguracaoProjetos({
+    estado: () => readState() as unknown as Promise<EstadoConfiguracao>,
+    alterar: alterarEstado,
+    agora: () => clock.now(),
+    tarefasEmAndamento: (estado, nome) => tarefasEmAndamento(estado as unknown as FactoryState, nome).map((t) => t.id),
+    ehDiretorio,
+    erroDaFonte: (fonte) => projetos.erroDaFonte(fonte),
+    aplicar: (config) => {
+      carga.aplicarConfiguracao(config);
+    },
+  });
 
-  /**
-   * Conflito do projeto novo com o que já existe: nome, prefixo ou a mesma Fonte de issues no mesmo repositório. É
-   * conferido antes de qualquer chamada ao provedor, para que a recusa seja imediata e não dependa da rede.
-   */
-
-  /**
-   * Lista de pessoas para escolher PO e tech lead no formulário de criação (ticket 06). Só consulta; nada é gravado. O
-   * corpo diz de qual Fonte se trata: `gitlab` (caminho e servidor, com o token do cofre), `github` (repositório do
-   * catálogo do App) ou `jira` (baseUrl, email, projeto e credencial).
-   */
-
-  /** Lista de pessoas do GitLab do projeto, com o token do cofre. Falha de rede ou de resposta lança o erro. */
-
-  /** Lista de pessoas do Jira (usuários atribuíveis ao projeto), com o token do cofre. */
-
-  /** Lista de responsáveis possíveis do repositório do GitHub App, pelo token da instalação. */
-
-  /**
-   * Escolhas de PO e tech lead conferidas na Fonte antes de gravar (ticket 06). Sem escolha, não há consulta e o projeto
-   * nasce incompleto. Fonte fora do ar responde 502; pessoa que a Fonte não conhece responde 400. Nos dois casos nada
-   * é gravado.
-   */
-
-  /**
-   * Cria um projeto a partir de um repositório GitLab informado por caminho completo (`grupo/projeto`) no servidor
-   * dado (gitlab.com ou self-hosted). O token vem do cofre pelo nome da credencial, e o caminho é conferido com ele
-   * antes de qualquer gravação: repositório inexistente ou token sem acesso são recusados com a causa.
-   */
-
-  /**
-   * Pedido de importação. Só aceita repositório do catálogo do App com projeto configurado e ativo. Já em importação,
-   * responde o registro atual sem enfileirar outra vez.
-   */
-
-  async function githubAppPanel(): Promise<GitHubAppPanel> {
-    const state = await readState();
-    const app = await appChecker.status();
-    const repos = await listRepos();
-    const ativos = repos.filter((r) => r.status === "ativo").map((r) => r.repo);
-    const cobertos = cobertura(ativos, app.configurado && !app.erro ? app.instalacoes : undefined);
-    return {
-      receptor: {
-        ligado: opts.webhook !== undefined,
-        porta: opts.webhook?.port ?? null,
-        ultimaEntregaEm: state.ultimoWebhookEm ?? null,
-      },
-      app,
-      repositorios: repos.map((r) => ({
-        projeto: r.project,
-        repo: r.repo,
-        status: r.status,
-        coberto: r.status === "ativo" ? (cobertos.get(r.repo) ?? null) : null,
-      })),
-    };
-  }
-
-  /**
-   * Desplugue: desativa o repositório de um projeto. Uma Tarefa ativa só para com `force`; sem ele, a resposta é 409 e
-   * nada muda.
-   */
-
-  /** Plugue: reativa um repositório já configurado (não cria projeto: a config fica no YAML, ADR-0010). */
-
-  /** Altera uma Tarefa no estado durável. Retorna `false` se ela não existe. */
-  async function updateTask(id: string, change: (task: QueuedTask, state: FactoryState) => void): Promise<boolean> {
-    return harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      const task = state.tasks.find((t) => t.id === id);
-      if (!task) return false;
-      change(task, state);
-      return true;
-    }, context);
-  }
-
-  const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada", "recusada"]);
-  const approvingRetros = new Set<string>();
-  let configuringRetro = false;
-  const approvingQuestions = new Set<string>();
-
-  /** Projeto e chave do card a partir do id da Tarefa (`projeto/chave`). */
-  const partesDoId = (id: string) => {
-    const i = id.indexOf("/");
-    return { projectName: id.slice(0, i), cardKey: id.slice(i + 1) };
+  // --- Respostas às perguntas --------------------------------------------------------------------
+  // Validação, mapeamento de repositório, encaminhamento de "não sei" e registro da resposta: no pacote perguntas. A
+  // fábrica fornece o estado, os repositórios do projeto, o registro na Tarefa, os eventos e o encaminhamento técnico.
+  const respostas: PortasResposta = {
+    alterar: alterarEstado,
+    repositoriosDoProjeto: (projeto) => projectOf(projeto).config.repositories,
+    registrarResposta: (estado, id, n, resposta) =>
+      registrarRespostaNoEstado(estado as unknown as FactoryState, id, n, resposta),
+    registrarEvento: async (evento) => {
+      await events.append(evento as NewEvent);
+    },
+    encaminharTecnica: (id, n) => forwardTechnical(id, n),
+    pedirReacao: () => escalonador.pedirReacao(),
   };
 
-  /** Triagem: prévia da decisão (GET) e decisão (POST). */
-  async function tratarTriagem(id: string, decidir: boolean, corpo: unknown): Promise<Resposta> {
-    const { projectName, cardKey } = partesDoId(id);
-    const task = (await readState()).tasks.find((t) => t.id === id);
-    if (!task?.triage) return { status: 404, body: { error: "triagem não encontrada" } };
-    if (task.triage.review !== "draft" || task.status !== "aguardando-humano")
-      return { status: 409, body: { error: "triagem não está aguardando decisão" } };
-    const project = projectOf(projectName);
-    const { result } = task.triage;
-    const preview = {
-      card: cardKey,
-      verdict: result.verdict,
-      category: result.category,
-      reason: result.reason,
-      by: result.by,
-      duplicateOf: result.duplicateOf ?? null,
-      // O que sai na issue se o usuário recusar: o comentário exato e o motivo do fechamento.
-      comment: withAutomationMark(redactSecrets(refusalComment(result, duplicateRef(result)))),
-      closeAs: closeReason(result),
-      dryRun: project.config.dryRun,
-    };
-    const revision = reviewRevision(preview);
-    if (!decidir) return { status: 200, body: { ...preview, revision } };
-    const body = corpo as { revision?: unknown; decision?: unknown } | undefined;
-    if (body?.decision !== "aceitar" && body?.decision !== "recusar")
-      return { status: 400, body: { error: 'decision deve ser "aceitar" ou "recusar"' } };
-    if (body.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
-    if (project.config.dryRun && body.decision === "recusar")
-      return { status: 409, body: { error: "publicação real desativada no dry-run" } };
-    const decision = body.decision;
-    const decided = await harness.commit(async (tx) => {
-      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-      if (current?.status !== "aguardando-humano" || current.triage?.review !== "draft") return false;
-      current.triage.review = decision;
-      current.status = current.pauseRequested ? "pausada" : "enfileirada";
-      return true;
-    }, context);
-    return decided
-      ? { status: 200, body: { ok: true } }
-      : { status: 409, body: { error: "triagem mudou ou foi cancelada" } };
-  }
+  // --- Configuração do Telegram ------------------------------------------------------------------
+  // Conversa do bot, usuário autorizado e credencial do token: no pacote telegram-config. A fábrica fornece o estado, o
+  // cofre e o reinício da interface.
+  const telegramConfig = criarConfiguracaoTelegram({
+    guardada: async () => (await readState()).telegramConfig,
+    gravar: (configuracao) =>
+      harness.commit(async (tx) => {
+        (await tx.doc(StateDoc)).telegramConfig = configuracao;
+      }, context),
+    credencialCadastrada: (nome) => segredos.has(nome),
+    reiniciar: () => gestao.reiniciar(),
+  });
 
-  /** SPEC: prévia (GET) e aprovação local (POST). */
-  async function tratarSpec(id: string, aprovar: boolean, corpo: unknown): Promise<Resposta> {
-    const { projectName, cardKey } = partesDoId(id);
-    const task = (await readState()).tasks.find((t) => t.id === id);
-    if (!task?.delivery) return { status: 404, body: { error: "SPEC não encontrada" } };
-    if (task.specReview !== "draft" || task.status !== "aguardando-humano")
-      return { status: 409, body: { error: "SPEC não está disponível para aprovação" } };
-    const project = projectOf(projectName);
-    const preview = {
-      card: cardKey,
-      spec: withAutomationMark(redactSecrets(`SPEC\n\n${task.delivery.spec}`)),
-      tickets: withAutomationMark(redactSecrets(`Tickets\n\n${renderTickets(task.delivery.tickets)}`)),
-      dryRun: project.config.dryRun,
-    };
-    const revision = reviewRevision(preview);
-    if (!aprovar) return { status: 200, body: { ...preview, revision } };
-    const body = corpo as { revision?: unknown } | undefined;
-    if (body?.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
-    // Aprovação é local; o escritor continua responsável por suprimir efeitos no dry-run.
-    const approved = await harness.commit(async (tx) => {
-      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-      if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
-      current.specReview = "approved";
-      current.specApprovedDryRun = project.config.dryRun;
-      current.status = current.pauseRequested ? "pausada" : "enfileirada";
-      return true;
-    }, context);
-    return approved
-      ? { status: 200, body: { ok: true } }
-      : { status: 409, body: { error: "SPEC mudou ou foi cancelada" } };
-  }
-
-  /** Lembrete de pergunta: prévia (GET) e envio (POST). */
-  async function tratarLembrete(id: string, n: number, aprovar: boolean, corpo: unknown): Promise<Resposta> {
-    const { projectName, cardKey } = partesDoId(id);
-    const state = await readState();
-    const task = state.tasks.find((t) => t.id === id);
-    const q = task?.questions?.find((item) => item.n === n);
-    if (!q) return { status: 404, body: { error: "pergunta não encontrada" } };
-    if (q.reminder !== "draft" || q.answer !== null || task?.status !== "aguardando-humano")
-      return { status: 409, body: { error: "lembrete não está disponível para aprovação" } };
-    const project = projectOf(projectName);
-    const text = reminderText(q);
-    const preview = {
-      card: cardKey,
-      to: q.to,
-      comment: withAutomationMark(redactSecrets(`${project.source.formatMention(q.to)} ${text}`)),
-      dryRun: project.config.dryRun,
-    };
-    const revision = reviewRevision(preview);
-    if (!aprovar) return { status: 200, body: { ...preview, revision } };
-    const body = corpo as { revision?: unknown } | undefined;
-    if (body?.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
-    if (project.config.dryRun) return { status: 409, body: { error: "publicação real desativada no dry-run" } };
-    const reserved = await harness.commit(async (tx) => {
-      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-      const stored = current?.questions?.find((item) => item.n === n);
-      if (current?.status !== "aguardando-humano" || stored?.reminder !== "draft" || stored.answer !== null)
-        return false;
-      stored.reminder = "sending";
-      return true;
-    }, context);
-    if (!reserved) return { status: 409, body: { error: "lembrete mudou ou já foi enviado" } };
-    try {
-      await project.channel.remind(q.ref, text);
-    } catch (err) {
-      if (!(err instanceof GuardrailViolation)) throw err;
-      await markQuestion(id, n, (stored) => {
-        stored.reminder = "draft";
-      });
-      return { status: 409, body: { error: `publicação barrada: ${err.message}` } };
-    }
-    await markQuestion(id, n, (stored) => {
-      stored.reminder = "sent";
-    });
-    await events.append({
-      type: "question",
-      project: projectName,
-      target: cardKey,
-      n,
-      to: q.to,
-      text: q.text,
-      status: "lembrete",
-    });
-    return { status: 200, body: { ok: true } };
-  }
-
-  /** Pergunta de negócio ao PO: prévia (GET) e publicação no canal (POST), com trava contra envio duplo. */
-  async function tratarPergunta(id: string, n: number, aprovar: boolean, corpo: unknown): Promise<Resposta> {
-    const { projectName, cardKey } = partesDoId(id);
-    const lock = `${id}/${n}`;
-    if (approvingQuestions.has(lock)) return { status: 409, body: { error: "pergunta já está sendo publicada" } };
-    if (aprovar) approvingQuestions.add(lock);
-    try {
-      const state = await readState();
-      const task = state.tasks.find((t) => t.id === id);
-      const q = task?.questions?.find((item) => item.n === n);
-      if (!q) return { status: 404, body: { error: "pergunta não encontrada" } };
-      if (q.publication !== "draft" || task?.status !== "aguardando-humano")
-        return { status: 409, body: { error: "pergunta não está disponível para aprovação" } };
-      const project = projectOf(projectName);
-      const po = pessoasDoPapel(project.config, "po").find((p) => p.id === q.to);
-      if (!po) return { status: 409, body: { error: "destinatário não está configurado" } };
-      const link = project.config.source.baseUrl
-        ? `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(cardKey)}`
-        : undefined;
-      const preview = {
-        card: cardKey,
-        to: q.to,
-        comment: withAutomationMark(redactSecrets(`${project.source.formatMention(q.to)} Pergunta ${n}: ${q.text}`)),
-        teamsUserId: avisoTeamsDe(po) ?? null,
-        teamsMessage:
-          avisoTeamsDe(po) && link
-            ? teamsQuestionMessage({ card: cardKey, title: task?.title ?? "", link, name: po.name })
-            : null,
-        dryRun: project.config.dryRun,
-      };
-      const revision = questionRevision(preview);
-      if (!aprovar) return { status: 200, body: { ...preview, revision } };
-      const body = corpo as { revision?: unknown } | undefined;
-      if (body?.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
-      if (project.config.dryRun) return { status: 409, body: { error: "publicação real desativada no dry-run" } };
-      if (state.daemonPaused || task.pauseRequested)
-        return { status: 409, body: { error: "tarefa ou daemon pausado" } };
-      if (avisoTeamsDe(po) && (!link || !opts.teams)) return { status: 409, body: { error: "Teams indisponível" } };
-      const reserved = await harness.commit(async (tx) => {
-        const currentState = await tx.doc(StateDoc);
-        const current = currentState.tasks.find((t) => t.id === id);
-        const currentQuestion = current?.questions?.find((item) => item.n === n);
-        if (
-          currentState.daemonPaused ||
-          (current && projetoPausado(currentState, current.project)) ||
-          current?.status !== "aguardando-humano" ||
-          current.pauseRequested ||
-          currentQuestion?.publication !== "draft" ||
-          currentQuestion.text !== q.text ||
-          currentQuestion.to !== q.to
-        )
-          return false;
-        currentQuestion.publication = "sending";
-        return true;
-      }, context);
-      if (!reserved) return { status: 409, body: { error: "pergunta mudou ou foi cancelada" } };
-      let ref: Awaited<ReturnType<Channel["ask"]>>;
-      try {
-        ref = await project.channel.ask({ card: cardKey, to: q.to, text: `Pergunta ${n}: ${q.text}` });
-      } catch (err) {
-        // Guardrail barra antes de escrever: nada saiu, a pergunta volta a rascunho. Outro erro é incerto.
-        if (!(err instanceof GuardrailViolation)) throw err;
-        await markQuestion(id, n, (stored) => {
-          stored.publication = "draft";
-        });
-        return { status: 409, body: { error: `publicação barrada: ${err.message}` } };
-      }
-      const askedAt = clock.now();
-      await markQuestion(id, n, (stored) => {
-        stored.ref = ref;
-        stored.askedAt = askedAt;
-        stored.remindAt = addBusinessHours(project.config.calendar, askedAt, REMINDER_BUSINESS_HOURS);
-        stored.notifyAt = addBusinessHours(project.config.calendar, askedAt, workdayHours(project.config.calendar));
-        stored.teamsNotice =
-          avisoTeamsDe(po) && link ? { userId: avisoTeamsDe(po) as string, link, status: "pending" } : undefined;
-        stored.publication = "sent";
-      });
-      await perguntas.avisarTeams(id, projectName, cardKey, n);
-      await events.append({
-        type: "question",
-        project: projectName,
-        target: cardKey,
-        n,
-        to: q.to,
-        text: q.text,
-        status: "enviada",
-      });
-      return { status: 200, body: { ok: true } };
-    } finally {
-      if (aprovar) approvingQuestions.delete(lock);
-    }
-  }
-
-  /** Proposta de retrô da fábrica: prévia (GET) e publicação como issue (POST), com trava por proposta. */
-  async function tratarRetro(
-    id: string,
-    stage: string,
-    n: number,
-    aprovar: boolean,
-    corpo: unknown,
-  ): Promise<Resposta> {
-    const lock = `${id}/${stage}/${n}`;
-    if (configuringRetro || approvingRetros.has(lock) || (aprovar && approvingRetros.size > 0))
-      return { status: 409, body: { error: "uma proposta já está sendo publicada; tente novamente" } };
-    if (aprovar) approvingRetros.add(lock);
-    try {
-      const { projectName, cardKey } = partesDoId(id);
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      const retro = task?.retros?.find((r) => r.stage === stage);
-      const proposal = retro?.proposals?.find((p) => p.n === n);
-      if (!task || !retro || !proposal || proposal.kind !== "fabrica")
-        return { status: 404, body: { error: "proposta não encontrada" } };
-      if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
-        return { status: 409, body: { error: "proposta não está disponível para revisão" } };
-      if (!retroSettings.sink || !retroSettings.repo)
-        return { status: 409, body: { error: "repositório da fábrica não configurado" } };
-      const project = projectOf(projectName);
-      const publication = {
-        writer: project.writer,
-        cardKey,
-        config: project.config,
-        sink: retroSettings.sink,
-        repo: retroSettings.repo,
-        stage: retro.stage,
-        ref: task.ref,
-        proposal,
-      };
-      const preview = await previewFactoryRetro(publication);
-      if (!aprovar)
-        return {
-          status: 200,
-          body: {
-            title: preview.title,
-            body: preview.body,
-            revision: preview.revision,
-            repo: publication.repo,
-            dryRun: project.config.dryRun,
-            blocked: preview.blocked,
-          },
-        };
-      const body = corpo as { revision?: unknown } | undefined;
-      if (body?.revision !== preview.revision)
-        return { status: 409, body: { error: "prévia alterada; revise novamente" } };
-      if (preview.blocked)
-        return { status: 409, body: { error: "texto ainda contém valores privados; publicação bloqueada" } };
-      await publishFactoryRetro(publication, preview);
+  // --- Cofre de credenciais ----------------------------------------------------------------------
+  // Troca de credencial com as regras de uso por projetos: no pacote credenciais. A fábrica fornece a configuração, o
+  // cofre, o teste de conexão do Jira, o reinício do Telegram e o histórico.
+  const credenciais = criarCredenciais({
+    projetos: async () =>
+      Object.entries((await readState()).projetos ?? {}).flatMap(([nomeProjeto, bruto]) => {
+        const config = lerConfiguracao(bruto);
+        return config ? [{ nome: nomeProjeto, credencial: config.source.credential, fonte: config.source }] : [];
+      }),
+    testarConexaoJira: (conexao, valor) =>
+      testarConexaoJira({ ...conexao, token: valor, fetch: opts.fetchFonte ?? fetch }),
+    guardar: (nome, valor) => segredos.put(nome, valor),
+    telegramUsa: async (nome) => (await readState()).telegramConfig?.credential === nome,
+    reiniciarTelegram: () => gestao.reiniciar(),
+    registrarTroca: async (projetos, nome) => {
       await harness.commit(async (tx) => {
-        const current = (await tx.doc(StateDoc)).tasks
-          .find((t) => t.id === id)
-          ?.retros?.find((r) => r.stage === stage)
-          ?.proposals?.find((p) => p.n === n);
-        if (current?.status === "pendente") Object.assign(current, proposal);
+        const state = await tx.doc(StateDoc);
+        const quando = new Date(clock.now()).toISOString();
+        const historico = { ...state.historicoConfig };
+        for (const projeto of projetos)
+          historico[projeto] = [
+            ...(historico[projeto] ?? []),
+            { quando, autor: "usuario", campos: [`credencial ${nome} trocada`] },
+          ];
+        state.historicoConfig = historico;
       }, context);
-      return { status: 200, body: { ok: true, status: proposal.status, issue: proposal.issue } };
-    } finally {
-      if (aprovar) approvingRetros.delete(lock);
-    }
-  }
+    },
+  });
 
   const commands: FactoryCommands = {
-    async answerQuestion(id, n, answer) {
-      if (!Number.isSafeInteger(n) || n < 1 || !answer.trim() || answer.length > 20_000) return false;
-      const recorded = await harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        const task = state.tasks.find((t) => t.id === id);
-        const q = task?.questions?.find((item) => item.n === n);
-        if (
-          !task ||
-          !q ||
-          !["aguardando-humano", "pausada"].includes(task.status) ||
-          q.answer !== null ||
-          q.publication === "sending"
-        )
-          return undefined;
-        const resposta = answer.trim();
-        const encaminhar = q.origin === "tecnica" && respostaNaoSei(resposta);
-        if (q.purpose === "repositorio" && !encaminhar) {
-          const mapping = repositoryFromAnswer(projectOf(task.project).config.repositories, resposta);
-          // Texto vago, caminho arbitrário ou prefixo ambíguo não são resolução.
-          if (!mapping) return undefined;
-          task.repositoryPath = mapping.path;
-        }
-        if (encaminhar) {
-          q.userResponse = resposta;
-          q.needsForwarding = true;
-        } else {
-          recordAnswer(state, id, n, resposta);
-          q.needsForwarding = false;
-        }
-        return {
-          project: task.project,
-          target: task.key,
-          to: q.to,
-          text: encaminhar ? resposta : q.text,
-          status: encaminhar ? ("encaminhar" as const) : ("respondida" as const),
-        };
-      }, context);
-      if (!recorded) return false;
-      await events.append({ type: "question", ...recorded, n });
-      if (recorded.status === "encaminhar") await forwardTechnical(id, n);
-      escalonador.pedirReacao();
-      return true;
-    },
-    pause: (id: string) =>
-      updateTask(id, (task) => {
-        if (TERMINAL.has(task.status)) return;
-        task.pauseRequested = true;
-        if (["enfileirada", "aguardando-entrega"].includes(task.status)) task.status = "pausada";
-      }),
-    resume: (id: string) =>
-      updateTask(id, (task) => {
-        task.pauseRequested = false;
-        if (task.status === "pausada") task.status = "enfileirada";
-        // O usuário corrigiu o ambiente: nova tentativa mede o baseline, sem aceitar o vermelho como TDD.
-        if (blockedResumeKind(task as QueuedTask) === "baseline" && task.implementation) {
-          task.implementation.baseline = null;
-          task.durableId = null;
-          task.gateId = null;
-          task.reason = null;
-          task.status = "enfileirada";
-        }
-        // TDD recusado no limite: quem retoma mudou o que impedia (config, formatador, ambiente). Novas tentativas na
-        // mesma fase; os commits aceitos ficam.
-        if (blockedResumeKind(task as QueuedTask) === "base-sync" && task.implementation) {
-          if (task.implementation.synchronization?.status === "iniciada")
-            task.implementation.synchronization.attempts = 0;
-          task.durableId = null;
-          task.gateId = null;
-          task.reason = null;
-          task.status = "enfileirada";
-        }
-        if (blockedResumeKind(task as QueuedTask) === "tdd" && task.implementation) {
-          task.implementation.rejections = 0;
-          task.implementation.feedback = null;
-          task.durableId = null;
-          task.gateId = null;
-          task.reason = null;
-          task.status = "enfileirada";
-        }
-      }),
-    async cancel(id: string) {
-      let durableId: number | null = null;
-      const found = await updateTask(id, (task) => {
-        if (TERMINAL.has(task.status)) return;
-        if (task.durableId !== null) durableId = task.durableId;
-        else task.status = "cancelada";
-      });
-      if (durableId !== null) await harness.abortTask(durableId as TaskId, context);
-      return found;
-    },
-    async veto(id: string) {
-      let result: VetoResult = "inexistente";
-      let gate: number | null = null;
-      await harness.commit(async (tx) => {
-        const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-        if (!task) return;
-        // Só vale dentro do prazo: depois dele (mesmo antes de a Tarefa acordar), ela já segue para as etapas.
-        if (task.status !== "aguardando-veto" || !task.veto || clock.now() >= task.veto.until) {
-          result = "fora-do-prazo";
-          return;
-        }
-        task.status = "vetada";
-        task.reason = "vetada pelo usuário";
-        gate = task.gateId;
-        task.gateId = null;
-        result = "vetada";
-      }, context);
-      // Acorda a Tarefa só para ela terminar, sem tocar no card.
-      if (gate !== null) await harness.abortTask(gate as TaskId, context);
-      return result;
-    },
+    answerQuestion: (id, n, answer) => responderPergunta(respostas, id, n, answer),
+    // Controle das Tarefas pelo usuário: no pacote controle-tarefa.
+    pause: (id: string) => controleTarefas.pausar(id),
+    resume: (id: string) => controleTarefas.retomar(id),
+    cancel: (id: string) => controleTarefas.cancelar(id),
+    veto: (id: string) => controleTarefas.vetar(id),
     pausarProjeto: (nome: string) => projetos.marcarPausa(nome, true),
     retomarProjeto: (nome: string) => projetos.marcarPausa(nome, false),
-    setDaemonPaused: (paused: boolean) =>
-      harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        state.daemonPaused = paused;
-        // Ao retomar, as Tarefas paradas só pela pausa do daemon voltam para a fila.
-        if (!paused)
-          for (const t of state.tasks) if (t.status === "pausada" && !t.pauseRequested) t.status = "enfileirada";
-      }, context),
-    reorder: (ids: string[]) =>
-      harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        const first = [...new Set(ids)]
-          .map((id) => state.tasks.find((t) => t.id === id))
-          .filter((t) => t !== undefined);
-        state.tasks = [...first, ...state.tasks.filter((t) => !first.includes(t))];
-      }, context),
+    setDaemonPaused: (paused: boolean) => controleTarefas.pausarDaemon(paused),
+    reorder: (ids: string[]) => controleTarefas.reordenar(ids),
     // Consultas da API local.
     daemonPausado: async () => (await readState()).daemonPaused,
-    fila: () => queue(),
+    fila: () => filaElegivel(),
     tarefas: async () => (await readState()).tasks.map(taskSummary),
     eventos: () => events.list(),
     eventosFluxo: () => ({
@@ -2422,406 +764,33 @@ export async function startFactory(opts: {
     githubRepos: () => githubReposCatalog(),
     projetos,
 
-    // Tarefas.
-    tarefa: async (id) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      return task
-        ? { status: 200, body: taskDetail(task, events.list()) }
-        : { status: 404, body: { error: `Tarefa ${id} não existe` } };
-    },
-    trace: async (id) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      if (!task) return { status: 404, body: { error: `Tarefa ${id} não existe` } };
-      return { status: 200, body: await traceDaTarefa(harness, task, context) };
-    },
-    esquecerMemoria: async (id, etapa) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      if (!task) return { status: 404, body: { error: `Tarefa ${id} não existe` } };
-      // A implementação não entra aqui: as tools dela localizam a Tarefa pelo id da conversa, e zerá-lo quebraria a
-      // retomada. SPEC, review e retrô têm caminho de nova conversa.
-      const retroStage = etapa.startsWith("retro:") ? etapa.slice("retro:".length) : undefined;
-      const atual =
-        etapa === "spec"
-          ? task.specConversationId
-          : etapa === "review"
-            ? task.review?.conversationId
-            : retroStage
-              ? task.retros?.find((r) => r.stage === retroStage)?.conversationId
-              : undefined;
-      if (etapa !== "spec" && etapa !== "review" && !retroStage)
-        return { status: 409, body: { error: `a etapa ${etapa} ainda não permite esquecer a memória` } };
-      if (!atual) return { status: 409, body: { error: `a etapa ${etapa} ainda não tem memória para esquecer` } };
-      await harness.commit(async (tx) => {
-        const alvo = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-        if (!alvo) return;
-        alvo.conversasEsquecidas = [...(alvo.conversasEsquecidas ?? []), atual];
-        if (etapa === "spec") alvo.specConversationId = null;
-        else if (etapa === "review" && alvo.review) alvo.review.conversationId = null;
-        else if (retroStage) {
-          const retro = alvo.retros?.find((r) => r.stage === retroStage);
-          if (retro) retro.conversationId = null;
-        }
-      }, context);
-      return { status: 200, body: { etapa, esquecida: true } };
-    },
-    mensagemEtapa: async (id, etapa, texto) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      if (!task) return { status: 404, body: { error: `Tarefa ${id} não existe` } };
-      const conversa = [...conversasDaTarefa(task)].find(([, nome]) => nome === etapa)?.[0];
-      if (!conversa) return { status: 404, body: { error: `a etapa ${etapa} ainda não tem conversa nesta tarefa` } };
-      const handle = await harness.conversation(conversa, context);
-      if (!handle) return { status: 404, body: { error: `a conversa da etapa ${etapa} não existe mais` } };
-      // Com a etapa em execução, a mensagem vira steer no próximo ponto de decisão; parada, inicia um turno novo.
-      await handle.submit(
-        {
-          type: "input",
-          content: texto,
-          requestId: `usuario-${globalThis.crypto.randomUUID()}`,
-          whenBusy: "steer",
-        },
-        context,
-      );
-      return { status: 200, body: { etapa, enviada: true } };
-    },
-    previaReparo: async (id) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      if (!task) return { status: 404, body: { error: "tarefa inexistente" } };
-      return { status: 200, body: await repairPreview(task, implementationDeps.worktreesRoot) };
-    },
-    aplicarReparo: async (id, corpo) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      if (!task) return { status: 404, body: { error: "tarefa inexistente" } };
-      const body = corpo as { revision?: unknown; approveTestChanges?: unknown } | undefined;
-      if (
-        typeof body?.revision !== "string" ||
-        !/^[0-9a-f]{64}$/.test(body.revision) ||
-        body.approveTestChanges !== true
-      )
-        return {
-          status: 400,
-          body: { error: "exige revisão exata e aprovação explícita dos reparos, inclusive nos testes" },
-        };
-      const revision = body.revision;
-      const result = await harness.commit(async (tx) => {
-        const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-        if (!current) throw new RepairConflict("tarefa inexistente");
-        return integrateRepair(
-          current as QueuedTask,
-          implementationDeps.worktreesRoot,
-          revision,
-          implementationDeps.testRunner,
-          context.abortSignal,
-        );
-      }, context);
-      const { projectName, cardKey } = partesDoId(id);
-      await events.append({
-        type: "progress",
-        project: projectName,
-        target: cardKey,
-        message: `Reparo humano aprovado e validado para o ticket ${result.ticket + 1}: commit ${result.sha.slice(0, 8)}. Tarefa continua bloqueada até retomada explícita.`,
-      });
-      return { status: 200, body: result };
-    },
-    previaTriagem: (id) => tratarTriagem(id, false, undefined),
-    decidirTriagem: (id, corpo) => tratarTriagem(id, true, corpo),
-    previaSpec: (id) => tratarSpec(id, false, undefined),
-    aprovarSpec: (id, corpo) => tratarSpec(id, true, corpo),
-    previaLembrete: (id, n) => tratarLembrete(id, n, false, undefined),
-    aprovarLembrete: (id, n, corpo) => tratarLembrete(id, n, true, corpo),
-    responderPergunta: async (id, n, texto) => {
-      const task = (await readState()).tasks.find((t) => t.id === id);
-      if (!task?.questions?.some((q) => q.n === n)) return { status: 404, body: { error: "pergunta não encontrada" } };
-      // Web e Telegram usam a mesma classificação e o mesmo despertar atômico.
-      const ok = await commands.answerQuestion(id, n, texto);
-      return ok
-        ? { status: 200, body: { ok: true } }
-        : { status: 409, body: { error: "pergunta não está disponível para resposta" } };
-    },
-    previaPergunta: (id, n) => tratarPergunta(id, n, false, undefined),
-    aprovarPergunta: (id, n, corpo) => tratarPergunta(id, n, true, corpo),
-    previaRetro: (id, etapa, n) => tratarRetro(id, etapa, n, false, undefined),
-    aprovarRetro: (id, etapa, n, corpo) => tratarRetro(id, etapa, n, true, corpo),
+    ...comandosDeTarefa({
+      lerEstado: readState,
+      harness,
+      context,
+      events,
+      responder: (id, n, texto) => responderPergunta(respostas, id, n, texto),
+      decisoes,
+      acoes,
+    }),
     poll: async () => {
       await escalonador.pedirBusca();
       return { status: 200, body: { ok: true } };
     },
-    // Projetos: leitura, confirmação e configuração.
-    pendenciasProjeto: async (nome) => {
-      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-      if (!guardada) return { status: 404, body: { error: `projeto ${nome} não existe` } };
-      return { status: 200, body: comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome) };
-    },
-    estadoProjeto: async (nome) => {
-      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-      if (!guardada) return { status: 404, body: { error: `projeto ${nome} não existe` } };
-      const state = await readState();
-      const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
-      return {
-        status: 200,
-        body: {
-          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
-          pendencias,
-          aguardandoConfirmacao: aguardandoConfirmacao(state, nome),
-        },
-      };
-    },
-    confirmarFonteProjeto: async (nome) => {
-      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-      if (!guardada) return { status: 404, body: { error: `projeto ${nome} não existe` } };
-      // Confirmar a Fonte nova tira só a pendência da troca: o projeto vira ativo se não houver outras (e não pausado).
-      await harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
-      }, context);
-      const state = await readState();
-      const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
-      return {
-        status: 200,
-        body: {
-          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
-          pendencias,
-          aguardandoConfirmacao: false,
-        },
-      };
-    },
-    historicoProjeto: async (nome) => {
-      const state = await readState();
-      // Depois da remoção o histórico continua consultável: o registro da remoção é a última alteração.
-      const existe = lerConfiguracao(state.projetos?.[nome]) !== undefined || nome in (state.projetosRemovidos ?? {});
-      if (!existe) return { status: 404, body: { error: `projeto ${nome} não existe` } };
-      return { status: 200, body: state.historicoConfig?.[nome] ?? [] };
-    },
-    configuracaoProjeto: async (nome) => {
-      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-      return guardada
-        ? { status: 200, body: guardada }
-        : { status: 404, body: { error: `projeto ${nome} não existe` } };
-    },
-    salvarConfiguracaoProjeto: async (nome, corpo) => {
-      const lida = ProjectConfig.safeParse(corpo);
-      if (!lida.success)
-        return {
-          status: 400,
-          body: { error: lida.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") },
-        };
-      if (lida.data.name !== nome)
-        return { status: 400, body: { error: "o nome do projeto no corpo não bate com a URL" } };
-      const errosPerfis = validarPerfis({ profiles: lida.data.profiles, people: lida.data.people });
-      if (errosPerfis.length > 0) return { status: 400, body: { error: errosPerfis[0] } };
-      for (const repositorio of lida.data.repositories ?? []) {
-        if (!(await ehDiretorio(repositorio.path)))
-          return { status: 400, body: { error: `caminho do repositório não existe: ${repositorio.path}` } };
-      }
-      const erroFonte = await projetos.erroDaFonte(lida.data.source);
-      if (erroFonte) return { status: 400, body: { error: erroFonte } };
-      let existe = false;
-      let emAndamento: string[] = [];
-      await harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        const anterior = lerConfiguracao(state.projetos?.[nome]);
-        if (!anterior) return;
-        existe = true;
-        // Trocar a Fonte ou o repositório só sem tarefas em andamento (ticket 10): nada é gravado se houver.
-        const troca = trocouFonteOuRepositorio(anterior, lida.data);
-        if (troca) {
-          emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
-          if (emAndamento.length > 0) return;
-          state.projetosAguardandoConfirmacao = [...new Set([...(state.projetosAguardandoConfirmacao ?? []), nome])];
-        }
-        state.projetos = { ...state.projetos, [nome]: JSON.stringify(lida.data) };
-        const campos = camposAlterados(anterior, lida.data);
-        if (campos.length > 0)
-          state.historicoConfig = {
-            ...state.historicoConfig,
-            [nome]: [
-              ...(state.historicoConfig?.[nome] ?? []),
-              { quando: new Date(clock.now()).toISOString(), autor: "usuario", campos },
-            ],
-          };
-      }, context);
-      if (!existe) return { status: 404, body: { error: `projeto ${nome} não existe` } };
-      if (emAndamento.length > 0)
-        return {
-          status: 409,
-          body: {
-            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para trocar a Fonte ou o repositório`,
-            tarefasEmAndamento: emAndamento,
-          },
-        };
-      aplicarConfiguracao(lida.data);
-      return { status: 200, body: lida.data };
-    },
-
-    // Segredos do cofre.
-    listarSegredos: () => segredos.list(),
-    gravarSegredo: async (nome, corpo) => {
-      const dados = corpo as { valor?: unknown } | undefined;
-      if (typeof dados?.valor !== "string" || dados.valor.length === 0)
-        return { status: 400, body: { error: "informe valor, o conteúdo da credencial" } };
-      // Credencial em uso por projetos: a troca passa pelo mesmo teste de conexão do PUT da Fonte Jira
-      // (um valor inválido não deve degradar as tarefas em silêncio) e fica registrada no histórico.
-      const usadoPor: { nome: string; fonte: { type: string; baseUrl?: string; email?: string } }[] = [];
-      for (const [nomeProjeto, bruto] of Object.entries((await readState()).projetos ?? {})) {
-        const config = lerConfiguracao(bruto);
-        if (config?.source.credential === nome) usadoPor.push({ nome: nomeProjeto, fonte: config.source });
-      }
-      for (const { fonte } of usadoPor) {
-        if (fonte.type !== "jira" || !fonte.baseUrl || !fonte.email) continue;
-        const conexao = await testarConexaoJira({
-          baseUrl: fonte.baseUrl,
-          email: fonte.email,
-          token: dados.valor,
-          fetch: opts.fetchFonte ?? fetch,
-        });
-        if (!conexao.ok)
-          return {
-            status: 400,
-            body: { error: `conexão com o Jira falhou (${conexao.motivo}); a credencial ${nome} não foi trocada` },
-          };
-      }
-      const gravado = await segredos.put(nome, dados.valor);
-      // A interface do Telegram lê o token ao ligar: trocar a credencial do bot religa a interface na hora.
-      if ((await readState()).telegramConfig?.credential === nome) await reiniciarBridge();
-      if (usadoPor.length > 0) {
-        await harness.commit(async (tx) => {
-          const state = await tx.doc(StateDoc);
-          const quando = new Date(clock.now()).toISOString();
-          const historico = { ...state.historicoConfig };
-          for (const { nome: projeto } of usadoPor)
-            historico[projeto] = [
-              ...(historico[projeto] ?? []),
-              { quando, autor: "usuario", campos: [`credencial ${nome} trocada`] },
-            ];
-          state.historicoConfig = historico;
-        }, context);
-      }
-      return { status: 200, body: gravado };
-    },
-    // Publicações (repositório das retrôs da fábrica).
-    retroConfiguracao: async () => ({
-      status: 200,
-      body: { repo: retroSettings.repo ?? null, available: Boolean(retroSettings.sink) },
+    ...comandosDeConfiguracao({
+      configProjetos,
+      segredos,
+      credenciais,
+      telegramConfig,
+      decisoes,
+      harness,
+      context,
+      retroSettings,
     }),
-    salvarRetroConfiguracao: async (corpo) => {
-      const body = corpo as { repo?: unknown } | undefined;
-      if (typeof body?.repo !== "string" || !isRetroRepository(body.repo.trim()))
-        return { status: 400, body: { error: "Informe o repositório no formato dono/nome, sem URL." } };
-      if (!retroSettings.sink)
-        return { status: 409, body: { error: "Adaptador de publicação indisponível neste daemon." } };
-      if (configuringRetro || approvingRetros.size > 0)
-        return { status: 409, body: { error: "Publicação ou configuração em andamento; tente novamente." } };
-      configuringRetro = true;
-      try {
-        const repo = body.repo.trim();
-        await harness.commit(async (tx) => {
-          (await tx.doc(StateDoc)).retroRepo = repo;
-        }, context);
-        retroSettings.repo = repo;
-        return { status: 200, body: { repo, available: true } };
-      } finally {
-        configuringRetro = false;
-      }
-    },
-
-    // Telegram: a interface de gestão do celular.
-    telegramConfiguracao: async () => {
-      const salvo = (await readState()).telegramConfig;
-      return salvo ? { status: 200, body: salvo } : { status: 404, body: { error: "Telegram não configurado" } };
-    },
-    salvarTelegramConfiguracao: async (corpo) => {
-      const dados = corpo as { chat?: unknown; credential?: unknown; usuario?: unknown } | undefined;
-      if (typeof dados?.chat !== "string" || !/^-?\d+$/.test(dados.chat.trim()))
-        return { status: 400, body: { error: "informe chat, o id numérico da conversa do bot" } };
-      if (typeof dados.usuario !== "string" || !/^\d+$/.test(dados.usuario.trim()))
-        return {
-          status: 400,
-          body: { error: "informe usuario, o id numérico do usuário autorizado a falar com a fábrica" },
-        };
-      const credential = typeof dados.credential === "string" ? dados.credential.trim() : undefined;
-      if (credential !== undefined && !(await segredos.has(credential)))
-        return { status: 400, body: { error: `credencial ${credential} não cadastrada` } };
-      const configTelegram = {
-        chat: dados.chat.trim(),
-        usuario: dados.usuario.trim(),
-        ...(credential ? { credential } : {}),
-      };
-      await harness.commit(async (tx) => {
-        (await tx.doc(StateDoc)).telegramConfig = configTelegram;
-      }, context);
-      await reiniciarBridge();
-      return { status: 200, body: configTelegram };
-    },
   };
 
-  // --- API HTTP ----------------------------------------------------------------------------------
-
-  const json = (res: ServerResponse, status: number, body: unknown) => {
-    const payload = JSON.stringify(body);
-    res.writeHead(status, { "content-type": "application/json" });
-    res.end(payload);
-  };
-  const readBody = async (req: IncomingMessage): Promise<unknown> => {
-    let raw = "";
-    for await (const chunk of req) raw += chunk;
-    return raw ? JSON.parse(raw) : undefined;
-  };
-  const streams = new Set<ServerResponse>();
-
-  /**
-   * Só clientes locais: Host precisa ser localhost/127.0.0.1 na porta do servidor (barra DNS rebinding) e um POST com
-   * Origin precisa vir dessas mesmas origens (barra CSRF de páginas abertas no navegador).
-   */
-  const localHosts = () => {
-    const { port } = server.address() as AddressInfo;
-    return new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
-  };
-  const _isJson = (req: IncomingMessage) =>
-    (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase() === "application/json";
-
-  const api = createApiLocal({ hosts: localHosts, rotas: criarRotasApi(commands) });
-
-  const server = createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      // Guardas e rotas migradas: o adaptador responde tudo que casa com uma das rotas dele. A página de gestão passa
-      // pelas mesmas guardas (só clientes locais).
-      const tratado = await api.tratar({
-        metodo: req.method ?? "",
-        caminho: url.pathname,
-        host: req.headers.host,
-        origem: req.headers.origin,
-        contentType: req.headers["content-type"],
-        corpo: () => readBody(req),
-      });
-      if (tratado && "tipo" in tratado) {
-        res.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        });
-        res.write(": conectado\n\n");
-        streams.add(res);
-        const desligar = tratado.assinar((dados) => res.write(`data: ${dados}\n\n`));
-        req.on("close", () => {
-          desligar();
-          streams.delete(res);
-        });
-        return;
-      }
-      if (tratado) return json(res, tratado.status, tratado.body);
-      const _route = `${req.method} ${url.pathname}`;
-
-      const page = req.method === "GET" ? await webFile(url.pathname) : undefined;
-      if (page) {
-        res.writeHead(200, page.headers);
-        res.end(page.body);
-        return;
-      }
-      json(res, 404, { error: "rota inexistente" });
-    } catch (err) {
-      json(res, err instanceof RepairConflict ? 409 : 500, { error: redactSecrets(String(err)) });
-    }
-  });
+  // --- API HTTP: servidor local no módulo factory-http ----------------------------------------------
+  const { server, streams } = criarServidorHttp({ rotas: criarRotasApi(commands) });
 
   // Sincronização de startup (ADR-0015): recupera o que o webhook perdeu enquanto o daemon esteve fora.
   void escalonador
@@ -2831,71 +800,27 @@ export async function startFactory(opts: {
   // rodar de novo não duplica nada.
   void readState()
     .then((state) => {
-      for (const registro of Object.values(state.importacoes ?? {})) {
-        if (registro.status === "importando") enfileirarImportacao(registro.repoId);
-      }
+      for (const repoId of importacoesParaRetomar(state.importacoes)) importacao.enfileirar(repoId);
     })
     .catch((err) => console.error("[fábrica] retomada das importações falhou:", redactSecrets(String(err))));
   // O timer pula o tick se ainda houver busca pendente, para não acumular buscas com a Fonte lenta.
-  const pollTimer =
-    opts.pollIntervalMs &&
-    setInterval(() => {
-      if (escalonador.buscasPendentes() > 0) return;
-      escalonador.pedirBusca().catch((err) => console.error("[fábrica] erro na busca:", err));
-    }, opts.pollIntervalMs);
+  const pollTimer = opts.pollIntervalMs && setInterval(() => escalonador.pedirBuscaPeriodica(), opts.pollIntervalMs);
 
-  // --- Interface de gestão ------------------------------------------------------------------------
-
-  /** Interface de gestão salva pela API (fatia 09): o token sai do cofre; só vale com usuário e credencial. */
-  async function interfaceDeGestaoSalva(): Promise<
-    { port: ManagementInterface; chat: string; user: string } | undefined
-  > {
-    const salvo = (await readState()).telegramConfig;
-    if (!salvo?.credential || !opts.criarInterfaceTelegram) return undefined;
-    const token = await segredos.get(salvo.credential);
-    if (!token) return undefined;
-    return { port: opts.criarInterfaceTelegram(token, salvo.chat), chat: salvo.chat, user: salvo.usuario };
-  }
-  // Variáveis de ambiente, quando definidas, têm prioridade sobre a configuração salva.
-  async function montarBridge(management: { port: ManagementInterface; chat: string; user?: string } | undefined) {
-    return (
-      management &&
-      (await startManagementBridge({
-        ...management,
-        events,
-        initialEventCount,
-        progress: {
-          load: async () => {
-            const stored = (await harness.snapshot(ManagementDoc, context))?.[management.port.name];
-            return stored && { ...stored };
-          },
-          save: (progress) =>
-            harness.commit(async (tx) => {
-              (await tx.doc(ManagementDoc))[management.port.name] = progress;
-            }, context),
-        },
-        tasks: async () => (await readState()).tasks,
-        commands,
-        content: (project) => projects.get(project)?.config.telegram?.content ?? "full",
-        contextLabel: (name) => (projects.get(name)?.config.activity === "business-hours" ? "Empresa" : "Pessoal"),
-        availableAt: (name) => {
-          const config = projects.get(name)?.config;
-          return config ? nextProjectActivity(config, clock.now()) : clock.now();
-        },
-        now: clock.now,
-        armTimer,
-      }))
-    );
-  }
-  let bridge = await montarBridge(opts.management ?? (await interfaceDeGestaoSalva()));
-  /** Telegram salvo pela API vale sem reiniciar; a variável de ambiente (opts.management) continua prioritária. */
-  async function reiniciarBridge(): Promise<void> {
-    if (opts.management) return;
-    const anterior = bridge;
-    bridge = undefined;
-    await anterior?.stop();
-    bridge = await montarBridge(await interfaceDeGestaoSalva());
-  }
+  // Interface de gestão (Telegram): no módulo factory-gestao.
+  const gestao = await iniciarGestao({
+    management: opts.management,
+    criarInterfaceTelegram: opts.criarInterfaceTelegram,
+    segredos,
+    readState,
+    harness,
+    context,
+    events,
+    initialEventCount,
+    projects,
+    clock,
+    armTimer,
+    commands,
+  });
 
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -2922,7 +847,7 @@ export async function startFactory(opts: {
     close: async () => {
       escalonador.parar();
       await avisos.flush();
-      await bridge?.stop();
+      await gestao.parar();
       await webhookListener?.close();
       if (pollTimer) clearInterval(pollTimer);
       for (const stream of streams) stream.end();

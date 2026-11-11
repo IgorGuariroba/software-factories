@@ -7,6 +7,16 @@ import type {
   LinkedPullRequest,
   TextAttachment,
 } from "./demand-source.js";
+import { CAMPO_CREDENCIAL, CAMPO_LABELS_IGNORADAS } from "./fonte-campos.js";
+import {
+  CLOSED_STATUS,
+  chaveDoCard,
+  mencaoDePessoa,
+  OPEN_STATUS,
+  STATUS_LABEL,
+  statusDoCard,
+  temRotuloIgnorado,
+} from "./packages/fonte-demanda/index.js";
 
 export interface GhExecResult {
   stdout: string;
@@ -52,9 +62,7 @@ export interface GitHubDemandSourceOptions {
 }
 
 /** Prefixo dos labels de status da fábrica. */
-export const STATUS_LABEL = "fabrica:";
-export const OPEN_STATUS = "aberta";
-export const CLOSED_STATUS = "fechada";
+export { CLOSED_STATUS, OPEN_STATUS, STATUS_LABEL } from "./packages/fonte-demanda/index.js";
 
 /** Issue como a API do GitHub a devolve (e como o webhook `issues` a envia). */
 export interface RawIssue {
@@ -97,12 +105,10 @@ export function labelNames(issue: RawIssue): string[] {
  * usada também pelo webhook.
  */
 export function cardOfIssue(opts: { project: string; assignee: string }, issue: RawIssue): Card {
-  const label = labelNames(issue).find((n) => n.startsWith(STATUS_LABEL));
-  const status = issue.state === "closed" ? CLOSED_STATUS : label ? label.slice(STATUS_LABEL.length) : OPEN_STATUS;
   return {
-    key: `${opts.project}-${issue.number}`,
+    key: chaveDoCard(opts.project, issue.number),
     title: issue.title,
-    status,
+    status: statusDoCard({ fechada: issue.state === "closed", rotulos: labelNames(issue) }),
     assignee: opts.assignee,
     description: issue.body ?? "",
   };
@@ -150,11 +156,10 @@ export class GitHubDemandSource implements DemandSource {
     if (assignee !== this.opts.assignee) return [];
     const issues = await this.list<RawIssue>(`repos/${this.opts.repo}/issues?state=open&per_page=100`, "issues");
     // Épicos (com sub-issues ou com um label ignorado) ficam fora: o trabalho está nas sub-issues, cada uma na fila.
-    const ignored = new Set((this.opts.ignoreLabels ?? ["epic"]).map((l) => l.toLowerCase()));
     return issues
       .filter((i) => !i.pull_request)
       .filter((i) => !(i.sub_issues_summary?.total ?? 0))
-      .filter((i) => !labelNames(i).some((l) => ignored.has(l.toLowerCase())))
+      .filter((i) => !temRotuloIgnorado(labelNames(i), this.opts.ignoreLabels))
       .map((i) => this.toCard(i));
   }
 
@@ -298,7 +303,7 @@ export class GitHubDemandSource implements DemandSource {
   }
 
   formatMention(personId: string): string {
-    return `@${personId}`;
+    return mencaoDePessoa(personId);
   }
 }
 
@@ -314,7 +319,7 @@ export const ESQUEMA_FONTE = {
     { campo: "project", rotulo: "Prefixo das chaves", tipo: "texto", obrigatorio: true },
     { campo: "repo", rotulo: "Repositório (dono/nome)", tipo: "texto", obrigatorio: true },
     { campo: "assignee", rotulo: "Dono das issues", tipo: "texto", obrigatorio: true },
-    { campo: "credential", rotulo: "Credencial (nome no cofre)", tipo: "segredo", obrigatorio: false },
-    { campo: "ignoreLabels", rotulo: "Labels ignoradas", tipo: "lista", obrigatorio: false },
+    CAMPO_CREDENCIAL,
+    CAMPO_LABELS_IGNORADAS,
   ],
 };

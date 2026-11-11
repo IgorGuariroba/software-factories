@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { ProjectConfig } from "./config.js";
 import { ConfigError, startDaemon } from "./daemon.js";
 import { createFactoryModels } from "./factory-models.js";
 import { createGitHubDemandSource } from "./github-demand-source.js";
@@ -30,6 +31,15 @@ if (!Number.isFinite(pollSeconds) || pollSeconds <= 0 || pollSeconds * 1000 > MA
   process.exit(1);
 }
 const pollIntervalMs = pollSeconds * 1000;
+
+/** A Fonte da configuração, se ela é do tipo pedido; senão, erro (o adaptador não pode ser montado para outra Fonte). */
+function fonteDe<T extends ProjectConfig["source"]["type"]>(
+  config: ProjectConfig,
+  tipo: T,
+): Extract<ProjectConfig["source"], { type: T }> {
+  if (config.source.type !== tipo) throw new Error(`projeto ${config.name} não é ${tipo}`);
+  return config.source as Extract<ProjectConfig["source"], { type: T }>;
+}
 
 /** Telegram: token e conversa pelo ambiente, nunca na config. Sem eles, o daemon sobe só com a API local. */
 function telegramFromEnv() {
@@ -112,13 +122,13 @@ try {
     pollIntervalMs,
     sources: {
       jira: (config) => {
-        if (config.source.type !== "jira") throw new Error(`projeto ${config.name} não é jira`);
+        const fonte = fonteDe(config, "jira");
         // Credencial do cofre (ADR-0018): o token sai do cofre pelo nome guardado na configuração, a cada download.
-        const { credential, email } = config.source;
+        const { credential, email } = fonte;
         return createJiraDemandSource({
-          project: config.source.project,
-          assignee: config.source.assignee,
-          baseUrl: config.source.baseUrl,
+          project: fonte.project,
+          assignee: fonte.assignee,
+          baseUrl: fonte.baseUrl,
           ...(credential && email
             ? {
                 credentials: async () => {
@@ -130,27 +140,27 @@ try {
         });
       },
       gitlab: (config) => {
-        if (config.source.type !== "gitlab") throw new Error(`projeto ${config.name} não é gitlab`);
-        const credencialGitLab = config.source.credential ?? "";
+        const fonte = fonteDe(config, "gitlab");
+        const credencialGitLab = fonte.credential ?? "";
         return createGitLabDemandSource({
-          project: config.source.project,
-          repo: config.source.repo,
-          assignee: config.source.assignee,
-          ...(config.source.hostname ? { hostname: config.source.hostname } : {}),
-          ignoreLabels: config.source.ignoreLabels,
+          project: fonte.project,
+          repo: fonte.repo,
+          assignee: fonte.assignee,
+          ...(fonte.hostname ? { hostname: fonte.hostname } : {}),
+          ignoreLabels: fonte.ignoreLabels,
           // Token do GitLab no cofre pelo nome da credencial (ADR-0018); sem credencial, vale o login do glab.
-          ...(config.source.credential ? { token: () => cofre.get(credencialGitLab) } : {}),
+          ...(fonte.credential ? { token: () => cofre.get(credencialGitLab) } : {}),
         });
       },
       // Repositório monitorado (ADR-0014): toda issue aberta passa pela triagem antes da SPEC.
       github: (config) => {
-        if (config.source.type !== "github") throw new Error(`projeto ${config.name} não é github`);
-        const credencialGitHub = config.source.credential;
+        const fonte = fonteDe(config, "github");
+        const credencialGitHub = fonte.credential;
         return createGitHubDemandSource({
-          project: config.source.project,
-          repo: config.source.repo,
-          assignee: config.source.assignee,
-          ignoreLabels: config.source.ignoreLabels,
+          project: fonte.project,
+          repo: fonte.repo,
+          assignee: fonte.assignee,
+          ignoreLabels: fonte.ignoreLabels,
           // Token do GitHub no cofre pelo nome da credencial (ADR-0018); sem credencial, vale o login do gh.
           ...(credencialGitHub ? { token: () => cofre.get(credencialGitHub) } : {}),
         });

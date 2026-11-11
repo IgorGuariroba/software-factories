@@ -1,5 +1,14 @@
 import { execFile } from "node:child_process";
 import type { Card, CardComment, DemandSource, TextAttachment } from "./demand-source.js";
+import { CAMPO_CREDENCIAL, CAMPO_LABELS_IGNORADAS } from "./fonte-campos.js";
+import {
+  CLOSED_STATUS,
+  chaveDoCard,
+  mencaoDePessoa,
+  OPEN_STATUS,
+  STATUS_LABEL,
+  statusDoCard,
+} from "./packages/fonte-demanda/index.js";
 import { redactSecrets } from "./secrets.js";
 
 export interface GlabExecResult {
@@ -48,9 +57,8 @@ export interface GitLabDemandSourceOptions {
 }
 
 /** Prefixo dos labels de status da fábrica, igual ao da Fonte GitHub (ADR-0014). */
-export const STATUS_LABEL = "fabrica:";
-export const OPEN_STATUS = "aberta";
-export const CLOSED_STATUS = "fechada";
+export { CLOSED_STATUS, OPEN_STATUS, STATUS_LABEL } from "./packages/fonte-demanda/index.js";
+
 const PAGE_SIZE = 100;
 
 interface RawIssue {
@@ -106,7 +114,7 @@ export class GitLabDemandSource implements DemandSource {
   }
 
   private keyOf(iid: number): string {
-    return `${this.opts.project}-${iid}`;
+    return chaveDoCard(this.opts.project, iid);
   }
 
   /** O número da issue de um card deste projeto; `undefined` para um card de outro projeto. */
@@ -125,9 +133,7 @@ export class GitLabDemandSource implements DemandSource {
   }
 
   private statusOf(issue: RawIssue): string {
-    if (issue.state === "closed") return CLOSED_STATUS;
-    const label = (issue.labels ?? []).find((l) => l.startsWith(STATUS_LABEL));
-    return label ? label.slice(STATUS_LABEL.length) : OPEN_STATUS;
+    return statusDoCard({ fechada: issue.state === "closed", rotulos: issue.labels ?? [] });
   }
 
   private toCard(issue: RawIssue): Card {
@@ -211,7 +217,7 @@ export class GitLabDemandSource implements DemandSource {
   }
 
   formatMention(personId: string): string {
-    return `@${personId}`;
+    return mencaoDePessoa(personId);
   }
 }
 
@@ -228,7 +234,7 @@ export const ESQUEMA_FONTE = {
     { campo: "repo", rotulo: "Projeto (grupo/projeto)", tipo: "texto", obrigatorio: true },
     { campo: "assignee", rotulo: "Usuário dono das issues", tipo: "texto", obrigatorio: true },
     { campo: "hostname", rotulo: "Servidor (vazio para gitlab.com)", tipo: "texto", obrigatorio: false },
-    { campo: "credential", rotulo: "Credencial (nome no cofre)", tipo: "segredo", obrigatorio: false },
-    { campo: "ignoreLabels", rotulo: "Labels ignoradas", tipo: "lista", obrigatorio: false },
+    CAMPO_CREDENCIAL,
+    CAMPO_LABELS_IGNORADAS,
   ],
 };

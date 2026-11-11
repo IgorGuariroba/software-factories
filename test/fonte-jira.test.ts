@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isAutomationText } from "../src/effect-writer.js";
 import { type AcliRunner, createJiraDemandSource } from "../src/jira-demand-source.js";
+import { isAutomationText } from "../src/marca-automacao.js";
 import { FakeAcli, type FakeJiraPerson } from "./fakes/fake-acli.js";
 
 // O que é só do formato do Jira e não cabe no contrato da `DemandSource`, pela interface do adaptador

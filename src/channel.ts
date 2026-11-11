@@ -1,5 +1,6 @@
 import type { DemandSource } from "./demand-source.js";
-import { type EffectWriter, isAutomationText } from "./effect-writer.js";
+import type { EffectWriter } from "./effect-writer.js";
+import { isAutomationText } from "./marca-automacao.js";
 
 /**
  * Onde uma pergunta foi feita, para lembrar e achar a resposta depois (inclusive após um reinício). A fábrica guarda

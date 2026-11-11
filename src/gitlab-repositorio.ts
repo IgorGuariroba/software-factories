@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
+import { rodarGit } from "./git.js";
 import { redactSecrets } from "./secrets.js";
 
 /**
@@ -63,17 +63,6 @@ export async function verificarRepositorioGitlab(opts: {
 }
 
 /** Roda o git com o ambiente dado a mais, sem prompt interativo. Nenhum argumento leva segredo. */
-function rodarGit(args: string[], envExtra: Record<string, string>): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      { env: { ...process.env, ...envExtra, GIT_TERMINAL_PROMPT: "0" }, timeout: 300_000 },
-      (err) => (err ? reject(err) : resolve()),
-    );
-  });
-}
-
 /**
  * Clona `grupo/projeto` do servidor `host` em `destino`. O token vai só no cabeçalho da chamada do git; o remoto
  * gravado no clone é o público, sem token.

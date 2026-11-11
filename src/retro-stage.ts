@@ -1,5 +1,6 @@
-import { createHash, randomBytes } from "node:crypto";
-import { configure, defineExtension, defineTool, type Harness } from "@earendil-works/pi-durable";
+import { randomBytes } from "node:crypto";
+import type { Context } from "@earendil-works/chord/context";
+import { defineExtension, defineTool, type Harness } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, str } from "@earendil-works/pi-schema";
 import { z } from "zod";
 import {
@@ -18,9 +19,11 @@ import {
   StateDoc,
   type StepRuntime,
 } from "./durable.js";
-import { type EffectWriter, GuardrailViolation, withAutomationMark } from "./effect-writer.js";
+import type { EffectWriter } from "./effect-writer.js";
+import { tarefaDoEstado } from "./estado-fabrica.js";
 import type { EventRecorder } from "./events.js";
-import type { RetroIssue, RetroSink } from "./retro-sink.js";
+import { chamadaDoPedido, criarConversaDaTarefa, EXECUCAO_DE_ENTREGA } from "./packages/modelo-etapa/index.js";
+import type { RetroSink } from "./retro-sink.js";
 
 const KINDS = ["fabrica", "conhecimento", "repo-time"] as const satisfies readonly RetroKind[];
 
@@ -53,7 +56,7 @@ const deliverTool = defineTool({
       { description: "Propostas de melhoria; vazia se não houver nada a melhorar.", maxItems: 10 },
     ),
   }),
-  execute: async () => ({ output: [{ type: "text", text: "Recebido." }], control: { terminate: true } }),
+  execute: EXECUCAO_DE_ENTREGA,
 });
 
 export const RetroExtension = defineExtension({ name: "fabrica.retro", tools: [deliverTool] });
@@ -79,45 +82,6 @@ Entregue chamando a ferramenta ${DELIVER_TOOL} uma única vez; não responda em 
 
 /** Falhas seguidas de uma retrô antes de ela desistir. Desistir não bloqueia a Tarefa: ela segue sem a retrô. */
 export const MAX_RETRO_ATTEMPTS = 3;
-
-/** Semelhança mínima (Jaccard dos tokens do título) para uma issue aberta contar como "parecida". */
-export const SIMILARITY_THRESHOLD = 0.6;
-
-const STOPWORDS = new Set(
-  "a o as os e ou de da do das dos em na no nas nos para pra por com sem um uma uns umas que ao aos se the of to in on and for"
-    .split(" ")
-    .filter(Boolean),
-);
-
-/** Tokens do título: minúsculas, sem acentos, sem pontuação, sem palavras vazias e sem tokens de uma letra. */
-const tokens = (title: string) =>
-  new Set(
-    title
-      .normalize("NFD")
-      .replace(/\p{M}/gu, "")
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((t) => t.length >= 2 && !STOPWORDS.has(t)),
-  );
-
-/** Similaridade de Jaccard entre os tokens de dois títulos (0 a 1). */
-export function titleSimilarity(a: string, b: string): number {
-  const x = tokens(a);
-  const y = tokens(b);
-  if (x.size === 0 || y.size === 0) return 0;
-  const shared = [...x].filter((t) => y.has(t)).length;
-  return shared / (x.size + y.size - shared);
-}
-
-/** A issue aberta mais parecida com `title`, acima do limiar; no empate, a mais antiga (menor número). */
-export function findSimilarIssue(issues: RetroIssue[], title: string): RetroIssue | undefined {
-  let best: { issue: RetroIssue; score: number } | undefined;
-  for (const issue of [...issues].sort((a, b) => a.number - b.number)) {
-    const score = titleSimilarity(issue.title, title);
-    if (score >= SIMILARITY_THRESHOLD && (!best || score > best.score)) best = { issue, score };
-  }
-  return best?.issue;
-}
 
 /** Um identificador opaco para a Tarefa: aleatório, sem derivar do projeto nem do card. */
 export const newTaskRef = () => randomBytes(6).toString("hex");
@@ -160,7 +124,7 @@ export async function runRetro(opts: {
 
   let record: RetroRecord | undefined;
   await runtime.commit(async (tx) => {
-    const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+    const task = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
     if (!task) return;
     task.ref ??= newTaskRef();
     let stored = task.retros?.find((r) => r.stage === stage);
@@ -183,13 +147,27 @@ export async function runRetro(opts: {
   const save = () =>
     runtime.commit(async (tx) => {
       runtime.signal.throwIfAborted();
-      const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
+      const task = tarefaDoEstado(await tx.doc(StateDoc), opts.taskId);
       if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? copyOutOfCommit(retro) : r));
     });
 
+  const contexto = (): ContextoRetro => ({
+    retro,
+    runtime,
+    taskId: opts.taskId,
+    stage,
+    cardKey: opts.cardKey,
+    projectName: config.name,
+    events,
+    agente: opts.agente,
+    harness: opts.harness,
+    input: opts.input,
+    context,
+  });
+
   try {
     if (!retro.proposals) {
-      const delivery = await request();
+      const delivery = await pedirRetro(contexto());
       retro.summary = delivery.resumo;
       retro.proposals = delivery.propostas.map((p, i) => ({
         n: i + 1,
@@ -205,7 +183,7 @@ export async function runRetro(opts: {
     }
     for (const proposal of retro.proposals) {
       if (proposal.status !== "a-publicar") continue;
-      await publish(proposal);
+      await publicarProposta(contexto(), proposal);
       await save();
     }
     retro.status = "concluida";
@@ -239,157 +217,79 @@ export async function runRetro(opts: {
       message: `Retrô ${STAGE_LABEL[stage]} desistiu depois de ${retro.attempts} tentativas; a Tarefa segue sem ela: ${message}`,
     });
   }
-
-  async function request(): Promise<z.infer<typeof Delivery>> {
-    if (!retro.conversationId) {
-      await runtime.commit(async (tx) => {
-        const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
-        const modelo = opts.agente.modelo;
-        if (!modelo) throw new Error("a retrô não tem modelo configurado");
-        await configure(tx, conversation.id, {
-          model: { provider: modelo.provider, modelId: modelo.model },
-          extensions: [RetroExtension],
-          tools: ferramentasParaEtapa([deliverTool], opts.agente.ferramentas, "retro"),
-          instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(opts.agente)),
-          maxTurns: 2,
-        });
-        retro.conversationId = conversation.id;
-        const task = (await tx.doc(StateDoc)).tasks.find((t) => t.id === opts.taskId);
-        if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? copyOutOfCommit(retro) : r));
-      });
-    }
-    const conversation = retro.conversationId && (await opts.harness.conversation(retro.conversationId, context));
-    if (!conversation) throw new Error(`conversa da retrô ${STAGE_LABEL[stage]} não encontrada`);
-    // Um pedido por tentativa: repetir o id de um pedido que falhou devolveria a mesma submissão sem resposta.
-    const requestId = `retro-${stage}-${retro.attempts}`;
-    const submission = await conversation.submit({ type: "input", content: await opts.input(), requestId }, context);
-    const settled = await submission.wait(context);
-    if (settled.status !== "done") throw new Error(`o modelo não respondeu à retrô (${settled.status})`);
-
-    const latest = await conversation.entries({ order: "descending" }, 20, undefined, context);
-    for (const entry of latest.items) {
-      const message = (entry as { model?: { role?: string; content?: unknown }[] }).model?.[0];
-      if (message?.role === "user") break;
-      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      const call = message.content.find(
-        (block): block is { type: "toolCall"; name: string; arguments: unknown } =>
-          block?.type === "toolCall" && block.name === DELIVER_TOOL,
-      );
-      if (!call) continue;
-      const parsed = Delivery.safeParse(call.arguments);
-      if (parsed.success) return parsed.data;
-      throw new Error(`entrega inválida da retrô: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
-    }
-    throw new Error(`o modelo não entregou a retrô pela ferramenta ${DELIVER_TOOL}`);
-  }
-
-  async function publish(proposal: RetroProposal): Promise<void> {
-    if (proposal.kind === "conhecimento") {
-      // A aprovação (e a rejeição com motivo) é do usuário; aqui a proposta só fica pendente.
-      proposal.status = "pendente";
-      return;
-    }
-    if (proposal.kind === "repo-time") {
-      // Nunca vira issue nem MR no repositório do time: só um aviso ao usuário.
-      const message =
-        `Sugestão da retrô (${STAGE_LABEL[stage]}) da Tarefa ${opts.cardKey} para o repositório do time: ` +
-        `${proposal.title}. ${proposal.description}`;
-      const sent = events.list().some((e) => e.type === "notify" && e.target === opts.cardKey && e.message === message);
-      if (!sent)
-        await events.append({
-          type: "notify",
-          project: config.name,
-          target: opts.cardKey,
-          reason: "sugestao-repo-time",
-          message,
-        });
-      proposal.status = "avisada";
-      return;
-    }
-
-    // A publicação externa exige revisão humana explícita, fora da execução da Tarefa.
-    proposal.status = "pendente";
-  }
 }
 
-export type FactoryRetroPublication = {
-  writer: EffectWriter;
-  cardKey: string;
-  config: ProjectConfig;
-  sink?: RetroSink;
-  repo?: string;
+/** O que pedir a retrô ao modelo e publicar as propostas precisam da etapa e da Tarefa, sem a execução inteira. */
+export interface ContextoRetro {
+  retro: RetroRecord;
+  runtime: StepRuntime;
+  taskId: string;
   stage: RetroStage;
-  ref: string;
-  proposal: RetroProposal;
-};
-
-/** Prepara exatamente o texto a ser revisado antes da escrita pública. */
-export async function previewFactoryRetro(opts: FactoryRetroPublication) {
-  const { writer, cardKey, stage, ref, proposal } = opts;
-  const taskMarker = `tarefa \`${ref}\``;
-  const origin = `Origem: ${taskMarker}, retrô ${stage}, proposta ${proposal.n}.`;
-  const [titleResult, bodyResult, safeOrigin, safeTaskMarker] = await Promise.all([
-    writer.publicRetroPreview(cardKey, proposal.title.slice(0, 200)),
-    writer.publicRetroPreview(cardKey, `${proposal.description}\n\n---\n${origin}`),
-    writer.publicRetroText(cardKey, origin),
-    writer.publicRetroText(cardKey, taskMarker),
-  ]);
-  const title = titleResult.text;
-  const issueBody = bodyResult.text;
-  const blocked = titleResult.leftovers.length > 0 || bodyResult.leftovers.length > 0;
-  const body = withAutomationMark(issueBody);
-  const revision = createHash("sha256")
-    .update(JSON.stringify([opts.repo, title, body, opts.config.dryRun, blocked]))
-    .digest("hex");
-  return { title, body, revision, issueBody, safeOrigin, safeTaskMarker, blocked };
+  cardKey: string;
+  projectName: string;
+  events: EventRecorder;
+  agente: AgenteDaEtapa;
+  harness: Harness;
+  input: () => Promise<string>;
+  context: Context;
 }
 
-/** Publica somente uma proposta já revisada; a seleção de issue semelhante não acrescenta texto privado. */
-export async function publishFactoryRetro(
-  opts: FactoryRetroPublication,
-  preview: Awaited<ReturnType<typeof previewFactoryRetro>>,
-): Promise<void> {
-  const { proposal } = opts;
-  const { sink, repo, config, writer, cardKey } = opts;
-  if (!sink || !repo) {
-    proposal.status = "sem-repo";
-    return;
-  }
-  const mentions = (issue: RetroIssue, marker: string) =>
-    issue.body.includes(marker) || issue.comments.some((c) => c.includes(marker));
-
-  const { safeOrigin, safeTaskMarker, title: safeTitle, issueBody } = preview;
-  const open = await sink.listOpen(repo);
-  // Já publicada numa tentativa anterior (ex.: a fábrica caiu logo depois de escrever).
-  const published = open.find((i) => mentions(i, safeOrigin));
-  if (published) {
-    proposal.status = published.body.includes(safeOrigin) ? "issue-criada" : "mais-um";
-    proposal.issue = { number: published.number, url: published.url };
-    return;
-  }
-  const similar = findSimilarIssue(open, safeTitle);
-  try {
-    // Uma Tarefa conta uma vez por issue: a consolidada que repete uma proposta da etapa não comenta de novo.
-    if (similar && mentions(similar, safeTaskMarker)) {
-      proposal.status = "ja-registrada";
-      proposal.issue = { number: similar.number, url: similar.url };
-    } else if (similar) {
-      await writer.commentRetroIssue(cardKey, repo, similar.number, `+1\n\n${safeOrigin}`);
-      proposal.status = config.dryRun ? "dry-run" : "mais-um";
-      proposal.issue = { number: similar.number, url: similar.url };
-    } else {
-      const created = await writer.openRetroIssue(cardKey, repo, {
-        // O GitHub aceita títulos de até 256 caracteres.
-        title: preview.title,
-        body: issueBody,
+export async function pedirRetro(ctx: ContextoRetro): Promise<z.infer<typeof Delivery>> {
+  const { retro, runtime, taskId, stage, agente, harness, input, context } = ctx;
+  if (!retro.conversationId) {
+    await runtime.commit(async (tx) => {
+      const modelo = agente.modelo;
+      if (!modelo) throw new Error("a retrô não tem modelo configurado");
+      retro.conversationId = await criarConversaDaTarefa(tx, runtime.taskId, modelo, {
+        extensions: [RetroExtension],
+        tools: ferramentasParaEtapa([deliverTool], agente.ferramentas, "retro"),
+        instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(agente)),
+        maxTurns: 2,
       });
-      proposal.status = created ? "issue-criada" : "dry-run";
-      proposal.issue = created ?? null;
-    }
-  } catch (err) {
-    // Barrada pelo guardrail (o evento já saiu): a proposta fica registrada e a retrô segue com as outras.
-    if (!(err instanceof GuardrailViolation)) throw err;
-    proposal.status = "bloqueada";
-    proposal.reason = err.message;
+      const task = tarefaDoEstado(await tx.doc(StateDoc), taskId);
+      if (task) task.retros = (task.retros ?? []).map((r) => (r.stage === stage ? copyOutOfCommit(retro) : r));
+    });
   }
+  const conversation = retro.conversationId && (await harness.conversation(retro.conversationId, context));
+  if (!conversation) throw new Error(`conversa da retrô ${STAGE_LABEL[stage]} não encontrada`);
+  // Um pedido por tentativa: repetir o id de um pedido que falhou devolveria a mesma submissão sem resposta.
+  const requestId = `retro-${stage}-${retro.attempts}`;
+  const submission = await conversation.submit({ type: "input", content: await input(), requestId }, context);
+  const settled = await submission.wait(context);
+  if (settled.status !== "done") throw new Error(`o modelo não respondeu à retrô (${settled.status})`);
+
+  const call = await chamadaDoPedido(conversation, context, [DELIVER_TOOL]);
+  if (!call) throw new Error(`o modelo não entregou a retrô pela ferramenta ${DELIVER_TOOL}`);
+  const parsed = Delivery.safeParse(call.arguments);
+  if (parsed.success) return parsed.data;
+  throw new Error(`entrega inválida da retrô: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+}
+
+export async function publicarProposta(ctx: ContextoRetro, proposal: RetroProposal): Promise<void> {
+  const { stage, cardKey, projectName, events } = ctx;
+  if (proposal.kind === "conhecimento") {
+    // A aprovação (e a rejeição com motivo) é do usuário; aqui a proposta só fica pendente.
+    proposal.status = "pendente";
+    return;
+  }
+  if (proposal.kind === "repo-time") {
+    // Nunca vira issue nem MR no repositório do time: só um aviso ao usuário.
+    const message =
+      `Sugestão da retrô (${STAGE_LABEL[stage]}) da Tarefa ${cardKey} para o repositório do time: ` +
+      `${proposal.title}. ${proposal.description}`;
+    const sent = events.list().some((e) => e.type === "notify" && e.target === cardKey && e.message === message);
+    if (!sent)
+      await events.append({
+        type: "notify",
+        project: projectName,
+        target: cardKey,
+        reason: "sugestao-repo-time",
+        message,
+      });
+    proposal.status = "avisada";
+    return;
+  }
+
+  // A publicação externa exige revisão humana explícita, fora da execução da Tarefa.
+  proposal.status = "pendente";
 }

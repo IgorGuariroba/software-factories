@@ -365,6 +365,7 @@ body {
   background: var(--ok);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .cartao .dica {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -631,6 +632,7 @@ body {
   margin: 0 0 0.25rem;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 h2 {
   margin: var(--sp-1) 0 var(--sp-3);
   font-size: 1.0625rem;
@@ -638,6 +640,7 @@ h2 {
   letter-spacing: -0.015em;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 h3 {
   margin: var(--sp-5) 0 var(--sp-2);
   font-size: 0.9375rem;
@@ -662,6 +665,7 @@ th {
   font-size: 0.85rem;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 button {
   font: inherit;
   font-size: 0.85rem;
@@ -975,6 +979,7 @@ summary:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .triagem-tecnica summary {
   cursor: pointer;
   padding: 0.5rem 0;
@@ -1042,6 +1047,7 @@ summary:focus-visible {
 .impl-ticket + .impl-ticket {
   border-top: 1px solid var(--borda);
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .impl-ticket > summary {
   min-height: 64px;
   padding: 1rem 0;
@@ -1101,6 +1107,7 @@ summary:focus-visible {
   margin-top: 1rem;
   font-size: 0.8rem;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .impl-technical > summary {
   min-height: 44px;
   padding: 0.8rem 0;
@@ -1112,6 +1119,7 @@ summary:focus-visible {
   padding-top: 0.5rem;
   border-top: 1px solid var(--borda);
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .impl-history > summary {
   min-height: 44px;
   padding: 0.75rem 0;
@@ -1136,6 +1144,7 @@ summary:focus-visible {
   border-bottom: 1px solid var(--borda);
   padding: 0.8rem 0;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .impl-event > summary {
   min-height: 44px;
   cursor: pointer;
@@ -1200,6 +1209,7 @@ summary:focus-visible {
   position: relative;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .menu-config summary {
   cursor: pointer;
   padding: 0.7rem;
@@ -1271,6 +1281,7 @@ summary:focus-visible {
   box-shadow: var(--sombra);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica span {
   color: var(--suave);
   font-size: 0.8125rem;
@@ -1337,6 +1348,7 @@ summary:focus-visible {
   gap: var(--sp-1);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .modos button {
   border-color: transparent;
   background: transparent;
@@ -1404,6 +1416,7 @@ summary:focus-visible {
 }
 
 /* Ação primária da tarefa (retomar / próxima ação): a única preenchida do detalhe. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .proximo button {
   background: var(--destaque);
   border-color: var(--destaque);
@@ -1420,6 +1433,7 @@ summary:focus-visible {
 /* ===== Auditoria de componentes base (propaga para todas as telas) ===== */
 
 /* Botão: altura por escala, alinhamento e todos os estados interativos. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 button {
   display: inline-flex;
   align-items: center;
@@ -1478,6 +1492,7 @@ button[aria-busy="true"]::after {
 /* Botão primário: ação de decisão; os demais são secundários/ghost. */
 #buscar,
 #salvar-retros,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .proximo button {
   box-shadow: var(--sombra);
 }
@@ -1496,10 +1511,12 @@ button.perigo:hover:not(:disabled) {
 }
 
 /* Stepper: rótulos com largura fixa para não desalinhar os nós. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li {
   min-width: 0;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li > button,
 .pipeline li > span {
   overflow-wrap: anywhere;
@@ -1530,23 +1547,30 @@ button.perigo:hover:not(:disabled) {
 }
 
 /* Stepper: rótulos alinhados pelo topo; cada passo ocupa a mesma altura de texto. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li {
   align-content: start;
   min-height: 56px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li > button,
 .pipeline li > span {
   line-height: 1.3;
 }
 
 /* Rótulo do passo fica dentro da própria coluna: quebra em duas linhas em vez de invadir o vizinho. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li {
   padding-right: var(--sp-2);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li .estado-etapa,
-.pipeline li > button {
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
+  .pipeline
+  li
+  > button {
   display: block;
   max-width: 100%;
   white-space: normal;
@@ -1701,7 +1725,9 @@ button.perigo:hover:not(:disabled) {
   align-content: start;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica > span,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica > strong,
 .metrica > small {
   justify-self: start;
@@ -1732,12 +1758,16 @@ button.perigo:hover:not(:disabled) {
 }
 
 /* Números tabulares em contadores, KPIs, IDs e badges numéricas. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica strong,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .contagem,
 .coluna h3 .contagem,
 .cartao .cabeca,
 .cartao .chave,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .tentativas,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .resultado,
 .selo {
   font-variant-numeric: tabular-nums;
@@ -1751,6 +1781,7 @@ button.perigo:hover:not(:disabled) {
   box-shadow: none;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica strong {
   font-size: 1.25rem;
   font-weight: 600;
@@ -1768,6 +1799,7 @@ button.perigo:hover:not(:disabled) {
 }
 
 /* Toolbar em linha única: busca, contagem e modo. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .ferramentas {
   align-items: center;
   margin-top: var(--sp-4);
@@ -1784,6 +1816,7 @@ button.perigo:hover:not(:disabled) {
   padding: var(--sp-2) var(--sp-3);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .ferramentas .resultado {
   margin: 0 auto 0 0;
   white-space: nowrap;
@@ -1881,11 +1914,13 @@ details[open] > summary.disclosure .chevron {
   display: none;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .cartao.sua-vez .dica {
   color: var(--suave);
 }
 
 /* Alerta de pausa/bloqueio: o botão de ação segue a cor do alerta, sem roxo. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .proximo button {
   background: var(--alerta);
   border-color: var(--alerta);
@@ -1904,23 +1939,30 @@ details[open] > summary.disclosure .chevron {
 }
 
 /* Stepper: rótulos legíveis, sem quebrar em três linhas nem colidir com a borda. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li {
   min-height: 64px;
   padding-right: var(--sp-2);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li > button,
-.pipeline li > span {
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
+  .pipeline
+  li
+  > span {
   font-size: 0.75rem;
   line-height: 1.3;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li .estado-etapa {
   white-space: normal;
   word-break: normal;
 }
 
 /* Toolbar: itens centralizados no mesmo eixo e separados do quadro. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .ferramentas {
   margin-bottom: var(--sp-4);
 }
@@ -1930,8 +1972,12 @@ details[open] > summary.disclosure .chevron {
 }
 
 /* Rótulo do passo em uma linha no desktop; quebra só se a coluna for estreita. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pipeline li > button,
-.pipeline li > span {
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
+  .pipeline
+  li
+  > span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2046,6 +2092,7 @@ details[open] > summary.disclosure .chevron {
   color: var(--suave);
   font-size: 0.8125rem;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .projetos-tela .campo {
   display: flex;
   flex-direction: column;
@@ -2125,6 +2172,7 @@ details[open] > summary.disclosure .chevron {
   padding: 0;
   list-style: none;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .projetos-tela .lista-cofre li {
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--borda);
@@ -2335,6 +2383,7 @@ details[open] > summary.disclosure .chevron {
   flex-direction: column;
   gap: 2px;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .projetos-tela .projeto-subnav button {
   padding: 6px 10px;
   border: 0;
@@ -2483,8 +2532,11 @@ button[hidden] {
 .pagina-simples h2 {
   margin-bottom: 4px;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .atalhos-inicio > p,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .pagina-simples > p,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .painel-area p {
   color: var(--suave);
 }
@@ -2510,6 +2562,7 @@ button[hidden] {
 .atalhos-grade a:hover {
   border-color: var(--destaque);
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .atalhos-grade strong {
   display: flex;
   justify-content: space-between;
@@ -2526,7 +2579,9 @@ button[hidden] {
   align-items: flex-start;
   margin-top: 28px;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .painel-area h3,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .painel-area p {
   margin: 0;
 }
@@ -2627,6 +2682,7 @@ body {
   font-weight: 500;
   color: #a1a1aa;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .navegacao-principal a span {
   width: 16px;
   text-align: center;
@@ -2667,6 +2723,7 @@ body {
   background: #10b981;
   animation: status-pulse 2s infinite;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .controles button {
   width: 100%;
   height: 28px;
@@ -2715,12 +2772,15 @@ body {
   box-shadow: none;
   color: #a1a1aa;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica span,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica strong {
   color: inherit;
   font-size: 13px;
   font-weight: 500;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .metrica strong {
   color: #a1a1aa;
   font-variant-numeric: tabular-nums;
@@ -2757,6 +2817,7 @@ body {
   font-size: 14px;
   font-weight: 600;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .triagem-cabeca p {
   margin: 4px 0 0;
   color: #71717a;
@@ -2808,6 +2869,7 @@ body {
 
 /* Ícones Lucide (web/icones.js) nos slots data-icone. */
 .navegacao-principal .icone-nav,
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 summary.disclosure .chevron {
   display: inline-flex;
   flex-shrink: 0;
@@ -3010,6 +3072,7 @@ summary.disclosure .chevron svg {
   opacity: 1;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .linha-acoes button {
   min-height: 28px;
   padding: 4px 8px;
@@ -3053,12 +3116,14 @@ summary.disclosure .chevron svg {
   gap: 16px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .cartao-cabeca h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .cartao-cabeca p {
   max-width: 62ch;
   margin: 4px 0 0;
@@ -3071,6 +3136,7 @@ summary.disclosure .chevron svg {
   gap: 8px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .cartao-area button {
   min-height: 32px;
   padding: 6px 12px;
@@ -3104,17 +3170,20 @@ summary.disclosure .chevron svg {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .cartao-rodape p {
   margin: 0;
   color: #71717a;
   font-size: 12px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .campo {
   display: grid;
   gap: 6px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .campo label {
   color: #a1a1aa;
   font-size: 12px;
@@ -3133,6 +3202,7 @@ summary.disclosure .chevron svg {
   font-size: 13px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .ajuda {
   margin: 0;
   color: #71717a;
@@ -3150,6 +3220,7 @@ summary.disclosure .chevron svg {
   display: none;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .lista-demandas li {
   padding: 10px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -3167,10 +3238,12 @@ summary.disclosure .chevron svg {
   text-align: center;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .estado-vazio p {
   margin: 0;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .estado-vazio strong {
   color: #f4f4f5;
   font-weight: 600;
@@ -3184,6 +3257,7 @@ summary.disclosure .chevron svg {
   color: #52525b;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .estado-vazio .icone-vazio svg {
   display: block;
 }
@@ -3244,6 +3318,7 @@ summary.disclosure .chevron svg {
   min-width: 32px;
 }
 /* Ações à direita, com largura reservada: a coluna do contador não muda de lugar entre linhas. */
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .linha-acoes {
   flex: 0 0 132px;
   justify-content: flex-end;
@@ -3285,6 +3360,7 @@ summary.disclosure .chevron svg {
     overflow-x: auto;
   }
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .coluna h3 {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -3320,6 +3396,7 @@ summary.disclosure .chevron svg {
   color: #a1a1aa;
   font-size: 13px;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .estado-carregando p {
   margin: 0;
 }
@@ -3389,10 +3466,12 @@ summary.disclosure .chevron svg {
   min-width: 0;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .etapa-texto strong {
   font-weight: 600;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .etapa-texto span {
   color: var(--texto-secundario, #9aa3ad);
   font-size: 0.9rem;
@@ -3453,6 +3532,7 @@ summary.disclosure .chevron svg {
   font-size: 0.85rem;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: a ordem das regras define a cascata desta tela */
 .campo-busca input {
   min-height: 36px;
   padding: var(--sp-2) var(--sp-3);

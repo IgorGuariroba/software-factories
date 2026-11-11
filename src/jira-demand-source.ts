@@ -1,29 +1,11 @@
-import { execFile } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
 import type { Card, CardComment, DemandSource, TextAttachment } from "./demand-source.js";
+import { CAMPO_CREDENCIAL } from "./fonte-campos.js";
+import { type AcliRunner, defaultAcliRunner } from "./jira-acli.js";
 
-const execFileAsync = promisify(execFile);
+export type { AcliExecResult, AcliRunner } from "./jira-acli.js";
 
-export interface AcliExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode?: number;
-}
-
-/** Runner injetável para comandos do acli. Permite testes sem invocar o binário real. */
-export type AcliRunner = (args: string[]) => Promise<AcliExecResult>;
-
-interface AttachmentInfo {
-  id: string;
-  filename: string;
-  mimeType?: string;
-  contentUrl?: string;
-  size?: number;
-}
-
-type AttachmentReader = (attachment: AttachmentInfo) => Promise<string>;
+import { type AttachmentReader, createHttpAttachmentReader } from "./jira-anexos.js";
+import { adfToText, findCommentId, isTextAttachment, textToAdf } from "./packages/jira-texto/index.js";
 
 export interface JiraDemandSourceOptions {
   /** Chave do projeto no Jira (ex.: "PROJ"). */
@@ -53,168 +35,6 @@ export interface JiraDemandSourceOptions {
   baseUrl?: string;
 }
 
-/**
- * Runner padrão que localiza o acli (incluindo ~/.local/bin) e executa o binário.
- */
-const defaultAcliRunner: AcliRunner = async (args: string[]) => {
-  const customPath = process.env.ACLI_PATH;
-  const acliBin = customPath || "acli";
-  const userLocalBin = join(homedir(), ".local", "bin");
-  const currentPath = process.env.PATH ?? "";
-  const pathWithLocal = currentPath.includes(userLocalBin) ? currentPath : `${userLocalBin}:${currentPath}`;
-
-  try {
-    const { stdout, stderr } = await execFileAsync(acliBin, args, {
-      maxBuffer: 20 * 1024 * 1024,
-      timeout: 120_000,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: pathWithLocal,
-      },
-    });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (error: unknown) {
-    const err = error as { stdout?: string; stderr?: string; code?: number; message?: string };
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr?.trim() || `código ${err.code ?? "desconhecido"}`,
-      exitCode: typeof err.code === "number" ? err.code : 1,
-    };
-  }
-};
-
-const MISSING_ATTACHMENT_CREDENTIALS = "[conteúdo não lido: defina ATLASSIAN_EMAIL e ATLASSIAN_API_TOKEN]";
-
-/**
- * Leitor de anexos por HTTP com autenticação básica (`ATLASSIAN_EMAIL` + `ATLASSIAN_API_TOKEN`), já que o `acli` não
- * baixa anexos. Sem credencial, devolve um conteúdo que diz isso explicitamente. Com credencial, qualquer falha lança
- * erro (a Tarefa é tentada de novo). O token nunca aparece na mensagem de erro.
- */
-function createHttpAttachmentReader(
-  opts: {
-    env?: Record<string, string | undefined>;
-    credentials?: () => Promise<{ email: string; token: string } | undefined>;
-    fetch?: typeof fetch;
-    timeoutMs?: number;
-    baseUrl?: string;
-  } = {},
-): AttachmentReader {
-  return async (attachment) => {
-    const env = opts.env ?? process.env;
-    const doCofre = opts.credentials ? await opts.credentials() : undefined;
-    const email = doCofre ? doCofre.email : env.ATLASSIAN_EMAIL;
-    const token = doCofre ? doCofre.token : env.ATLASSIAN_API_TOKEN;
-    if (!email || !token) return MISSING_ATTACHMENT_CREDENTIALS;
-    const what = `anexo ${attachment.filename} (id ${attachment.id})`;
-    const url =
-      opts.baseUrl && attachment.id
-        ? `${opts.baseUrl.replace(/\/+$/, "")}/rest/api/3/attachment/content/${encodeURIComponent(attachment.id)}`
-        : attachment.contentUrl;
-    if (!url) throw new Error(`Falha ao ler ${what}: o Jira não informou a URL do conteúdo`);
-    const doFetch = opts.fetch ?? fetch;
-    let res: Response;
-    try {
-      res = await doFetch(url, {
-        headers: { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}` },
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
-      });
-    } catch (error) {
-      throw new Error(`Falha de rede ao baixar ${what}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (!res.ok) throw new Error(`Falha ao baixar ${what}: HTTP ${res.status}`);
-    return await res.text();
-  };
-}
-
-/**
- * Trechos de uma linha em ADF: `[~accountid:ID]` vira nó de menção, para o Jira avisar a pessoa (ADR-0020); o resto é
- * texto.
- */
-function inlineAdf(line: string): object[] {
-  const out: object[] = [];
-  let resto = line;
-  const mencao = /\[~accountid:([^\]\s]+)\]/;
-  for (let m = mencao.exec(resto); m; m = mencao.exec(resto)) {
-    if (m.index > 0) out.push({ type: "text", text: resto.slice(0, m.index) });
-    out.push({ type: "mention", attrs: { id: m[1] } });
-    resto = resto.slice(m.index + m[0].length);
-  }
-  if (resto) out.push({ type: "text", text: resto });
-  return out;
-}
-
-/**
- * Texto da fábrica em ADF: linha em branco separa parágrafos, quebra simples vira `hardBreak` e um parágrafo inteiro
- * entre asteriscos (a marca de automação) sai em itálico.
- */
-export function textToAdf(text: string): object {
-  const paragraphs = text
-    .split(/\n[ \t]*\n+/)
-    .map((p) => p.replace(/^\n+|\n+$/g, ""))
-    .filter((p) => p !== "")
-    .map((p) => {
-      const italic = /^\*([^*\n]+)\*$/.exec(p);
-      if (italic) return { type: "paragraph", content: [{ type: "text", text: italic[1], marks: [{ type: "em" }] }] };
-      const content = p.split("\n").flatMap((line, i) => {
-        const parts: object[] = i > 0 ? [{ type: "hardBreak" }] : [];
-        return line ? [...parts, ...inlineAdf(line)] : parts;
-      });
-      return { type: "paragraph", content };
-    });
-  return { type: "doc", version: 1, content: paragraphs };
-}
-
-/** Nós ADF que terminam numa quebra de linha. */
-const BLOCK_TYPES = new Set(["paragraph", "heading", "codeBlock", "listItem", "blockquote"]);
-
-/**
- * Converte documento no formato Atlassian Document Format (ADF) ou string para texto plano legível.
- */
-function adfToText(node: unknown): string {
-  if (typeof node === "string") return node;
-  if (!node || typeof node !== "object") return "";
-
-  const n = node as {
-    type?: string;
-    text?: string;
-    content?: unknown[];
-    attrs?: { text?: string; id?: string };
-    marks?: { type?: string }[];
-  };
-
-  if (typeof n.text === "string") return n.marks?.some((m) => m.type === "em") ? `*${n.text}*` : n.text;
-  if (n.type === "hardBreak" || n.type === "rule") return "\n";
-  if (n.type === "mention") return n.attrs?.text ?? (n.attrs?.id ? `[~accountid:${n.attrs.id}]` : "");
-
-  const inner = Array.isArray(n.content) ? n.content.map(adfToText).join("") : "";
-  if (!BLOCK_TYPES.has(n.type ?? "")) return inner;
-  return inner.endsWith("\n") ? inner : `${inner}\n`;
-}
-
-/** Verifica se um anexo é de texto e não binário (imagem, pdf, zip, etc). */
-function isTextAttachment(filename: string, mimeType?: string): boolean {
-  const binaryExtRegex = /\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|tgz|7z|rar|bin|exe|jar|war|ear|iso|dmg)$/i;
-  if (binaryExtRegex.test(filename)) return false;
-
-  if (mimeType) {
-    if (mimeType.startsWith("text/")) return true;
-    if (
-      mimeType === "application/json" ||
-      mimeType === "application/xml" ||
-      mimeType === "application/javascript" ||
-      mimeType === "application/typescript" ||
-      mimeType === "application/x-yaml" ||
-      mimeType === "application/yaml"
-    ) {
-      return true;
-    }
-  }
-
-  const textExtRegex = /\.(txt|md|markdown|csv|tsv|json|ya?ml|xml|html?|log|diff|patch|[jt]sx?|py|sh|sql)$/i;
-  return textExtRegex.test(filename);
-}
-
 /** Mensagens do `acli` para um card que comprovadamente não existe. */
 const NOT_FOUND = /não existe|nao existe|not found|does not exist/i;
 
@@ -229,30 +49,6 @@ interface JiraIssue {
   fields?: Record<string, unknown>;
 }
 
-/** Procura o id de um comentário criado em formatos variados de resposta (`{id}`, `{comment:{id}}`, `[{id}]`...). */
-function findCommentId(value: unknown, depth = 0): string | undefined {
-  if (depth > 3 || !value || typeof value !== "object") return undefined;
-  if (Array.isArray(value)) return value.length === 1 ? findCommentId(value[0], depth + 1) : undefined;
-  const v = value as Record<string, unknown>;
-  if (typeof v.id === "string" && v.id) return v.id;
-  if (typeof v.id === "number") return String(v.id);
-  for (const k of ["comment", "data", "result"]) {
-    const id = findCommentId(v[k], depth + 1);
-    if (id) return id;
-  }
-  return undefined;
-}
-
-/**
- * Adaptador da Fonte Jira usando o binário Atlassian CLI (`acli`).
- *
- * Toda falha de leitura lança erro com contexto (a Tarefa é tentada de novo): uma lista vazia ou um card ausente por
- * engano faria a fábrica duplicar comentários ou bloquear a tarefa. A única exceção é `getCard` de um card que não
- * existe, que devolve `undefined`.
- *
- * Identidade: pessoas (responsável do card, autor de comentário) viram `assignee` (o valor configurado, exatamente)
- * quando ele é o accountId ou o e-mail da pessoa; senão, o accountId dela.
- */
 export class JiraDemandSource implements DemandSource {
   readonly project: string;
   readonly assignee: string;
@@ -502,7 +298,7 @@ export const ESQUEMA_FONTE = {
     { campo: "assignee", rotulo: "Responsável (accountId)", tipo: "texto", obrigatorio: true },
     { campo: "baseUrl", rotulo: "URL do Jira (https)", tipo: "url", obrigatorio: false },
     { campo: "email", rotulo: "E-mail da conta", tipo: "email", obrigatorio: false },
-    { campo: "credential", rotulo: "Credencial (nome no cofre)", tipo: "segredo", obrigatorio: false },
+    CAMPO_CREDENCIAL,
     { campo: "keys", rotulo: "Restringir a cards", tipo: "lista", obrigatorio: false },
   ],
 };

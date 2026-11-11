@@ -1,7 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import {
   type ConversationId,
-  configure,
   defineExtension,
   defineTool,
   type Harness,
@@ -18,7 +17,8 @@ import {
   textoAdicionalDoAgente,
 } from "./agente-etapa-config.js";
 import type { Card, CardComment, TextAttachment } from "./demand-source.js";
-import { isAutomationText } from "./effect-writer.js";
+import { isAutomationText } from "./marca-automacao.js";
+import { chamadaDoPedido, criarConversaDaTarefa, EXECUCAO_DE_ENTREGA } from "./packages/modelo-etapa/index.js";
 
 /** O que o modelo entrega na etapa: a SPEC e as fatias de implementação. */
 const Delivery = z.object({
@@ -46,7 +46,7 @@ const deliverTool = defineTool({
       { description: "Fatias de implementação da SPEC, na ordem em que devem ser feitas." },
     ),
   }),
-  execute: async () => ({ output: [{ type: "text", text: "Recebido." }], control: { terminate: true } }),
+  execute: EXECUCAO_DE_ENTREGA,
 });
 
 const ASK_TECHNICAL_TOOL = "perguntar_tecnico";
@@ -241,15 +241,12 @@ export async function requestSpec(opts: {
       conversationId = existing.id;
       return;
     }
-    const created = await tx.createConversation({ ownership: { kind: "task", taskId: opts.taskId } });
-    await configure(tx, created.id, {
-      model: { provider: model.provider, modelId: model.model },
+    conversationId = await criarConversaDaTarefa(tx, opts.taskId, model, {
       extensions: extensaoMcp ? [SpecExtension, extensaoMcp] : [SpecExtension],
       tools: [...ferramentas, ...(opts.ferramentasExtras ?? [])],
       instructions: comPromptAdicional(INSTRUCTIONS, textoAdicionalDoAgente(agente)),
       maxTurns: 2,
     });
-    conversationId = created.id;
   });
   if (conversationId && opts.registrarConversa) await opts.registrarConversa(conversationId);
   const conversation = conversationId && (await harness.conversation(conversationId, context));
@@ -263,17 +260,8 @@ export async function requestSpec(opts: {
   if (settled.status !== "done") throw new Error(`o modelo não respondeu à etapa SPEC (${settled.status})`);
 
   // Só vale o que o modelo respondeu a este pedido: as mensagens depois da última entrada do usuário.
-  const latest = await conversation.entries({ order: "descending" }, 20, undefined, context);
-  for (const entry of latest.items) {
-    const message = (entry as { model?: { role?: string; content?: unknown }[] }).model?.[0];
-    if (message?.role === "user") break;
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-    const call = message.content.find(
-      (block): block is { type: "toolCall"; name: string; arguments: unknown } =>
-        block?.type === "toolCall" &&
-        (block.name === DELIVER_TOOL || block.name === ASK_TOOL || block.name === ASK_TECHNICAL_TOOL),
-    );
-    if (!call) continue;
+  const call = await chamadaDoPedido(conversation, context, [DELIVER_TOOL, ASK_TOOL, ASK_TECHNICAL_TOOL]);
+  if (call) {
     if (call.name === ASK_TOOL || call.name === ASK_TECHNICAL_TOOL) {
       const pergunta = (call.arguments as { pergunta?: unknown } | undefined)?.pergunta;
       if (typeof pergunta === "string" && pergunta.trim())

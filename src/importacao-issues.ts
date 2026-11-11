@@ -1,5 +1,6 @@
 import type { CardState } from "./config.js";
 import type { FactoryState, OrigemGitHub, QueuedTask } from "./durable.js";
+import { novaTarefa } from "./estado-fabrica.js";
 import { cardOfIssue, type RawIssue } from "./github-demand-source.js";
 import { tarefaDaIssue } from "./github-identidade.js";
 import {
@@ -103,7 +104,7 @@ export function aplicarImportacao(opts: {
       continue;
     }
     state.tasks.push(
-      novaTarefa({
+      tarefaNovaDaIssue({
         id,
         projectName: project.name,
         key: card.key,
@@ -120,8 +121,8 @@ export function aplicarImportacao(opts: {
   return { resultado, effects };
 }
 
-/** Tarefa nova, com a mesma forma que o webhook cria: enfileirada, sem execução durável. */
-function novaTarefa(opts: {
+/** Tarefa nova de uma issue importada: a mesma forma que o webhook cria (ver `novaTarefa`). */
+function tarefaNovaDaIssue(opts: {
   id: string;
   projectName: string;
   key: string;
@@ -131,24 +132,14 @@ function novaTarefa(opts: {
   issue: RawIssue;
   newRef: () => string;
 }): QueuedTask {
-  return {
+  return novaTarefa({
     id: opts.id,
     project: opts.projectName,
     key: opts.key,
     title: opts.title,
     ref: opts.newRef(),
-    status: "enfileirada",
-    durableId: null,
-    gateId: null,
-    pauseRequested: false,
-    notBefore: null,
-    attempts: 0,
-    reason: null,
     startedIn: opts.cardState,
-    veto: null,
-    delivery: null,
-    implementation: null,
     origem: opts.origem,
     scope: scopeOf(opts.issue.body),
-  };
+  });
 }

@@ -1,6 +1,5 @@
 import { rm } from "node:fs/promises";
 import { ProjectConfig } from "../../../config.js";
-import { catalogoDoApp } from "../../../github-app.js";
 import {
   clonarRepositorioGitlab,
   hostDoServidor,
@@ -17,6 +16,7 @@ import { conflitoProjeto, montarProjetoGithub, padroesDe, pessoasDoProjeto } fro
 import { redactSecrets } from "../../../secrets.js";
 import { estadoDoProjeto, pendenciasDeConfiguracao } from "../../config-store/index.js";
 import { testarConexaoJira } from "../../integracoes/index.js";
+import { repoDoCatalogo } from "./catalogo.js";
 import { listarPessoasGitlabDoModulo, listarPessoasJiraDoModulo } from "./pessoas.js";
 import type { EstadoProjetos, PortasProjetos, Resposta } from "./portas.js";
 
@@ -185,25 +185,78 @@ export async function criarClonado(
   return resposta;
 }
 
+/** Recusas que valem para qualquer criação pela interface: daemon sem criação ou YAML sem projeto padrão. */
+function prontoParaCriar(
+  portas: PortasProjetos,
+): { erro: Resposta } | { padrao: NonNullable<PortasProjetos["padrao"]> } {
+  if (!portas.criacaoHabilitada)
+    return { erro: { status: 409, body: { error: "este daemon não cria projetos pela interface" } } };
+  if (!portas.padrao) return { erro: { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } } };
+  return { padrao: portas.padrao };
+}
+
+/** Monta o projeto a partir do padrão; um erro de montagem vira resposta 400 (nada é consultado nem gravado). */
+function montarOuRecusar(montar: () => ProjectConfig): { config: ProjectConfig } | { erro: Resposta } {
+  try {
+    return { config: montar() };
+  } catch (err) {
+    return { erro: { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } } };
+  }
+}
+
+/** Fonte com credencial e conexão válidas, e sem conflito de nome, prefixo ou Fonte com o que já existe. */
+async function conferirFonteEConflito(portas: PortasProjetos, config: ProjectConfig): Promise<Resposta | undefined> {
+  const erroFonte = await erroDaFonte(portas, config.source);
+  if (erroFonte) return { status: 400, body: { error: erroFonte } };
+  const conflito = await conflitoAgora(portas, config);
+  if (conflito) return { status: 409, body: { error: conflito } };
+  return undefined;
+}
+
+/**
+ * Último passo comum das duas criações: confere as pessoas escolhidas na Fonte, põe PO e tech lead no projeto e grava
+ * o clone. `instalacaoId` só existe no GitHub (a consulta de responsáveis passa pelo App).
+ */
+async function criarComPessoas(
+  portas: PortasProjetos,
+  config: ProjectConfig,
+  escolhas: EscolhasPessoas | undefined,
+  instalacaoId: number | undefined,
+  opcoes: {
+    clonar(config: ProjectConfig, destino: string): Promise<void>;
+    ajustarEstado?(state: EstadoProjetos, config: ProjectConfig): void;
+  },
+): Promise<Resposta> {
+  const pessoas = await conferirEscolhas(portas, config.source, escolhas, instalacaoId);
+  if (pessoas.erro) return pessoas.erro;
+  const completo = { ...config, ...pessoasDoProjeto(escolhas, config.source.type, pessoas.lista) };
+  const destino = completo.repositories?.[0]?.path ?? portas.caminhoDoClone(completo.name);
+  return criarClonado(portas, {
+    config: completo,
+    destino,
+    clonar: () => opcoes.clonar(completo, destino),
+    ...(opcoes.ajustarEstado
+      ? { ajustarEstado: (state: EstadoProjetos) => opcoes.ajustarEstado?.(state, completo) }
+      : {}),
+  });
+}
+
 /**
  * Cria um projeto a partir de um repositório do catálogo do App (ADR-0016, ADR-0022). A Fonte e o horário vêm do
  * formulário; o repositório é clonado em diretório gerenciado antes de gravar.
  */
 export async function criarGithub(portas: PortasProjetos, corpo: CorpoCriacaoGithub): Promise<Resposta> {
-  if (!portas.criacaoHabilitada)
-    return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
+  const pronto = prontoParaCriar(portas);
+  if ("erro" in pronto) return pronto.erro;
   if (corpo.fonte.type === "gitlab")
     return { status: 400, body: { error: "a Fonte GitLab Issues é criada por caminho: use POST /projetos/gitlab" } };
-  if (!portas.padrao) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
-  const app = await portas.github.status();
-  if (!app.configurado || app.erro) return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
-  const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
-  if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
+  const encontrado = await repoDoCatalogo(portas, corpo.repoId);
+  if ("erro" in encontrado) return encontrado.erro;
+  const { repo } = encontrado;
 
-  let config: ProjectConfig;
-  try {
-    config = montarProjetoGithub({
-      padroes: padroesDe(portas.padrao),
+  const montado = montarOuRecusar(() =>
+    montarProjetoGithub({
+      padroes: padroesDe(pronto.padrao),
       repo: repo.nome,
       caminho: portas.caminhoDoClone(corpo.nome),
       nome: corpo.nome,
@@ -211,29 +264,19 @@ export async function criarGithub(portas: PortasProjetos, corpo: CorpoCriacaoGit
       horario: corpo.horario,
       ensaio: corpo.ensaio,
       comandoTeste: corpo.comandoTeste,
-    });
-  } catch (err) {
-    return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
-  }
-  const erroFonte = await erroDaFonte(portas, config.source);
-  if (erroFonte) return { status: 400, body: { error: erroFonte } };
-  const conflito = await conflitoAgora(portas, config);
-  if (conflito) return { status: 409, body: { error: conflito } };
-  const pessoas = await conferirEscolhas(portas, config.source, corpo.pessoas, repo.instalacaoId);
-  if (pessoas.erro) return pessoas.erro;
-  config = { ...config, ...pessoasDoProjeto(corpo.pessoas, config.source.type, pessoas.lista) };
-
-  const destino = config.repositories?.[0]?.path ?? portas.caminhoDoClone(config.name);
-  return criarClonado(portas, {
-    config,
-    destino,
-    clonar: () =>
+    }),
+  );
+  if ("erro" in montado) return montado.erro;
+  const recusaDeFonte = await conferirFonteEConflito(portas, montado.config);
+  if (recusaDeFonte) return recusaDeFonte;
+  return criarComPessoas(portas, montado.config, corpo.pessoas, repo.instalacaoId, {
+    clonar: (_config, destino) =>
       (portas.clonarGithub ?? ((c) => portas.github.clonar(c.repo, c.instalacaoId, c.destino)))({
         repo: repo.nome,
         instalacaoId: repo.instalacaoId,
         destino,
       }),
-    ajustarEstado: (state) => {
+    ajustarEstado: (state, config) => {
       state.repos = {
         ...state.repos,
         [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
@@ -260,9 +303,8 @@ export interface CorpoCriacaoGitlab {
  * são recusados com a causa.
  */
 export async function criarGitlab(portas: PortasProjetos, corpo: CorpoCriacaoGitlab): Promise<Resposta> {
-  if (!portas.criacaoHabilitada)
-    return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
-  if (!portas.padrao) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
+  const pronto = prontoParaCriar(portas);
+  if ("erro" in pronto) return pronto.erro;
   const credencial = corpo.fonte.credential;
   if (typeof credencial !== "string" || credencial === "")
     return { status: 400, body: { error: "informe a credencial do token do GitLab (cadastrada no cofre)" } };
@@ -274,10 +316,9 @@ export async function criarGitlab(portas: PortasProjetos, corpo: CorpoCriacaoGit
     return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
   }
   const caminho = corpo.caminho.trim();
-  let config: ProjectConfig;
-  try {
-    config = montarProjetoGithub({
-      padroes: padroesDe(portas.padrao),
+  const montado = montarOuRecusar(() =>
+    montarProjetoGithub({
+      padroes: padroesDe(pronto.padrao),
       repo: caminho,
       caminho: portas.caminhoDoClone(corpo.nome),
       nome: corpo.nome,
@@ -290,15 +331,13 @@ export async function criarGitlab(portas: PortasProjetos, corpo: CorpoCriacaoGit
       horario: corpo.horario,
       ensaio: corpo.ensaio,
       comandoTeste: corpo.comandoTeste,
-    });
-  } catch (err) {
-    return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
-  }
-  const erroFonte = await erroDaFonte(portas, config.source);
-  if (erroFonte) return { status: 400, body: { error: erroFonte } };
-  const conflito = await conflitoAgora(portas, config);
-  if (conflito) return { status: 409, body: { error: conflito } };
+    }),
+  );
+  if ("erro" in montado) return montado.erro;
+  const recusaDeFonte = await conferirFonteEConflito(portas, montado.config);
+  if (recusaDeFonte) return recusaDeFonte;
 
+  // O caminho é conferido com o token antes de gravar: repositório inexistente ou sem acesso são recusados com a causa.
   const token = (await portas.segredos.get(credencial)) ?? "";
   const erroRepo = await verificarRepositorioGitlab({
     host,
@@ -307,14 +346,7 @@ export async function criarGitlab(portas: PortasProjetos, corpo: CorpoCriacaoGit
     fetch: portas.fetchGitlab ?? fetch,
   });
   if (erroRepo) return { status: 400, body: { error: erroRepo } };
-  const pessoas = await conferirEscolhas(portas, config.source, corpo.pessoas);
-  if (pessoas.erro) return pessoas.erro;
-  config = { ...config, ...pessoasDoProjeto(corpo.pessoas, "gitlab", pessoas.lista) };
-
-  const destino = config.repositories?.[0]?.path ?? portas.caminhoDoClone(config.name);
-  return criarClonado(portas, {
-    config,
-    destino,
-    clonar: () => (portas.clonarGitlab ?? clonarRepositorioGitlab)({ host, caminho, token, destino }),
+  return criarComPessoas(portas, montado.config, corpo.pessoas, undefined, {
+    clonar: (_config, destino) => (portas.clonarGitlab ?? clonarRepositorioGitlab)({ host, caminho, token, destino }),
   });
 }

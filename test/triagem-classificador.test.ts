@@ -1,7 +1,7 @@
 import type { ClassifierContext, ClassifierResult } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { Card } from "../src/demand-source.js";
-import { classifyTriage } from "../src/triage.js";
+import { classifyTriage } from "../src/triage-classificador.js";
 
 const card = (n: number, title: string): Card => ({
   key: `SF-${n}`,

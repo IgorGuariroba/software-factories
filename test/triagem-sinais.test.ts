@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Card } from "../src/demand-source.js";
 import { findClosingCommit, findMergedWork } from "../src/prior-work.js";
-import { deterministicTriage, triageInput, trustedContext, validateDelivery } from "../src/triage.js";
+import { deterministicTriage, trustedContext } from "../src/triage.js";
+import { triageInput, validateDelivery } from "../src/triage-modelo.js";
 import { createRemoteRepo, removeTempRoot, tempRoot } from "./fakes/git-repos.js";
 
 let root: string | undefined;

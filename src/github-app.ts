@@ -1,7 +1,7 @@
-import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { mkdir, readFile as readFileFromDisk, rm } from "node:fs/promises";
 import { dirname } from "node:path";
+import { rodarGit } from "./git.js";
 import type { RawIssue } from "./github-demand-source.js";
 import { falhaDeRede, falhaDeResposta } from "./github-falhas.js";
 
@@ -152,17 +152,6 @@ export interface GitHubAppChecker {
 const TIMEOUT_CHAMADA_MS = 30_000;
 
 /** Roda o git com o ambiente dado a mais, sem prompt interativo. Nenhum argumento leva segredo. */
-function rodarGit(args: string[], envExtra: Record<string, string>): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      { env: { ...process.env, ...envExtra, GIT_TERMINAL_PROMPT: "0" }, timeout: 300_000 },
-      (err) => (err ? reject(err) : resolve()),
-    );
-  });
-}
-
 /**
  * Consulta o App no GitHub. A chave é lida do arquivo a cada consulta real (não fica em memória entre elas).
  * Sem `appId` ou sem caminho da chave, o checker responde `configurado: false` sem chamar a rede.
