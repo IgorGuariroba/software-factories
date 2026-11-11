@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -69,17 +69,18 @@ import {
   type WebhookProject,
 } from "./github-webhook.js";
 import { ESQUEMA_FONTE as ESQUEMA_GITLAB } from "./gitlab-demand-source.js";
-import {
-  clonarRepositorioGitlab,
-  hostDoServidor,
-  SERVIDOR_PADRAO,
-  verificarRepositorioGitlab,
-} from "./gitlab-repositorio.js";
 import { createImplementationExtension, runImplementation, StageBlocked } from "./implement-stage.js";
 import { aplicarImportacao } from "./importacao-issues.js";
 import { ESQUEMA_FONTE as ESQUEMA_JIRA } from "./jira-demand-source.js";
 import { type ManagementInterface, startManagementBridge } from "./management.js";
 import { ferramentasMcpDaEtapa } from "./mcp-etapa.js";
+import {
+  createApiLocal,
+  criarRotasApi,
+  type FactoryCommands,
+  type Resposta,
+  type VetoResult,
+} from "./packages/api-local/index.js";
 import {
   camposAlterados,
   estadoDoProjeto,
@@ -97,26 +98,12 @@ import {
   proximaPessoaDoPapel,
   validarPerfis,
 } from "./packages/profiles/index.js";
+import { createProjetos, type EstadoProjetos } from "./packages/projetos/index.js";
 import { createSecretStore } from "./packages/secret-store/index.js";
-import {
-  conferirEscolhasPessoas,
-  type EscolhasPessoas,
-  listarPessoasGitlab,
-  listarPessoasJira,
-  type PessoaDaFonte,
-  pessoasDeAssignees,
-} from "./pessoas-fonte.js";
 import { findClosingCommit, findMergedWork, recentSubjects } from "./prior-work.js";
 import { aguardandoConfirmacao, comConfirmacaoPendente, trocouFonteOuRepositorio } from "./projeto-fonte.js";
 import { projetoPausado } from "./projeto-pausa.js";
-import { projetosReservados, semProjeto } from "./projeto-remocao.js";
-import {
-  conflitoProjeto,
-  montarProjetoGithub,
-  padroesDe,
-  pessoasDoProjeto,
-  type ReservaDeProjeto,
-} from "./projetos-github.js";
+import { projetosReservados } from "./projeto-remocao.js";
 import { questionRevision, reviewRevision, teamsQuestionMessage } from "./question-review.js";
 import { integrateRepair, RepairConflict, repairPreview } from "./repair.js";
 import { repositoryFromAnswer, repositoryQuestion, resolveRepository } from "./repo-resolver.js";
@@ -186,25 +173,7 @@ export interface QueueItem {
 }
 
 /** Resultado de um veto: aplicado, Tarefa inexistente ou Tarefa que não está (mais) no prazo de veto. */
-export type VetoResult = "vetada" | "inexistente" | "fora-do-prazo";
-
-/** Comandos do usuário sobre a fábrica; a API e as interfaces de gestão (Telegram, web) chamam os mesmos. */
-export interface FactoryCommands {
-  /** Retornam `false` se a Tarefa não existe. */
-  pause(id: string): Promise<boolean>;
-  resume(id: string): Promise<boolean>;
-  cancel(id: string): Promise<boolean>;
-  /** Veta, dentro do prazo, a Tarefa de um card que já estava em andamento: ela fica `vetada` e não age mais no card. */
-  veto(id: string): Promise<VetoResult>;
-  setDaemonPaused(paused: boolean): Promise<void>;
-  /** Pausa um projeto ativo (ticket 09): nada novo começa nele até a retomada. */
-  pausarProjeto(nome: string): Promise<void>;
-  /** Retoma um projeto pausado; as Tarefas que a pausa parou voltam para a fila. */
-  retomarProjeto(nome: string): Promise<void>;
-  reorder(ids: string[]): Promise<void>;
-  /** Responde localmente sem publicar na Fonte; false se a pergunta não está disponível. */
-  answerQuestion?(id: string, n: number, answer: string): Promise<boolean>;
-}
+export type { FactoryCommands, VetoResult } from "./packages/api-local/index.js";
 
 /** Vínculo de um projeto monitorado com o GitHub, como a página e a API o mostram. */
 export interface RepoListItem {
@@ -1388,6 +1357,53 @@ export async function startFactory(opts: {
     projects.set(config.name, montarProjeto(base));
   }
 
+  /** O estado da fábrica tem os campos que o módulo usa; as regras leem os mesmos objetos, sem cópia. */
+  const comoEstadoDaFabrica = (estado: EstadoProjetos) => estado as unknown as FactoryState;
+  /**
+   * Módulo de Projetos (ciclo de vida de um Projeto): as portas são as dependências reais deste processo. O módulo só
+   * conhece a parte do estado que usa; o estado completo da fábrica entra como ele mesmo.
+   */
+  const projetos = createProjetos({
+    criacaoHabilitada: opts.createSource !== undefined,
+    padrao: (opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0])?.config,
+    caminhoDoClone: (nome) => join(dirname(resolvePath(opts.statePath)), "repositorios", nome),
+    segredos,
+    github: appChecker,
+    estado: {
+      ler: readState,
+      alterar: (fn) => harness.commit(async (tx) => fn(await tx.doc(StateDoc)), context),
+    },
+    registrar: registrarProjeto,
+    projetosAtivos: () => [...projects.values()].map((p) => p.config),
+    agora: () => clock.now(),
+    fetchFonte: opts.fetchFonte,
+    fetchGitlab: opts.fetchGitlab,
+    clonarGithub: opts.clonarRepositorio,
+    clonarGitlab: opts.clonarRepositorioGitlab,
+    projetoDoRepositorio: (repo) => projectByRepo(repo),
+    pendenciasBloqueantes: (nome, state) => pendenciasBloqueantes(nome, comoEstadoDaFabrica(state)),
+    importacao: { enfileirar: (repoId) => enfileirarImportacao(repoId) },
+    efeitos: { executar: (efeitos) => runWebhookEffects(efeitos as WebhookEffect[]) },
+    regras: {
+      projetosReservados: (s) => projetosReservados(comoEstadoDaFabrica(s)),
+      repoDesativado: (s, p) => repoDesativado(comoEstadoDaFabrica(s), p),
+      projetoPausado: (s, p) => projetoPausado(comoEstadoDaFabrica(s), p),
+      tarefasAtivas: (s, p) => tarefasAtivas(comoEstadoDaFabrica(s), p),
+      tarefasEmAndamento: (s, p) => tarefasEmAndamento(comoEstadoDaFabrica(s), p),
+      ativarProjeto: (opts) => ativarProjeto({ ...opts, state: comoEstadoDaFabrica(opts.state) }),
+      desativarProjeto: (opts) => desativarProjeto({ ...opts, state: comoEstadoDaFabrica(opts.state) }),
+      aguardandoConfirmacao: (s, p) => aguardandoConfirmacao(comoEstadoDaFabrica(s), p),
+      comConfirmacaoPendente: (pendencias, s, p) => comConfirmacaoPendente(pendencias, comoEstadoDaFabrica(s), p),
+    },
+    fabrica: {
+      esquecer: (nome) => {
+        projects.delete(nome);
+        bases.delete(nome);
+        criadosPelaInterface.delete(nome);
+      },
+    },
+  });
+
   // ADR-0017: o YAML só semeia o estado; depois da primeira execução, a configuração guardada é a que vale.
   await harness.commit(async (tx) => {
     const state = await tx.doc(StateDoc);
@@ -1988,26 +2004,6 @@ export async function startFactory(opts: {
   }
 
   /** Confere a Fonte antes de gravar: credencial no cofre e, no Jira, a conexão (ADR-0018). Devolve o erro, se houver. */
-  async function erroDaFonte(fonte: ProjectConfig["source"]): Promise<string | undefined> {
-    if (fonte.type === "jira") {
-      if (!fonte.credential) return undefined;
-      if (!(await segredos.has(fonte.credential))) return `credencial ${fonte.credential} não cadastrada`;
-      if (!fonte.baseUrl || !fonte.email) return "a Fonte Jira com credencial precisa de baseUrl e email";
-      const conexao = await testarConexaoJira({
-        baseUrl: fonte.baseUrl,
-        email: fonte.email,
-        token: (await segredos.get(fonte.credential)) ?? "",
-        fetch: opts.fetchFonte ?? fetch,
-      });
-      return conexao.ok ? undefined : `conexão com o Jira falhou (${conexao.motivo})`;
-    }
-    if (fonte.credential && !(await segredos.has(fonte.credential)))
-      return `credencial ${fonte.credential} não cadastrada`;
-    return undefined;
-  }
-
-  /** Diretório onde a fábrica clona o repositório de um projeto criado pela interface (nunca um caminho do usuário). */
-  const caminhoDoClone = (nome: string) => join(dirname(resolvePath(opts.statePath)), "repositorios", nome);
 
   /**
    * Grava um projeto novo cujo repositório a fábrica clona antes. Nome, prefixo e a Fonte de issues não podem repetir o
@@ -2015,417 +2011,40 @@ export async function startFactory(opts: {
    * nada fica salvo pela metade.
    */
   /** Projetos já existentes: os ativos na memória e os salvos pela interface (incluindo os ainda não carregados). */
-  const salvosDe = (state: FactoryState) =>
-    Object.values(state.projetosGitHub ?? {}).flatMap((t) => {
-      // Um registro salvo inválido não impede criar outro projeto; no startup ele já é avisado e ignorado.
-      const lido = ProjectConfig.safeParse(JSON.parse(t));
-      return lido.success ? [lido.data] : [];
-    });
 
   /**
    * Conflito do projeto novo com o que já existe: nome, prefixo ou a mesma Fonte de issues no mesmo repositório. É
    * conferido antes de qualquer chamada ao provedor, para que a recusa seja imediata e não dependa da rede.
    */
-  async function conflitoAgora(config: ProjectConfig): Promise<string | undefined> {
-    const existentes = [...projects.values()].map((p) => p.config);
-    return conflitoProjeto(
-      {
-        nome: config.name,
-        prefixo: config.source.project,
-        fonteTipo: config.source.type,
-        fonteRepo: "repo" in config.source ? config.source.repo : undefined,
-      },
-      [...existentes, ...salvosDe(await readState())],
-      projetosReservados(await readState()),
-    );
-  }
-
-  /** Escolhas de PO e tech lead do corpo da criação: texto vazio ou ausente vira "não escolhida". */
-  function lerEscolhasPessoas(bruto: unknown): EscolhasPessoas | undefined {
-    if (typeof bruto !== "object" || bruto === null || Array.isArray(bruto)) return undefined;
-    const { po, techLead } = bruto as { po?: unknown; techLead?: unknown };
-    const texto = (valor: unknown) => (typeof valor === "string" && valor.trim() !== "" ? valor.trim() : undefined);
-    return { po: texto(po), techLead: texto(techLead) };
-  }
 
   /**
    * Lista de pessoas para escolher PO e tech lead no formulário de criação (ticket 06). Só consulta; nada é gravado. O
    * corpo diz de qual Fonte se trata: `gitlab` (caminho e servidor, com o token do cofre), `github` (repositório do
    * catálogo do App) ou `jira` (baseUrl, email, projeto e credencial).
    */
-  async function listarPessoasParaCriacao(bruto: unknown): Promise<{ status: number; body: unknown }> {
-    const corpo = (bruto ?? {}) as Record<string, unknown>;
-    const texto = (valor: unknown) => (typeof valor === "string" ? valor.trim() : "");
-    try {
-      if (corpo.tipo === "gitlab") {
-        const credencial = texto(corpo.credencial);
-        if (credencial === "" || !(await segredos.has(credencial)))
-          return { status: 400, body: { error: "informe a credencial do token do GitLab, cadastrada no cofre" } };
-        let host: string;
-        try {
-          host = hostDoServidor(texto(corpo.servidor));
-        } catch (err) {
-          return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
-        }
-        const lista = await listarPessoasDoGitlab(host, texto(corpo.caminho), credencial);
-        return { status: 200, body: lista };
-      }
-      if (corpo.tipo === "jira") {
-        const credencial = texto(corpo.credencial);
-        if (credencial === "" || !(await segredos.has(credencial)) || !texto(corpo.baseUrl) || !texto(corpo.email))
-          return { status: 400, body: { error: "a Fonte Jira precisa de credencial do cofre, baseUrl e email" } };
-        const lista = await listarPessoasDoJira(
-          texto(corpo.baseUrl),
-          texto(corpo.email),
-          credencial,
-          texto(corpo.projeto),
-        );
-        return { status: 200, body: lista };
-      }
-      if (corpo.tipo === "github") {
-        if (!Number.isInteger(corpo.repoId)) return { status: 400, body: { error: "informe repoId do repositório" } };
-        const app = await appChecker.status();
-        if (!app.configurado || app.erro)
-          return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
-        const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
-        if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
-        return { status: 200, body: await listarPessoasDoGithub(repo.nome, repo.instalacaoId) };
-      }
-    } catch (err) {
-      const motivo = err instanceof Error ? err.message : "falha ao consultar a Fonte";
-      return { status: 502, body: { error: motivo } };
-    }
-    return { status: 400, body: { error: "tipo: use gitlab, github ou jira" } };
-  }
 
   /** Lista de pessoas do GitLab do projeto, com o token do cofre. Falha de rede ou de resposta lança o erro. */
-  async function listarPessoasDoGitlab(host: string, caminho: string, credencial: string): Promise<PessoaDaFonte[]> {
-    return listarPessoasGitlab({
-      host,
-      caminho,
-      token: (await segredos.get(credencial)) ?? "",
-      fetch: opts.fetchGitlab ?? fetch,
-    });
-  }
 
   /** Lista de pessoas do Jira (usuários atribuíveis ao projeto), com o token do cofre. */
-  async function listarPessoasDoJira(
-    baseUrl: string,
-    email: string,
-    credencial: string,
-    projeto: string,
-  ): Promise<PessoaDaFonte[]> {
-    return listarPessoasJira({
-      baseUrl,
-      email,
-      token: (await segredos.get(credencial)) ?? "",
-      projeto,
-      fetch: opts.fetchFonte ?? fetch,
-    });
-  }
 
   /** Lista de responsáveis possíveis do repositório do GitHub App, pelo token da instalação. */
-  async function listarPessoasDoGithub(repo: string, instalacaoId: number): Promise<PessoaDaFonte[]> {
-    return pessoasDeAssignees(await appChecker.responsaveisPossiveis(repo, instalacaoId));
-  }
 
   /**
    * Escolhas de PO e tech lead conferidas na Fonte antes de gravar (ticket 06). Sem escolha, não há consulta e o projeto
    * nasce incompleto. Fonte fora do ar responde 502; pessoa que a Fonte não conhece responde 400. Nos dois casos nada
    * é gravado.
    */
-  async function conferirEscolhas(
-    fonte: ProjectConfig["source"],
-    escolhas: EscolhasPessoas | undefined,
-    instalacaoId?: number,
-  ): Promise<{ erro?: { status: number; body: unknown }; lista: PessoaDaFonte[] }> {
-    if (escolhas?.po === undefined && escolhas?.techLead === undefined) return { lista: [] };
-    if (fonte.type === "jira" && (!fonte.credential || !fonte.baseUrl || !fonte.email))
-      return {
-        erro: {
-          status: 400,
-          body: { error: "para escolher PO e tech lead, a Fonte Jira precisa de credencial, baseUrl e email" },
-        },
-        lista: [],
-      };
-    let lista: PessoaDaFonte[];
-    try {
-      if (fonte.type === "gitlab")
-        lista = await listarPessoasDoGitlab(fonte.hostname ?? SERVIDOR_PADRAO, fonte.repo, fonte.credential ?? "");
-      else if (fonte.type === "jira")
-        lista = await listarPessoasDoJira(
-          fonte.baseUrl ?? "",
-          fonte.email ?? "",
-          fonte.credential ?? "",
-          fonte.project,
-        );
-      else if (instalacaoId === undefined) throw new Error("repositório sem instalação do GitHub App");
-      else lista = await listarPessoasDoGithub(fonte.repo, instalacaoId);
-    } catch (err) {
-      const motivo = err instanceof Error ? err.message : "falha ao consultar a Fonte";
-      return { erro: { status: 502, body: { error: `${motivo}; o projeto não foi salvo` } }, lista: [] };
-    }
-    const erro = conferirEscolhasPessoas(escolhas, lista, fonte.type);
-    return erro ? { erro: { status: 400, body: { error: erro } }, lista } : { lista };
-  }
-
-  async function criarProjetoClonado(projeto: {
-    config: ProjectConfig;
-    destino: string;
-    clonar: () => Promise<void>;
-    /** Dados extras do estado que só um tipo de repositório precisa (ex.: o plugue do catálogo do GitHub App). */
-    ajustarEstado?: (state: FactoryState) => void;
-  }): Promise<{ status: number; body: unknown }> {
-    const { config, destino } = projeto;
-    const conflitoDe = (existentes: ProjectConfig[], reservados: ReservaDeProjeto[]) =>
-      conflitoProjeto(
-        {
-          nome: config.name,
-          prefixo: config.source.project,
-          fonteTipo: config.source.type,
-          fonteRepo: "repo" in config.source ? config.source.repo : undefined,
-        },
-        existentes,
-        reservados,
-      );
-    const existentesAgora = () => [...projects.values()].map((p) => p.config);
-
-    try {
-      await projeto.clonar();
-    } catch (err) {
-      return { status: 502, body: { error: redactSecrets(err instanceof Error ? err.message : "falha ao clonar") } };
-    }
-
-    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "projeto não registrado" } };
-    let registrar = false;
-    await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      const conflito = conflitoDe([...existentesAgora(), ...salvosDe(state)], projetosReservados(state));
-      if (conflito) {
-        resposta = { status: 409, body: { error: conflito } };
-        return;
-      }
-      state.projetosGitHub = { ...state.projetosGitHub, [config.name]: JSON.stringify(config) };
-      state.projetos = { ...state.projetos, [config.name]: JSON.stringify(config) };
-      state.historicoConfig = {
-        ...state.historicoConfig,
-        [config.name]: [{ quando: new Date(clock.now()).toISOString(), autor: "usuario", campos: ["projeto criado"] }],
-      };
-      projeto.ajustarEstado?.(state);
-      registrar = true;
-      const pendencias = pendenciasDeConfiguracao(config);
-      resposta = {
-        status: 201,
-        body: {
-          projeto: config.name,
-          repo: "repo" in config.source ? config.source.repo : undefined,
-          prefixo: config.source.project,
-          fonte: config.source.type,
-          horario: config.activity,
-          ensaio: config.dryRun,
-          estado: estadoDoProjeto(pendencias),
-          pendencias,
-        },
-      };
-    }, context);
-    if (registrar) registrarProjeto(config);
-    else await rm(destino, { recursive: true, force: true });
-    return resposta;
-  }
-
-  /**
-   * Cria um projeto a partir de um repositório do catálogo do App (ADR-0016, ADR-0022). A Fonte e o horário vêm do
-   * formulário; a fábrica clona o repositório em diretório gerenciado antes de gravar, e o projeto nasce incompleto
-   * quando faltam PO, tech lead ou outros itens.
-   */
-  async function criarProjetoGithub(corpo: {
-    repoId: number;
-    nome: string;
-    fonte: Record<string, unknown>;
-    horario: "always" | "business-hours";
-    ensaio: boolean;
-    comandoTeste: string[];
-    pessoas?: EscolhasPessoas;
-  }): Promise<{ status: number; body: unknown }> {
-    if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
-    if (corpo.fonte.type === "gitlab")
-      return { status: 400, body: { error: "a Fonte GitLab Issues é criada por caminho: use POST /projetos/gitlab" } };
-    const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
-    if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
-    const app = await appChecker.status();
-    if (!app.configurado || app.erro) return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
-    const repo = catalogoDoApp(app).find((r) => r.id === corpo.repoId);
-    if (!repo) return { status: 404, body: { error: `repositório ${corpo.repoId} não está no catálogo do App` } };
-
-    let config: ProjectConfig;
-    try {
-      config = montarProjetoGithub({
-        padroes: padroesDe(referencia.config),
-        repo: repo.nome,
-        caminho: caminhoDoClone(corpo.nome),
-        nome: corpo.nome,
-        fonte: corpo.fonte,
-        horario: corpo.horario,
-        ensaio: corpo.ensaio,
-        comandoTeste: corpo.comandoTeste,
-      });
-    } catch (err) {
-      return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
-    }
-    const erroFonte = await erroDaFonte(config.source);
-    if (erroFonte) return { status: 400, body: { error: erroFonte } };
-    const conflito = await conflitoAgora(config);
-    if (conflito) return { status: 409, body: { error: conflito } };
-    const pessoas = await conferirEscolhas(config.source, corpo.pessoas, repo.instalacaoId);
-    if (pessoas.erro) return pessoas.erro;
-    config = { ...config, ...pessoasDoProjeto(corpo.pessoas, config.source.type, pessoas.lista) };
-
-    const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
-    return criarProjetoClonado({
-      config,
-      destino,
-      clonar: () =>
-        (opts.clonarRepositorio ?? ((c) => appChecker.clonar(c.repo, c.instalacaoId, c.destino)))({
-          repo: repo.nome,
-          instalacaoId: repo.instalacaoId,
-          destino,
-        }),
-      ajustarEstado: (state) => {
-        state.repos = {
-          ...state.repos,
-          [config.name]: { repo: repo.nome, status: "ativo", repoId: repo.id, installationId: repo.instalacaoId },
-        };
-      },
-    });
-  }
 
   /**
    * Cria um projeto a partir de um repositório GitLab informado por caminho completo (`grupo/projeto`) no servidor
    * dado (gitlab.com ou self-hosted). O token vem do cofre pelo nome da credencial, e o caminho é conferido com ele
    * antes de qualquer gravação: repositório inexistente ou token sem acesso são recusados com a causa.
    */
-  async function criarProjetoGitlab(corpo: {
-    nome: string;
-    caminho: string;
-    servidor: string;
-    fonte: Record<string, unknown>;
-    horario: "always" | "business-hours";
-    ensaio: boolean;
-    comandoTeste: string[];
-    pessoas?: EscolhasPessoas;
-  }): Promise<{ status: number; body: unknown }> {
-    if (!opts.createSource) return { status: 409, body: { error: "este daemon não cria projetos pela interface" } };
-    const referencia = opts.projects.find((p) => p.config.source.type === "github") ?? opts.projects[0];
-    if (!referencia) return { status: 409, body: { error: "nenhum projeto no YAML para servir de padrão" } };
-    const credencial = corpo.fonte.credential;
-    if (typeof credencial !== "string" || credencial === "")
-      return { status: 400, body: { error: "informe a credencial do token do GitLab (cadastrada no cofre)" } };
-
-    let host: string;
-    try {
-      host = hostDoServidor(corpo.servidor);
-    } catch (err) {
-      return { status: 400, body: { error: err instanceof Error ? err.message : "servidor inválido" } };
-    }
-    let config: ProjectConfig;
-    try {
-      config = montarProjetoGithub({
-        padroes: padroesDe(referencia.config),
-        repo: corpo.caminho.trim(),
-        caminho: caminhoDoClone(corpo.nome),
-        nome: corpo.nome,
-        fonte: {
-          ...corpo.fonte,
-          type: "gitlab",
-          repo: corpo.caminho.trim(),
-          ...(host === SERVIDOR_PADRAO ? {} : { hostname: host }),
-        },
-        horario: corpo.horario,
-        ensaio: corpo.ensaio,
-        comandoTeste: corpo.comandoTeste,
-      });
-    } catch (err) {
-      return { status: 400, body: { error: err instanceof Error ? err.message : "projeto inválido" } };
-    }
-    const erroFonte = await erroDaFonte(config.source);
-    if (erroFonte) return { status: 400, body: { error: erroFonte } };
-    const conflito = await conflitoAgora(config);
-    if (conflito) return { status: 409, body: { error: conflito } };
-
-    const token = (await segredos.get(credencial)) ?? "";
-    const caminho = corpo.caminho.trim();
-    const erroRepo = await verificarRepositorioGitlab({
-      host,
-      caminho,
-      token,
-      fetch: opts.fetchGitlab ?? fetch,
-    });
-    if (erroRepo) return { status: 400, body: { error: erroRepo } };
-    const pessoas = await conferirEscolhas(config.source, corpo.pessoas);
-    if (pessoas.erro) return pessoas.erro;
-    config = { ...config, ...pessoasDoProjeto(corpo.pessoas, "gitlab", pessoas.lista) };
-
-    const destino = config.repositories?.[0]?.path ?? caminhoDoClone(config.name);
-    return criarProjetoClonado({
-      config,
-      destino,
-      clonar: () => (opts.clonarRepositorioGitlab ?? clonarRepositorioGitlab)({ host, caminho, token, destino }),
-    });
-  }
 
   /**
    * Pedido de importação. Só aceita repositório do catálogo do App com projeto configurado e ativo. Já em importação,
    * responde o registro atual sem enfileirar outra vez.
    */
-  async function importarRepo(repoId: number): Promise<{ status: number; body: unknown }> {
-    const app = await appChecker.status();
-    if (!app.configurado || app.erro) return { status: 409, body: { error: app.erro ?? "GitHub App não configurado" } };
-    const repo = catalogoDoApp(app).find((r) => r.id === repoId);
-    if (!repo) return { status: 404, body: { error: `repositório ${repoId} não está no catálogo do App` } };
-    const project = projectByRepo(repo.nome);
-    if (!project) {
-      return {
-        status: 409,
-        body: { error: `nenhum projeto monitora ${repo.nome}; configure o projeto no YAML primeiro` },
-      };
-    }
-    // Importar cria Tarefas: projeto incompleto não executa, então não importa (ADR-0022).
-    const pendencias = pendenciasBloqueantes(project, await readState());
-    if (pendencias.length > 0) {
-      return { status: 409, body: { error: `projeto ${project} incompleto: ${pendencias.join("; ")}` } };
-    }
-    let resposta: { status: number; body: unknown } = { status: 500, body: { error: "importação não registrada" } };
-    let enfileirar = false;
-    await harness.commit(async (tx) => {
-      const state = await tx.doc(StateDoc);
-      if (repoDesativado(state, project)) {
-        resposta = { status: 409, body: { error: `o repositório ${repo.nome} está desplugado` } };
-        return;
-      }
-      if (projetoPausado(state, project)) {
-        resposta = { status: 409, body: { error: `projeto ${project} pausado: retome-o para importar` } };
-        return;
-      }
-      const atual = state.importacoes?.[String(repoId)];
-      if (atual?.status === "importando") {
-        resposta = { status: 202, body: atual };
-        return;
-      }
-      const registro = {
-        repoId,
-        repo: repo.nome,
-        status: "importando" as const,
-        installationId: repo.instalacaoId,
-        ...(atual?.ultimaImportacaoEm ? { ultimaImportacaoEm: atual.ultimaImportacaoEm } : {}),
-        ...(atual?.ultimoResultado ? { ultimoResultado: atual.ultimoResultado } : {}),
-      };
-      state.importacoes = { ...state.importacoes, [String(repoId)]: registro };
-      resposta = { status: 202, body: registro };
-      enfileirar = true;
-    }, context);
-    if (enfileirar) enfileirarImportacao(repoId);
-    return resposta;
-  }
 
   async function githubAppPanel(): Promise<GitHubAppPanel> {
     const state = await readState();
@@ -2453,37 +2072,8 @@ export async function startFactory(opts: {
    * Desplugue: desativa o repositório de um projeto. Uma Tarefa ativa só para com `force`; sem ele, a resposta é 409 e
    * nada muda.
    */
-  async function unplugRepo(repo: string, force: boolean): Promise<{ status: number; body: unknown }> {
-    const project = projectByRepo(repo);
-    if (!project) return { status: 404, body: { error: `nenhum projeto monitora ${repo}` } };
-    const state = await readState();
-    const ativas = tarefasAtivas(state, project).map((t) => t.id);
-    if (ativas.length > 0 && !force)
-      return {
-        status: 409,
-        body: {
-          error: "há Tarefa em execução neste repositório; confirme com force para cancelá-la",
-          tarefasAtivas: ativas,
-        },
-      };
-    let effects: WebhookEffect[] = [];
-    await harness.commit(async (tx) => {
-      const current = await tx.doc(StateDoc);
-      effects = desativarProjeto({ state: current, project, repo, motivo: "desplugado pelo usuário", force }).effects;
-    }, context);
-    await runWebhookEffects(effects);
-    return { status: 200, body: { ok: true, project, repo, status: "desativado", tarefasCanceladas: ativas } };
-  }
 
   /** Plugue: reativa um repositório já configurado (não cria projeto: a config fica no YAML, ADR-0010). */
-  async function plugRepo(repo: string): Promise<{ status: number; body: unknown }> {
-    const project = projectByRepo(repo);
-    if (!project) return { status: 404, body: { error: `nenhum projeto monitora ${repo}; configure o YAML primeiro` } };
-    await harness.commit(async (tx) => {
-      ativarProjeto({ state: await tx.doc(StateDoc), project, repo });
-    }, context);
-    return { status: 200, body: { ok: true, project, repo, status: "ativo" } };
-  }
 
   /** Altera uma Tarefa no estado durável. Retorna `false` se ela não existe. */
   async function updateTask(id: string, change: (task: QueuedTask, state: FactoryState) => void): Promise<boolean> {
@@ -2497,6 +2087,304 @@ export async function startFactory(opts: {
   }
 
   const TERMINAL = new Set(["concluida", "cancelada", "bloqueada", "vetada", "recusada"]);
+  const approvingRetros = new Set<string>();
+  let configuringRetro = false;
+  const approvingQuestions = new Set<string>();
+
+  /** Projeto e chave do card a partir do id da Tarefa (`projeto/chave`). */
+  const partesDoId = (id: string) => {
+    const i = id.indexOf("/");
+    return { projectName: id.slice(0, i), cardKey: id.slice(i + 1) };
+  };
+
+  /** Triagem: prévia da decisão (GET) e decisão (POST). */
+  async function tratarTriagem(id: string, decidir: boolean, corpo: unknown): Promise<Resposta> {
+    const { projectName, cardKey } = partesDoId(id);
+    const task = (await readState()).tasks.find((t) => t.id === id);
+    if (!task?.triage) return { status: 404, body: { error: "triagem não encontrada" } };
+    if (task.triage.review !== "draft" || task.status !== "aguardando-humano")
+      return { status: 409, body: { error: "triagem não está aguardando decisão" } };
+    const project = projectOf(projectName);
+    const { result } = task.triage;
+    const preview = {
+      card: cardKey,
+      verdict: result.verdict,
+      category: result.category,
+      reason: result.reason,
+      by: result.by,
+      duplicateOf: result.duplicateOf ?? null,
+      // O que sai na issue se o usuário recusar: o comentário exato e o motivo do fechamento.
+      comment: withAutomationMark(redactSecrets(refusalComment(result, duplicateRef(result)))),
+      closeAs: closeReason(result),
+      dryRun: project.config.dryRun,
+    };
+    const revision = reviewRevision(preview);
+    if (!decidir) return { status: 200, body: { ...preview, revision } };
+    const body = corpo as { revision?: unknown; decision?: unknown } | undefined;
+    if (body?.decision !== "aceitar" && body?.decision !== "recusar")
+      return { status: 400, body: { error: 'decision deve ser "aceitar" ou "recusar"' } };
+    if (body.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
+    if (project.config.dryRun && body.decision === "recusar")
+      return { status: 409, body: { error: "publicação real desativada no dry-run" } };
+    const decision = body.decision;
+    const decided = await harness.commit(async (tx) => {
+      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+      if (current?.status !== "aguardando-humano" || current.triage?.review !== "draft") return false;
+      current.triage.review = decision;
+      current.status = current.pauseRequested ? "pausada" : "enfileirada";
+      return true;
+    }, context);
+    return decided
+      ? { status: 200, body: { ok: true } }
+      : { status: 409, body: { error: "triagem mudou ou foi cancelada" } };
+  }
+
+  /** SPEC: prévia (GET) e aprovação local (POST). */
+  async function tratarSpec(id: string, aprovar: boolean, corpo: unknown): Promise<Resposta> {
+    const { projectName, cardKey } = partesDoId(id);
+    const task = (await readState()).tasks.find((t) => t.id === id);
+    if (!task?.delivery) return { status: 404, body: { error: "SPEC não encontrada" } };
+    if (task.specReview !== "draft" || task.status !== "aguardando-humano")
+      return { status: 409, body: { error: "SPEC não está disponível para aprovação" } };
+    const project = projectOf(projectName);
+    const preview = {
+      card: cardKey,
+      spec: withAutomationMark(redactSecrets(`SPEC\n\n${task.delivery.spec}`)),
+      tickets: withAutomationMark(redactSecrets(`Tickets\n\n${renderTickets(task.delivery.tickets)}`)),
+      dryRun: project.config.dryRun,
+    };
+    const revision = reviewRevision(preview);
+    if (!aprovar) return { status: 200, body: { ...preview, revision } };
+    const body = corpo as { revision?: unknown } | undefined;
+    if (body?.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
+    // Aprovação é local; o escritor continua responsável por suprimir efeitos no dry-run.
+    const approved = await harness.commit(async (tx) => {
+      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+      if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
+      current.specReview = "approved";
+      current.specApprovedDryRun = project.config.dryRun;
+      current.status = current.pauseRequested ? "pausada" : "enfileirada";
+      return true;
+    }, context);
+    return approved
+      ? { status: 200, body: { ok: true } }
+      : { status: 409, body: { error: "SPEC mudou ou foi cancelada" } };
+  }
+
+  /** Lembrete de pergunta: prévia (GET) e envio (POST). */
+  async function tratarLembrete(id: string, n: number, aprovar: boolean, corpo: unknown): Promise<Resposta> {
+    const { projectName, cardKey } = partesDoId(id);
+    const state = await readState();
+    const task = state.tasks.find((t) => t.id === id);
+    const q = task?.questions?.find((item) => item.n === n);
+    if (!q) return { status: 404, body: { error: "pergunta não encontrada" } };
+    if (q.reminder !== "draft" || q.answer !== null || task?.status !== "aguardando-humano")
+      return { status: 409, body: { error: "lembrete não está disponível para aprovação" } };
+    const project = projectOf(projectName);
+    const text = reminderText(q);
+    const preview = {
+      card: cardKey,
+      to: q.to,
+      comment: withAutomationMark(redactSecrets(`${project.source.formatMention(q.to)} ${text}`)),
+      dryRun: project.config.dryRun,
+    };
+    const revision = reviewRevision(preview);
+    if (!aprovar) return { status: 200, body: { ...preview, revision } };
+    const body = corpo as { revision?: unknown } | undefined;
+    if (body?.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
+    if (project.config.dryRun) return { status: 409, body: { error: "publicação real desativada no dry-run" } };
+    const reserved = await harness.commit(async (tx) => {
+      const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+      const stored = current?.questions?.find((item) => item.n === n);
+      if (current?.status !== "aguardando-humano" || stored?.reminder !== "draft" || stored.answer !== null)
+        return false;
+      stored.reminder = "sending";
+      return true;
+    }, context);
+    if (!reserved) return { status: 409, body: { error: "lembrete mudou ou já foi enviado" } };
+    try {
+      await project.channel.remind(q.ref, text);
+    } catch (err) {
+      if (!(err instanceof GuardrailViolation)) throw err;
+      await markQuestion(id, n, (stored) => {
+        stored.reminder = "draft";
+      });
+      return { status: 409, body: { error: `publicação barrada: ${err.message}` } };
+    }
+    await markQuestion(id, n, (stored) => {
+      stored.reminder = "sent";
+    });
+    await events.append({
+      type: "question",
+      project: projectName,
+      target: cardKey,
+      n,
+      to: q.to,
+      text: q.text,
+      status: "lembrete",
+    });
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** Pergunta de negócio ao PO: prévia (GET) e publicação no canal (POST), com trava contra envio duplo. */
+  async function tratarPergunta(id: string, n: number, aprovar: boolean, corpo: unknown): Promise<Resposta> {
+    const { projectName, cardKey } = partesDoId(id);
+    const lock = `${id}/${n}`;
+    if (approvingQuestions.has(lock)) return { status: 409, body: { error: "pergunta já está sendo publicada" } };
+    if (aprovar) approvingQuestions.add(lock);
+    try {
+      const state = await readState();
+      const task = state.tasks.find((t) => t.id === id);
+      const q = task?.questions?.find((item) => item.n === n);
+      if (!q) return { status: 404, body: { error: "pergunta não encontrada" } };
+      if (q.publication !== "draft" || task?.status !== "aguardando-humano")
+        return { status: 409, body: { error: "pergunta não está disponível para aprovação" } };
+      const project = projectOf(projectName);
+      const po = pessoasDoPapel(project.config, "po").find((p) => p.id === q.to);
+      if (!po) return { status: 409, body: { error: "destinatário não está configurado" } };
+      const link = project.config.source.baseUrl
+        ? `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(cardKey)}`
+        : undefined;
+      const preview = {
+        card: cardKey,
+        to: q.to,
+        comment: withAutomationMark(redactSecrets(`${project.source.formatMention(q.to)} Pergunta ${n}: ${q.text}`)),
+        teamsUserId: avisoTeamsDe(po) ?? null,
+        teamsMessage:
+          avisoTeamsDe(po) && link
+            ? teamsQuestionMessage({ card: cardKey, title: task?.title ?? "", link, name: po.name })
+            : null,
+        dryRun: project.config.dryRun,
+      };
+      const revision = questionRevision(preview);
+      if (!aprovar) return { status: 200, body: { ...preview, revision } };
+      const body = corpo as { revision?: unknown } | undefined;
+      if (body?.revision !== revision) return { status: 409, body: { error: "prévia alterada; revise novamente" } };
+      if (project.config.dryRun) return { status: 409, body: { error: "publicação real desativada no dry-run" } };
+      if (state.daemonPaused || task.pauseRequested)
+        return { status: 409, body: { error: "tarefa ou daemon pausado" } };
+      if (avisoTeamsDe(po) && (!link || !opts.teams)) return { status: 409, body: { error: "Teams indisponível" } };
+      const reserved = await harness.commit(async (tx) => {
+        const currentState = await tx.doc(StateDoc);
+        const current = currentState.tasks.find((t) => t.id === id);
+        const currentQuestion = current?.questions?.find((item) => item.n === n);
+        if (
+          currentState.daemonPaused ||
+          (current && projetoPausado(currentState, current.project)) ||
+          current?.status !== "aguardando-humano" ||
+          current.pauseRequested ||
+          currentQuestion?.publication !== "draft" ||
+          currentQuestion.text !== q.text ||
+          currentQuestion.to !== q.to
+        )
+          return false;
+        currentQuestion.publication = "sending";
+        return true;
+      }, context);
+      if (!reserved) return { status: 409, body: { error: "pergunta mudou ou foi cancelada" } };
+      let ref: Awaited<ReturnType<Channel["ask"]>>;
+      try {
+        ref = await project.channel.ask({ card: cardKey, to: q.to, text: `Pergunta ${n}: ${q.text}` });
+      } catch (err) {
+        // Guardrail barra antes de escrever: nada saiu, a pergunta volta a rascunho. Outro erro é incerto.
+        if (!(err instanceof GuardrailViolation)) throw err;
+        await markQuestion(id, n, (stored) => {
+          stored.publication = "draft";
+        });
+        return { status: 409, body: { error: `publicação barrada: ${err.message}` } };
+      }
+      const askedAt = clock.now();
+      await markQuestion(id, n, (stored) => {
+        stored.ref = ref;
+        stored.askedAt = askedAt;
+        stored.remindAt = addBusinessHours(project.config.calendar, askedAt, REMINDER_BUSINESS_HOURS);
+        stored.notifyAt = addBusinessHours(project.config.calendar, askedAt, workdayHours(project.config.calendar));
+        stored.teamsNotice =
+          avisoTeamsDe(po) && link ? { userId: avisoTeamsDe(po) as string, link, status: "pending" } : undefined;
+        stored.publication = "sent";
+      });
+      await sendTeamsNotice(id, projectName, cardKey, n);
+      await events.append({
+        type: "question",
+        project: projectName,
+        target: cardKey,
+        n,
+        to: q.to,
+        text: q.text,
+        status: "enviada",
+      });
+      return { status: 200, body: { ok: true } };
+    } finally {
+      if (aprovar) approvingQuestions.delete(lock);
+    }
+  }
+
+  /** Proposta de retrô da fábrica: prévia (GET) e publicação como issue (POST), com trava por proposta. */
+  async function tratarRetro(
+    id: string,
+    stage: string,
+    n: number,
+    aprovar: boolean,
+    corpo: unknown,
+  ): Promise<Resposta> {
+    const lock = `${id}/${stage}/${n}`;
+    if (configuringRetro || approvingRetros.has(lock) || (aprovar && approvingRetros.size > 0))
+      return { status: 409, body: { error: "uma proposta já está sendo publicada; tente novamente" } };
+    if (aprovar) approvingRetros.add(lock);
+    try {
+      const { projectName, cardKey } = partesDoId(id);
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      const retro = task?.retros?.find((r) => r.stage === stage);
+      const proposal = retro?.proposals?.find((p) => p.n === n);
+      if (!task || !retro || !proposal || proposal.kind !== "fabrica")
+        return { status: 404, body: { error: "proposta não encontrada" } };
+      if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
+        return { status: 409, body: { error: "proposta não está disponível para revisão" } };
+      if (!retroSettings.sink || !retroSettings.repo)
+        return { status: 409, body: { error: "repositório da fábrica não configurado" } };
+      const project = projectOf(projectName);
+      const publication = {
+        writer: project.writer,
+        cardKey,
+        config: project.config,
+        sink: retroSettings.sink,
+        repo: retroSettings.repo,
+        stage: retro.stage,
+        ref: task.ref,
+        proposal,
+      };
+      const preview = await previewFactoryRetro(publication);
+      if (!aprovar)
+        return {
+          status: 200,
+          body: {
+            title: preview.title,
+            body: preview.body,
+            revision: preview.revision,
+            repo: publication.repo,
+            dryRun: project.config.dryRun,
+            blocked: preview.blocked,
+          },
+        };
+      const body = corpo as { revision?: unknown } | undefined;
+      if (body?.revision !== preview.revision)
+        return { status: 409, body: { error: "prévia alterada; revise novamente" } };
+      if (preview.blocked)
+        return { status: 409, body: { error: "texto ainda contém valores privados; publicação bloqueada" } };
+      await publishFactoryRetro(publication, preview);
+      await harness.commit(async (tx) => {
+        const current = (await tx.doc(StateDoc)).tasks
+          .find((t) => t.id === id)
+          ?.retros?.find((r) => r.stage === stage)
+          ?.proposals?.find((p) => p.n === n);
+        if (current?.status === "pendente") Object.assign(current, proposal);
+      }, context);
+      return { status: 200, body: { ok: true, status: proposal.status, issue: proposal.issue } };
+    } finally {
+      if (aprovar) approvingRetros.delete(lock);
+    }
+  }
+
   const commands: FactoryCommands = {
     async answerQuestion(id, n, answer) {
       if (!Number.isSafeInteger(n) || n < 1 || !answer.trim() || answer.length > 20_000) return false;
@@ -2609,19 +2497,8 @@ export async function startFactory(opts: {
       if (gate !== null) await harness.abortTask(gate as TaskId, context);
       return result;
     },
-    pausarProjeto: (nome: string) =>
-      harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        state.projetosPausados = [...new Set([...(state.projetosPausados ?? []), nome])];
-      }, context),
-    retomarProjeto: (nome: string) =>
-      harness.commit(async (tx) => {
-        const state = await tx.doc(StateDoc);
-        state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
-        // Como no daemon: as Tarefas paradas só pela pausa do projeto voltam para a fila; as pausadas pelo usuário não.
-        for (const t of state.tasks)
-          if (t.project === nome && t.status === "pausada" && !t.pauseRequested) t.status = "enfileirada";
-      }, context),
+    pausarProjeto: (nome: string) => projetos.marcarPausa(nome, true),
+    retomarProjeto: (nome: string) => projetos.marcarPausa(nome, false),
     setDaemonPaused: (paused: boolean) =>
       harness.commit(async (tx) => {
         const state = await tx.doc(StateDoc);
@@ -2638,6 +2515,363 @@ export async function startFactory(opts: {
           .filter((t) => t !== undefined);
         state.tasks = [...first, ...state.tasks.filter((t) => !first.includes(t))];
       }, context),
+    // Consultas da API local.
+    daemonPausado: async () => (await readState()).daemonPaused,
+    fila: () => queue(),
+    tarefas: async () => (await readState()).tasks.map(taskSummary),
+    eventos: () => events.list(),
+    eventosFluxo: () => ({
+      tipo: "fluxo" as const,
+      assinar: (enviar) => events.subscribe((event) => enviar(JSON.stringify(event))),
+    }),
+    ferramentas: () => catalogoDeFerramentas(),
+    esquema: () => API_SCHEMA,
+    projetosCarregados: () =>
+      [...projects.values()].map((p) => ({
+        nome: p.config.name,
+        fonte: p.config.source.type,
+        ensaio: p.config.dryRun,
+      })),
+    canais: () => [
+      ...canais.tipos().map((tipo) => ({ tipo, papel: "conversa", rotulo: rotulosCanais[tipo] ?? tipo })),
+      ...canaisDeAviso.tipos().map((tipo) => ({ tipo, papel: "aviso", rotulo: rotulosCanais[tipo] ?? tipo })),
+    ],
+    integracoesFontes: () => [ESQUEMA_JIRA, ESQUEMA_GITHUB, ESQUEMA_GITLAB],
+    perfisProntos: () => PERFIS_PRONTOS,
+    repos: () => listRepos(),
+    githubApp: () => githubAppPanel(),
+    githubRepos: () => githubReposCatalog(),
+    projetos,
+
+    // Tarefas.
+    tarefa: async (id) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      return task
+        ? { status: 200, body: taskDetail(task, events.list()) }
+        : { status: 404, body: { error: `Tarefa ${id} não existe` } };
+    },
+    trace: async (id) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      if (!task) return { status: 404, body: { error: `Tarefa ${id} não existe` } };
+      return { status: 200, body: await traceDaTarefa(harness, task, context) };
+    },
+    esquecerMemoria: async (id, etapa) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      if (!task) return { status: 404, body: { error: `Tarefa ${id} não existe` } };
+      // A implementação não entra aqui: as tools dela localizam a Tarefa pelo id da conversa, e zerá-lo quebraria a
+      // retomada. SPEC, review e retrô têm caminho de nova conversa.
+      const retroStage = etapa.startsWith("retro:") ? etapa.slice("retro:".length) : undefined;
+      const atual =
+        etapa === "spec"
+          ? task.specConversationId
+          : etapa === "review"
+            ? task.review?.conversationId
+            : retroStage
+              ? task.retros?.find((r) => r.stage === retroStage)?.conversationId
+              : undefined;
+      if (etapa !== "spec" && etapa !== "review" && !retroStage)
+        return { status: 409, body: { error: `a etapa ${etapa} ainda não permite esquecer a memória` } };
+      if (!atual) return { status: 409, body: { error: `a etapa ${etapa} ainda não tem memória para esquecer` } };
+      await harness.commit(async (tx) => {
+        const alvo = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+        if (!alvo) return;
+        alvo.conversasEsquecidas = [...(alvo.conversasEsquecidas ?? []), atual];
+        if (etapa === "spec") alvo.specConversationId = null;
+        else if (etapa === "review" && alvo.review) alvo.review.conversationId = null;
+        else if (retroStage) {
+          const retro = alvo.retros?.find((r) => r.stage === retroStage);
+          if (retro) retro.conversationId = null;
+        }
+      }, context);
+      return { status: 200, body: { etapa, esquecida: true } };
+    },
+    mensagemEtapa: async (id, etapa, texto) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      if (!task) return { status: 404, body: { error: `Tarefa ${id} não existe` } };
+      const conversa = [...conversasDaTarefa(task)].find(([, nome]) => nome === etapa)?.[0];
+      if (!conversa) return { status: 404, body: { error: `a etapa ${etapa} ainda não tem conversa nesta tarefa` } };
+      const handle = await harness.conversation(conversa, context);
+      if (!handle) return { status: 404, body: { error: `a conversa da etapa ${etapa} não existe mais` } };
+      // Com a etapa em execução, a mensagem vira steer no próximo ponto de decisão; parada, inicia um turno novo.
+      await handle.submit(
+        {
+          type: "input",
+          content: texto,
+          requestId: `usuario-${globalThis.crypto.randomUUID()}`,
+          whenBusy: "steer",
+        },
+        context,
+      );
+      return { status: 200, body: { etapa, enviada: true } };
+    },
+    previaReparo: async (id) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      if (!task) return { status: 404, body: { error: "tarefa inexistente" } };
+      return { status: 200, body: await repairPreview(task, implementationDeps.worktreesRoot) };
+    },
+    aplicarReparo: async (id, corpo) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      if (!task) return { status: 404, body: { error: "tarefa inexistente" } };
+      const body = corpo as { revision?: unknown; approveTestChanges?: unknown } | undefined;
+      if (
+        typeof body?.revision !== "string" ||
+        !/^[0-9a-f]{64}$/.test(body.revision) ||
+        body.approveTestChanges !== true
+      )
+        return {
+          status: 400,
+          body: { error: "exige revisão exata e aprovação explícita dos reparos, inclusive nos testes" },
+        };
+      const revision = body.revision;
+      const result = await harness.commit(async (tx) => {
+        const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
+        if (!current) throw new RepairConflict("tarefa inexistente");
+        return integrateRepair(
+          current as QueuedTask,
+          implementationDeps.worktreesRoot,
+          revision,
+          implementationDeps.testRunner,
+          context.abortSignal,
+        );
+      }, context);
+      const { projectName, cardKey } = partesDoId(id);
+      await events.append({
+        type: "progress",
+        project: projectName,
+        target: cardKey,
+        message: `Reparo humano aprovado e validado para o ticket ${result.ticket + 1}: commit ${result.sha.slice(0, 8)}. Tarefa continua bloqueada até retomada explícita.`,
+      });
+      return { status: 200, body: result };
+    },
+    previaTriagem: (id) => tratarTriagem(id, false, undefined),
+    decidirTriagem: (id, corpo) => tratarTriagem(id, true, corpo),
+    previaSpec: (id) => tratarSpec(id, false, undefined),
+    aprovarSpec: (id, corpo) => tratarSpec(id, true, corpo),
+    previaLembrete: (id, n) => tratarLembrete(id, n, false, undefined),
+    aprovarLembrete: (id, n, corpo) => tratarLembrete(id, n, true, corpo),
+    responderPergunta: async (id, n, texto) => {
+      const task = (await readState()).tasks.find((t) => t.id === id);
+      if (!task?.questions?.some((q) => q.n === n)) return { status: 404, body: { error: "pergunta não encontrada" } };
+      // Web e Telegram usam a mesma classificação e o mesmo despertar atômico.
+      const ok = await commands.answerQuestion(id, n, texto);
+      return ok
+        ? { status: 200, body: { ok: true } }
+        : { status: 409, body: { error: "pergunta não está disponível para resposta" } };
+    },
+    previaPergunta: (id, n) => tratarPergunta(id, n, false, undefined),
+    aprovarPergunta: (id, n, corpo) => tratarPergunta(id, n, true, corpo),
+    previaRetro: (id, etapa, n) => tratarRetro(id, etapa, n, false, undefined),
+    aprovarRetro: (id, etapa, n, corpo) => tratarRetro(id, etapa, n, true, corpo),
+    poll: async () => {
+      await serializedPoll();
+      return { status: 200, body: { ok: true } };
+    },
+    // Projetos: leitura, confirmação e configuração.
+    pendenciasProjeto: async (nome) => {
+      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+      if (!guardada) return { status: 404, body: { error: `projeto ${nome} não existe` } };
+      return { status: 200, body: comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome) };
+    },
+    estadoProjeto: async (nome) => {
+      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+      if (!guardada) return { status: 404, body: { error: `projeto ${nome} não existe` } };
+      const state = await readState();
+      const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
+      return {
+        status: 200,
+        body: {
+          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
+          pendencias,
+          aguardandoConfirmacao: aguardandoConfirmacao(state, nome),
+        },
+      };
+    },
+    confirmarFonteProjeto: async (nome) => {
+      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+      if (!guardada) return { status: 404, body: { error: `projeto ${nome} não existe` } };
+      // Confirmar a Fonte nova tira só a pendência da troca: o projeto vira ativo se não houver outras (e não pausado).
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
+      }, context);
+      const state = await readState();
+      const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
+      return {
+        status: 200,
+        body: {
+          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
+          pendencias,
+          aguardandoConfirmacao: false,
+        },
+      };
+    },
+    historicoProjeto: async (nome) => {
+      const state = await readState();
+      // Depois da remoção o histórico continua consultável: o registro da remoção é a última alteração.
+      const existe = lerConfiguracao(state.projetos?.[nome]) !== undefined || nome in (state.projetosRemovidos ?? {});
+      if (!existe) return { status: 404, body: { error: `projeto ${nome} não existe` } };
+      return { status: 200, body: state.historicoConfig?.[nome] ?? [] };
+    },
+    configuracaoProjeto: async (nome) => {
+      const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
+      return guardada
+        ? { status: 200, body: guardada }
+        : { status: 404, body: { error: `projeto ${nome} não existe` } };
+    },
+    salvarConfiguracaoProjeto: async (nome, corpo) => {
+      const lida = ProjectConfig.safeParse(corpo);
+      if (!lida.success)
+        return {
+          status: 400,
+          body: { error: lida.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") },
+        };
+      if (lida.data.name !== nome)
+        return { status: 400, body: { error: "o nome do projeto no corpo não bate com a URL" } };
+      const errosPerfis = validarPerfis({ profiles: lida.data.profiles, people: lida.data.people });
+      if (errosPerfis.length > 0) return { status: 400, body: { error: errosPerfis[0] } };
+      for (const repositorio of lida.data.repositories ?? []) {
+        if (!(await ehDiretorio(repositorio.path)))
+          return { status: 400, body: { error: `caminho do repositório não existe: ${repositorio.path}` } };
+      }
+      const erroFonte = await projetos.erroDaFonte(lida.data.source);
+      if (erroFonte) return { status: 400, body: { error: erroFonte } };
+      let existe = false;
+      let emAndamento: string[] = [];
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(StateDoc);
+        const anterior = lerConfiguracao(state.projetos?.[nome]);
+        if (!anterior) return;
+        existe = true;
+        // Trocar a Fonte ou o repositório só sem tarefas em andamento (ticket 10): nada é gravado se houver.
+        const troca = trocouFonteOuRepositorio(anterior, lida.data);
+        if (troca) {
+          emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
+          if (emAndamento.length > 0) return;
+          state.projetosAguardandoConfirmacao = [...new Set([...(state.projetosAguardandoConfirmacao ?? []), nome])];
+        }
+        state.projetos = { ...state.projetos, [nome]: JSON.stringify(lida.data) };
+        const campos = camposAlterados(anterior, lida.data);
+        if (campos.length > 0)
+          state.historicoConfig = {
+            ...state.historicoConfig,
+            [nome]: [
+              ...(state.historicoConfig?.[nome] ?? []),
+              { quando: new Date(clock.now()).toISOString(), autor: "usuario", campos },
+            ],
+          };
+      }, context);
+      if (!existe) return { status: 404, body: { error: `projeto ${nome} não existe` } };
+      if (emAndamento.length > 0)
+        return {
+          status: 409,
+          body: {
+            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para trocar a Fonte ou o repositório`,
+            tarefasEmAndamento: emAndamento,
+          },
+        };
+      aplicarConfiguracao(lida.data);
+      return { status: 200, body: lida.data };
+    },
+
+    // Segredos do cofre.
+    listarSegredos: () => segredos.list(),
+    gravarSegredo: async (nome, corpo) => {
+      const dados = corpo as { valor?: unknown } | undefined;
+      if (typeof dados?.valor !== "string" || dados.valor.length === 0)
+        return { status: 400, body: { error: "informe valor, o conteúdo da credencial" } };
+      // Credencial em uso por projetos: a troca passa pelo mesmo teste de conexão do PUT da Fonte Jira
+      // (um valor inválido não deve degradar as tarefas em silêncio) e fica registrada no histórico.
+      const usadoPor: { nome: string; fonte: { type: string; baseUrl?: string; email?: string } }[] = [];
+      for (const [nomeProjeto, bruto] of Object.entries((await readState()).projetos ?? {})) {
+        const config = lerConfiguracao(bruto);
+        if (config?.source.credential === nome) usadoPor.push({ nome: nomeProjeto, fonte: config.source });
+      }
+      for (const { fonte } of usadoPor) {
+        if (fonte.type !== "jira" || !fonte.baseUrl || !fonte.email) continue;
+        const conexao = await testarConexaoJira({
+          baseUrl: fonte.baseUrl,
+          email: fonte.email,
+          token: dados.valor,
+          fetch: opts.fetchFonte ?? fetch,
+        });
+        if (!conexao.ok)
+          return {
+            status: 400,
+            body: { error: `conexão com o Jira falhou (${conexao.motivo}); a credencial ${nome} não foi trocada` },
+          };
+      }
+      const gravado = await segredos.put(nome, dados.valor);
+      // A interface do Telegram lê o token ao ligar: trocar a credencial do bot religa a interface na hora.
+      if ((await readState()).telegramConfig?.credential === nome) await reiniciarBridge();
+      if (usadoPor.length > 0) {
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(StateDoc);
+          const quando = new Date(clock.now()).toISOString();
+          const historico = { ...state.historicoConfig };
+          for (const { nome: projeto } of usadoPor)
+            historico[projeto] = [
+              ...(historico[projeto] ?? []),
+              { quando, autor: "usuario", campos: [`credencial ${nome} trocada`] },
+            ];
+          state.historicoConfig = historico;
+        }, context);
+      }
+      return { status: 200, body: gravado };
+    },
+    // Publicações (repositório das retrôs da fábrica).
+    retroConfiguracao: async () => ({
+      status: 200,
+      body: { repo: retroSettings.repo ?? null, available: Boolean(retroSettings.sink) },
+    }),
+    salvarRetroConfiguracao: async (corpo) => {
+      const body = corpo as { repo?: unknown } | undefined;
+      if (typeof body?.repo !== "string" || !isRetroRepository(body.repo.trim()))
+        return { status: 400, body: { error: "Informe o repositório no formato dono/nome, sem URL." } };
+      if (!retroSettings.sink)
+        return { status: 409, body: { error: "Adaptador de publicação indisponível neste daemon." } };
+      if (configuringRetro || approvingRetros.size > 0)
+        return { status: 409, body: { error: "Publicação ou configuração em andamento; tente novamente." } };
+      configuringRetro = true;
+      try {
+        const repo = body.repo.trim();
+        await harness.commit(async (tx) => {
+          (await tx.doc(StateDoc)).retroRepo = repo;
+        }, context);
+        retroSettings.repo = repo;
+        return { status: 200, body: { repo, available: true } };
+      } finally {
+        configuringRetro = false;
+      }
+    },
+
+    // Telegram: a interface de gestão do celular.
+    telegramConfiguracao: async () => {
+      const salvo = (await readState()).telegramConfig;
+      return salvo ? { status: 200, body: salvo } : { status: 404, body: { error: "Telegram não configurado" } };
+    },
+    salvarTelegramConfiguracao: async (corpo) => {
+      const dados = corpo as { chat?: unknown; credential?: unknown; usuario?: unknown } | undefined;
+      if (typeof dados?.chat !== "string" || !/^-?\d+$/.test(dados.chat.trim()))
+        return { status: 400, body: { error: "informe chat, o id numérico da conversa do bot" } };
+      if (typeof dados.usuario !== "string" || !/^\d+$/.test(dados.usuario.trim()))
+        return {
+          status: 400,
+          body: { error: "informe usuario, o id numérico do usuário autorizado a falar com a fábrica" },
+        };
+      const credential = typeof dados.credential === "string" ? dados.credential.trim() : undefined;
+      if (credential !== undefined && !(await segredos.has(credential)))
+        return { status: 400, body: { error: `credencial ${credential} não cadastrada` } };
+      const configTelegram = {
+        chat: dados.chat.trim(),
+        usuario: dados.usuario.trim(),
+        ...(credential ? { credential } : {}),
+      };
+      await harness.commit(async (tx) => {
+        (await tx.doc(StateDoc)).telegramConfig = configTelegram;
+      }, context);
+      await reiniciarBridge();
+      return { status: 200, body: configTelegram };
+    },
   };
 
   // --- API HTTP ----------------------------------------------------------------------------------
@@ -2653,9 +2887,6 @@ export async function startFactory(opts: {
     return raw ? JSON.parse(raw) : undefined;
   };
   const streams = new Set<ServerResponse>();
-  const approvingRetros = new Set<string>();
-  let configuringRetro = false;
-  const approvingQuestions = new Set<string>();
 
   /**
    * Só clientes locais: Host precisa ser localhost/127.0.0.1 na porta do servidor (barra DNS rebinding) e um POST com
@@ -2665,897 +2896,25 @@ export async function startFactory(opts: {
     const { port } = server.address() as AddressInfo;
     return new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
   };
-  const isLocalRequest = (req: IncomingMessage): boolean => {
-    const hosts = localHosts();
-    if (!hosts.has((req.headers.host ?? "").toLowerCase())) return false;
-    const origin = req.headers.origin;
-    if (req.method !== "POST" || origin === undefined) return true;
-    return [...hosts].some((h) => origin.toLowerCase() === `http://${h}`);
-  };
-  const isJson = (req: IncomingMessage) =>
+  const _isJson = (req: IncomingMessage) =>
     (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase() === "application/json";
+
+  const api = createApiLocal({ hosts: localHosts, rotas: criarRotasApi(commands) });
 
   const server = createServer(async (req, res) => {
     try {
-      // A página de gestão passa pela mesma proteção: só clientes locais.
-      if (!isLocalRequest(req)) return json(res, 403, { error: "a API aceita só clientes locais" });
       const url = new URL(req.url ?? "/", "http://localhost");
-      const route = `${req.method} ${url.pathname}`;
-      const taskCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/(pause|resume|cancel)$/);
-
-      if (route === "GET /settings/retro")
-        return json(res, 200, { repo: retroSettings.repo ?? null, available: Boolean(retroSettings.sink) });
-      if (route === "POST /settings/retro") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { repo?: unknown } | undefined;
-        if (typeof body?.repo !== "string" || !isRetroRepository(body.repo.trim()))
-          return json(res, 400, { error: "Informe o repositório no formato dono/nome, sem URL." });
-        if (!retroSettings.sink) return json(res, 409, { error: "Adaptador de publicação indisponível neste daemon." });
-        if (configuringRetro || approvingRetros.size > 0)
-          return json(res, 409, { error: "Publicação ou configuração em andamento; tente novamente." });
-        configuringRetro = true;
-        try {
-          const repo = body.repo.trim();
-          await harness.commit(async (tx) => {
-            (await tx.doc(StateDoc)).retroRepo = repo;
-          }, context);
-          retroSettings.repo = repo;
-          return json(res, 200, { repo, available: true });
-        } finally {
-          configuringRetro = false;
-        }
-      }
-      if (route === "GET /queue") return json(res, 200, await queue());
-      if (route === "GET /tasks") return json(res, 200, (await readState()).tasks.map(taskSummary));
-      const taskRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)$/);
-      if (req.method === "GET" && taskRoute) {
-        const id = `${decodeURIComponent(taskRoute[1] as string)}/${decodeURIComponent(taskRoute[2] as string)}`;
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        return task
-          ? json(res, 200, taskDetail(task, events.list()))
-          : json(res, 404, { error: `Tarefa ${id} não existe` });
-      }
-      const traceRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/trace$/);
-      if (req.method === "GET" && traceRoute) {
-        const id = `${decodeURIComponent(traceRoute[1] as string)}/${decodeURIComponent(traceRoute[2] as string)}`;
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task) return json(res, 404, { error: `Tarefa ${id} não existe` });
-        return json(res, 200, await traceDaTarefa(harness, task, context));
-      }
-      const esquecerRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/etapas\/([^/]+)\/memoria\/esquecer$/);
-      if (req.method === "POST" && esquecerRoute) {
-        const id = `${decodeURIComponent(esquecerRoute[1] as string)}/${decodeURIComponent(esquecerRoute[2] as string)}`;
-        const etapa = decodeURIComponent(esquecerRoute[3] as string);
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task) return json(res, 404, { error: `Tarefa ${id} não existe` });
-        // A implementação não entra aqui: as tools dela localizam a Tarefa pelo id da conversa, e zerá-lo quebraria a
-        // retomada. SPEC, review e retrô têm caminho de nova conversa.
-        const retroStage = etapa.startsWith("retro:") ? etapa.slice("retro:".length) : undefined;
-        const atual =
-          etapa === "spec"
-            ? task.specConversationId
-            : etapa === "review"
-              ? task.review?.conversationId
-              : retroStage
-                ? task.retros?.find((r) => r.stage === retroStage)?.conversationId
-                : undefined;
-        if (etapa !== "spec" && etapa !== "review" && !retroStage)
-          return json(res, 409, { error: `a etapa ${etapa} ainda não permite esquecer a memória` });
-        if (!atual) return json(res, 409, { error: `a etapa ${etapa} ainda não tem memória para esquecer` });
-        await harness.commit(async (tx) => {
-          const alvo = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-          if (!alvo) return;
-          alvo.conversasEsquecidas = [...(alvo.conversasEsquecidas ?? []), atual];
-          if (etapa === "spec") alvo.specConversationId = null;
-          else if (etapa === "review" && alvo.review) alvo.review.conversationId = null;
-          else if (retroStage) {
-            const retro = alvo.retros?.find((r) => r.stage === retroStage);
-            if (retro) retro.conversationId = null;
-          }
-        }, context);
-        return json(res, 200, { etapa, esquecida: true });
-      }
-      const mensagemRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/etapas\/([^/]+)\/mensagem$/);
-      if (req.method === "POST" && mensagemRoute) {
-        const id = `${decodeURIComponent(mensagemRoute[1] as string)}/${decodeURIComponent(mensagemRoute[2] as string)}`;
-        const etapa = decodeURIComponent(mensagemRoute[3] as string);
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task) return json(res, 404, { error: `Tarefa ${id} não existe` });
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const corpo = (await readBody(req)) as { texto?: unknown } | undefined;
-        if (typeof corpo?.texto !== "string" || corpo.texto.trim() === "")
-          return json(res, 400, { error: "informe texto, a mensagem para o agente" });
-        const conversa = [...conversasDaTarefa(task)].find(([, nome]) => nome === etapa)?.[0];
-        if (!conversa) return json(res, 404, { error: `a etapa ${etapa} ainda não tem conversa nesta tarefa` });
-        const handle = await harness.conversation(conversa, context);
-        if (!handle) return json(res, 404, { error: `a conversa da etapa ${etapa} não existe mais` });
-        // Com a etapa em execução, a mensagem vira steer no próximo ponto de decisão; parada, inicia um turno novo.
-        await handle.submit(
-          {
-            type: "input",
-            content: corpo.texto.trim(),
-            requestId: `usuario-${globalThis.crypto.randomUUID()}`,
-            whenBusy: "steer",
-          },
-          context,
-        );
-        return json(res, 200, { etapa, enviada: true });
-      }
-      const repairRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/repair$/);
-      if (repairRoute && (req.method === "GET" || req.method === "POST")) {
-        const project = decodeURIComponent(repairRoute[1] as string);
-        const key = decodeURIComponent(repairRoute[2] as string);
-        const id = `${project}/${key}`;
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task) return json(res, 404, { error: "tarefa inexistente" });
-        if (req.method === "GET") return json(res, 200, await repairPreview(task, implementationDeps.worktreesRoot));
-        if (!isJson(req)) return json(res, 400, { error: "envie JSON" });
-        const body = (await readBody(req)) as { revision?: unknown; approveTestChanges?: unknown } | undefined;
-        if (
-          typeof body?.revision !== "string" ||
-          !/^[0-9a-f]{64}$/.test(body.revision) ||
-          body.approveTestChanges !== true
-        )
-          return json(res, 400, {
-            error: "exige revisão exata e aprovação explícita dos reparos, inclusive nos testes",
-          });
-        const revision = body.revision;
-        const result = await harness.commit(async (tx) => {
-          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-          if (!current) throw new RepairConflict("tarefa inexistente");
-          return integrateRepair(
-            current as QueuedTask,
-            implementationDeps.worktreesRoot,
-            revision,
-            implementationDeps.testRunner,
-            context.abortSignal,
-          );
-        }, context);
-        await events.append({
-          type: "progress",
-          project,
-          target: key,
-          message: `Reparo humano aprovado e validado para o ticket ${result.ticket + 1}: commit ${result.sha.slice(0, 8)}. Tarefa continua bloqueada até retomada explícita.`,
-        });
-        return json(res, 200, result);
-      }
-      const triageRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/triage(\/decide)?$/);
-      if (triageRoute && (req.method === "GET" || req.method === "POST")) {
-        const [, encodedProject, encodedKey, deciding] = triageRoute;
-        if ((req.method === "POST") !== (deciding !== undefined)) return json(res, 404, { error: "rota inexistente" });
-        const projectName = decodeURIComponent(encodedProject as string);
-        const cardKey = decodeURIComponent(encodedKey as string);
-        const id = `${projectName}/${cardKey}`;
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task?.triage) return json(res, 404, { error: "triagem não encontrada" });
-        if (task.triage.review !== "draft" || task.status !== "aguardando-humano")
-          return json(res, 409, { error: "triagem não está aguardando decisão" });
-        const project = projectOf(projectName);
-        const { result } = task.triage;
-        const preview = {
-          card: cardKey,
-          verdict: result.verdict,
-          category: result.category,
-          reason: result.reason,
-          by: result.by,
-          duplicateOf: result.duplicateOf ?? null,
-          // O que sai na issue se o usuário recusar: o comentário exato e o motivo do fechamento.
-          comment: withAutomationMark(redactSecrets(refusalComment(result, duplicateRef(result)))),
-          closeAs: closeReason(result),
-          dryRun: project.config.dryRun,
-        };
-        const revision = reviewRevision(preview);
-        if (req.method === "GET") return json(res, 200, { ...preview, revision });
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { revision?: unknown; decision?: unknown } | undefined;
-        if (body?.decision !== "aceitar" && body?.decision !== "recusar")
-          return json(res, 400, { error: 'decision deve ser "aceitar" ou "recusar"' });
-        if (body.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-        if (project.config.dryRun && body.decision === "recusar")
-          return json(res, 409, { error: "publicação real desativada no dry-run" });
-        const decision = body.decision;
-        const decided = await harness.commit(async (tx) => {
-          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-          if (current?.status !== "aguardando-humano" || current.triage?.review !== "draft") return false;
-          current.triage.review = decision;
-          current.status = current.pauseRequested ? "pausada" : "enfileirada";
-          return true;
-        }, context);
-        return decided ? json(res, 200, { ok: true }) : json(res, 409, { error: "triagem mudou ou foi cancelada" });
-      }
-      const specRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/spec(\/approve)?$/);
-      if (specRoute && (req.method === "GET" || req.method === "POST")) {
-        const [, encodedProject, encodedKey, approval] = specRoute;
-        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
-        const projectName = decodeURIComponent(encodedProject as string);
-        const cardKey = decodeURIComponent(encodedKey as string);
-        const id = `${projectName}/${cardKey}`;
-        const state = await readState();
-        const task = state.tasks.find((t) => t.id === id);
-        if (!task?.delivery) return json(res, 404, { error: "SPEC não encontrada" });
-        if (task.specReview !== "draft" || task.status !== "aguardando-humano")
-          return json(res, 409, { error: "SPEC não está disponível para aprovação" });
-        const project = projectOf(projectName);
-        const preview = {
-          card: cardKey,
-          spec: withAutomationMark(redactSecrets(`SPEC\n\n${task.delivery.spec}`)),
-          tickets: withAutomationMark(redactSecrets(`Tickets\n\n${renderTickets(task.delivery.tickets)}`)),
-          dryRun: project.config.dryRun,
-        };
-        const revision = reviewRevision(preview);
-        if (req.method === "GET") return json(res, 200, { ...preview, revision });
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { revision?: unknown } | undefined;
-        if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-        // Aprovação é local; o escritor continua responsável por suprimir efeitos no dry-run.
-        const approved = await harness.commit(async (tx) => {
-          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-          if (current?.status !== "aguardando-humano" || current.specReview !== "draft") return false;
-          current.specReview = "approved";
-          current.specApprovedDryRun = project.config.dryRun;
-          current.status = current.pauseRequested ? "pausada" : "enfileirada";
-          return true;
-        }, context);
-        return approved ? json(res, 200, { ok: true }) : json(res, 409, { error: "SPEC mudou ou foi cancelada" });
-      }
-      const reminderRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)\/reminder(\/approve)?$/);
-      if (reminderRoute && (req.method === "GET" || req.method === "POST")) {
-        const [, encodedProject, encodedKey, number, approval] = reminderRoute;
-        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
-        const projectName = decodeURIComponent(encodedProject as string);
-        const cardKey = decodeURIComponent(encodedKey as string);
-        const id = `${projectName}/${cardKey}`;
-        const n = Number(number);
-        const state = await readState();
-        const task = state.tasks.find((t) => t.id === id);
-        const q = task?.questions?.find((item) => item.n === n);
-        if (!q) return json(res, 404, { error: "pergunta não encontrada" });
-        if (q.reminder !== "draft" || q.answer !== null || task?.status !== "aguardando-humano")
-          return json(res, 409, { error: "lembrete não está disponível para aprovação" });
-        const project = projectOf(projectName);
-        const text = reminderText(q);
-        const preview = {
-          card: cardKey,
-          to: q.to,
-          comment: withAutomationMark(redactSecrets(`${project.source.formatMention(q.to)} ${text}`)),
-          dryRun: project.config.dryRun,
-        };
-        const revision = reviewRevision(preview);
-        if (req.method === "GET") return json(res, 200, { ...preview, revision });
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { revision?: unknown } | undefined;
-        if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-        if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
-        const reserved = await harness.commit(async (tx) => {
-          const current = (await tx.doc(StateDoc)).tasks.find((t) => t.id === id);
-          const stored = current?.questions?.find((item) => item.n === n);
-          if (current?.status !== "aguardando-humano" || stored?.reminder !== "draft" || stored.answer !== null)
-            return false;
-          stored.reminder = "sending";
-          return true;
-        }, context);
-        if (!reserved) return json(res, 409, { error: "lembrete mudou ou já foi enviado" });
-        try {
-          await project.channel.remind(q.ref, text);
-        } catch (err) {
-          if (!(err instanceof GuardrailViolation)) throw err;
-          await markQuestion(id, n, (stored) => {
-            stored.reminder = "draft";
-          });
-          return json(res, 409, { error: `publicação barrada: ${err.message}` });
-        }
-        await markQuestion(id, n, (stored) => {
-          stored.reminder = "sent";
-        });
-        await events.append({
-          type: "question",
-          project: projectName,
-          target: cardKey,
-          n,
-          to: q.to,
-          text: q.text,
-          status: "lembrete",
-        });
-        return json(res, 200, { ok: true });
-      }
-      const answerRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)\/answer$/);
-      if (answerRoute && req.method === "POST") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { answer?: unknown } | undefined;
-        if (typeof body?.answer !== "string" || !body.answer.trim() || body.answer.length > 20_000)
-          return json(res, 400, { error: "resposta deve ter entre 1 e 20000 caracteres" });
-        const project = decodeURIComponent(answerRoute[1] as string);
-        const key = decodeURIComponent(answerRoute[2] as string);
-        const n = Number(answerRoute[3]);
-        const id = `${project}/${key}`;
-        const task = (await readState()).tasks.find((t) => t.id === id);
-        if (!task?.questions?.some((q) => q.n === n)) return json(res, 404, { error: "pergunta não encontrada" });
-        // Web e Telegram usam a mesma classificação e o mesmo despertar atômico.
-        const ok = await commands.answerQuestion?.(id, n, body.answer.trim());
-        return ok
-          ? json(res, 200, { ok: true })
-          : json(res, 409, { error: "pergunta não está disponível para resposta" });
-      }
-      const questionRoute = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/questions\/(\d+)(\/approve)?$/);
-      if (questionRoute && (req.method === "GET" || req.method === "POST")) {
-        const [, encodedProject, encodedKey, number, approval] = questionRoute;
-        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
-        const projectName = decodeURIComponent(encodedProject as string);
-        const cardKey = decodeURIComponent(encodedKey as string);
-        const id = `${projectName}/${cardKey}`;
-        const n = Number(number);
-        const lock = `${id}/${n}`;
-        if (approvingQuestions.has(lock)) return json(res, 409, { error: "pergunta já está sendo publicada" });
-        if (req.method === "POST") approvingQuestions.add(lock);
-        try {
-          const state = await readState();
-          const task = state.tasks.find((t) => t.id === id);
-          const q = task?.questions?.find((item) => item.n === n);
-          if (!q) return json(res, 404, { error: "pergunta não encontrada" });
-          if (q.publication !== "draft" || task?.status !== "aguardando-humano")
-            return json(res, 409, { error: "pergunta não está disponível para aprovação" });
-          const project = projectOf(projectName);
-          const po = pessoasDoPapel(project.config, "po").find((p) => p.id === q.to);
-          if (!po) return json(res, 409, { error: "destinatário não está configurado" });
-          const link = project.config.source.baseUrl
-            ? `${project.config.source.baseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(cardKey)}`
-            : undefined;
-          const preview = {
-            card: cardKey,
-            to: q.to,
-            comment: withAutomationMark(
-              redactSecrets(`${project.source.formatMention(q.to)} Pergunta ${n}: ${q.text}`),
-            ),
-            teamsUserId: avisoTeamsDe(po) ?? null,
-            teamsMessage:
-              avisoTeamsDe(po) && link
-                ? teamsQuestionMessage({ card: cardKey, title: task?.title ?? "", link, name: po.name })
-                : null,
-            dryRun: project.config.dryRun,
-          };
-          const revision = questionRevision(preview);
-          if (req.method === "GET") return json(res, 200, { ...preview, revision });
-          if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-          const body = (await readBody(req)) as { revision?: unknown } | undefined;
-          if (body?.revision !== revision) return json(res, 409, { error: "prévia alterada; revise novamente" });
-          if (project.config.dryRun) return json(res, 409, { error: "publicação real desativada no dry-run" });
-          if (state.daemonPaused || task.pauseRequested) return json(res, 409, { error: "tarefa ou daemon pausado" });
-          if (avisoTeamsDe(po) && (!link || !opts.teams)) return json(res, 409, { error: "Teams indisponível" });
-          const reserved = await harness.commit(async (tx) => {
-            const currentState = await tx.doc(StateDoc);
-            const current = currentState.tasks.find((t) => t.id === id);
-            const currentQuestion = current?.questions?.find((item) => item.n === n);
-            if (
-              currentState.daemonPaused ||
-              (current && projetoPausado(currentState, current.project)) ||
-              current?.status !== "aguardando-humano" ||
-              current.pauseRequested ||
-              currentQuestion?.publication !== "draft" ||
-              currentQuestion.text !== q.text ||
-              currentQuestion.to !== q.to
-            )
-              return false;
-            currentQuestion.publication = "sending";
-            return true;
-          }, context);
-          if (!reserved) return json(res, 409, { error: "pergunta mudou ou foi cancelada" });
-          let ref: Awaited<ReturnType<Channel["ask"]>>;
-          try {
-            ref = await project.channel.ask({ card: cardKey, to: q.to, text: `Pergunta ${n}: ${q.text}` });
-          } catch (err) {
-            // Guardrail barra antes de escrever: nada saiu, a pergunta volta a rascunho. Outro erro é incerto.
-            if (!(err instanceof GuardrailViolation)) throw err;
-            await markQuestion(id, n, (stored) => {
-              stored.publication = "draft";
-            });
-            return json(res, 409, { error: `publicação barrada: ${err.message}` });
-          }
-          const askedAt = clock.now();
-          await markQuestion(id, n, (stored) => {
-            stored.ref = ref;
-            stored.askedAt = askedAt;
-            stored.remindAt = addBusinessHours(project.config.calendar, askedAt, REMINDER_BUSINESS_HOURS);
-            stored.notifyAt = addBusinessHours(project.config.calendar, askedAt, workdayHours(project.config.calendar));
-            stored.teamsNotice =
-              avisoTeamsDe(po) && link ? { userId: avisoTeamsDe(po) as string, link, status: "pending" } : undefined;
-            stored.publication = "sent";
-          });
-          await sendTeamsNotice(id, projectName, cardKey, n);
-          await events.append({
-            type: "question",
-            project: projectName,
-            target: cardKey,
-            n,
-            to: q.to,
-            text: q.text,
-            status: "enviada",
-          });
-          return json(res, 200, { ok: true });
-        } finally {
-          if (req.method === "POST") approvingQuestions.delete(lock);
-        }
-      }
-      const retroRoute = url.pathname.match(
-        /^\/tasks\/([^/]+)\/([^/]+)\/retros\/(triagem|spec|implementacao|review|mr|tarefa)\/(\d+)(\/approve)?$/,
-      );
-      if (retroRoute && (req.method === "GET" || req.method === "POST")) {
-        const [, encodedProject, encodedKey, stage, number, approval] = retroRoute;
-        if ((req.method === "POST") !== (approval !== undefined)) return json(res, 404, { error: "rota inexistente" });
-        const projectName = decodeURIComponent(encodedProject as string);
-        const cardKey = decodeURIComponent(encodedKey as string);
-        const taskId = `${projectName}/${cardKey}`;
-        const lock = `${taskId}/${stage}/${number}`;
-        if (configuringRetro || approvingRetros.has(lock) || (req.method === "POST" && approvingRetros.size > 0))
-          return json(res, 409, { error: "uma proposta já está sendo publicada; tente novamente" });
-        if (req.method === "POST") approvingRetros.add(lock);
-        try {
-          const task = (await readState()).tasks.find((t) => t.id === taskId);
-          const retro = task?.retros?.find((r) => r.stage === stage);
-          const proposal = retro?.proposals?.find((p) => p.n === Number(number));
-          if (!task || !retro || !proposal || proposal.kind !== "fabrica")
-            return json(res, 404, { error: "proposta não encontrada" });
-          if (retro.status !== "concluida" || proposal.status !== "pendente" || !task.ref)
-            return json(res, 409, { error: "proposta não está disponível para revisão" });
-          if (!retroSettings.sink || !retroSettings.repo)
-            return json(res, 409, { error: "repositório da fábrica não configurado" });
-          const project = projectOf(projectName);
-          const publication = {
-            writer: project.writer,
-            cardKey,
-            config: project.config,
-            sink: retroSettings.sink,
-            repo: retroSettings.repo,
-            stage: retro.stage,
-            ref: task.ref,
-            proposal,
-          };
-          const preview = await previewFactoryRetro(publication);
-          if (req.method === "GET")
-            return json(res, 200, {
-              title: preview.title,
-              body: preview.body,
-              revision: preview.revision,
-              repo: publication.repo,
-              dryRun: project.config.dryRun,
-              blocked: preview.blocked,
-            });
-          if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-          const body = (await readBody(req)) as { revision?: unknown } | undefined;
-          if (body?.revision !== preview.revision)
-            return json(res, 409, { error: "prévia alterada; revise novamente" });
-          if (preview.blocked)
-            return json(res, 409, { error: "texto ainda contém valores privados; publicação bloqueada" });
-          await publishFactoryRetro(publication, preview);
-          await harness.commit(async (tx) => {
-            const current = (await tx.doc(StateDoc)).tasks
-              .find((t) => t.id === taskId)
-              ?.retros?.find((r) => r.stage === stage)
-              ?.proposals?.find((p) => p.n === Number(number));
-            if (current?.status === "pendente") Object.assign(current, proposal);
-          }, context);
-          return json(res, 200, { ok: true, status: proposal.status, issue: proposal.issue });
-        } finally {
-          if (req.method === "POST") approvingRetros.delete(lock);
-        }
-      }
-      if (route === "POST /poll") {
-        await serializedPoll();
-        return json(res, 200, { ok: true });
-      }
-      if (route === "POST /tasks/order") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { ids?: unknown };
-        if (!Array.isArray(body?.ids)) return json(res, 400, { error: "envie { ids: string[] }" });
-        await commands.reorder(body.ids.map(String));
-        return json(res, 200, { ok: true });
-      }
-      const vetoCommand = url.pathname.match(/^\/tasks\/([^/]+)\/([^/]+)\/veto$/);
-      if (req.method === "POST" && vetoCommand) {
-        const [, project, key] = vetoCommand as unknown as [string, string, string];
-        const id = `${decodeURIComponent(project)}/${decodeURIComponent(key)}`;
-        const result = await commands.veto(id);
-        if (result === "inexistente") return json(res, 404, { error: `Tarefa ${id} não existe` });
-        if (result === "fora-do-prazo")
-          return json(res, 409, { error: `Tarefa ${id} não está aguardando veto (o prazo já passou ou não houve)` });
-        return json(res, 200, { ok: true, status: "vetada" });
-      }
-      if (req.method === "POST" && taskCommand) {
-        const [, project, key, command] = taskCommand as unknown as [
-          string,
-          string,
-          string,
-          "pause" | "resume" | "cancel",
-        ];
-        const id = `${decodeURIComponent(project)}/${decodeURIComponent(key)}`;
-        const found = await commands[command](id);
-        return found ? json(res, 200, { ok: true }) : json(res, 404, { error: `Tarefa ${id} não existe` });
-      }
-      const pendenciasMatch = url.pathname.match(/^\/projetos\/([^/]+)\/pendencias$/);
-      if (pendenciasMatch && req.method === "GET") {
-        const nome = decodeURIComponent(pendenciasMatch[1] ?? "");
-        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        return json(res, 200, comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome));
-      }
-      const estadoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/estado$/);
-      if (estadoMatch && req.method === "GET") {
-        const nome = decodeURIComponent(estadoMatch[1] ?? "");
-        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        const state = await readState();
-        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
-        const pausado = projetoPausado(state, nome);
-        return json(res, 200, {
-          estado: estadoDoProjeto(pendencias, pausado),
-          pendencias,
-          aguardandoConfirmacao: aguardandoConfirmacao(state, nome),
-        });
-      }
-      const pausaMatch = url.pathname.match(/^\/projetos\/([^/]+)\/(pausa|retomada)$/);
-      if (pausaMatch && req.method === "POST") {
-        const nome = decodeURIComponent(pausaMatch[1] ?? "");
-        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), await readState(), nome);
-        if (pausaMatch[2] === "pausa") {
-          // Só um projeto ativo se pausa: um incompleto já não executa (ADR-0022).
-          if (pendencias.length > 0)
-            return json(res, 409, { error: `projeto ${nome} incompleto: ${pendencias.join("; ")}` });
-          await commands.pausarProjeto(nome);
-        } else {
-          // Retomar revalida a configuração: volta a ativo só sem pendências; senão segue pausado com o que falta.
-          if (pendencias.length > 0)
-            return json(res, 409, { error: `projeto ${nome} incompleto: ${pendencias.join("; ")}` });
-          await commands.retomarProjeto(nome);
-        }
-        const pausado = projetoPausado(await readState(), nome);
-        return json(res, 200, { estado: estadoDoProjeto(pendencias, pausado), pendencias });
-      }
-      const confirmacaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/confirmacao$/);
-      if (confirmacaoMatch && req.method === "POST") {
-        const nome = decodeURIComponent(confirmacaoMatch[1] ?? "");
-        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-        if (!guardada) return json(res, 404, { error: `projeto ${nome} não existe` });
-        // Confirmar a Fonte nova tira só a pendência da troca: o projeto vira ativo se não houver outras (e não pausado).
-        await harness.commit(async (tx) => {
-          const state = await tx.doc(StateDoc);
-          state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
-        }, context);
-        const state = await readState();
-        const pendencias = comConfirmacaoPendente(pendenciasDeConfiguracao(guardada), state, nome);
-        return json(res, 200, {
-          estado: estadoDoProjeto(pendencias, projetoPausado(state, nome)),
-          pendencias,
-          aguardandoConfirmacao: false,
-        });
-      }
-      const remocaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/remocao$/);
-      if (remocaoMatch && req.method === "POST") {
-        const nome = decodeURIComponent(remocaoMatch[1] ?? "");
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const corpo = (await readBody(req)) as { confirmar?: unknown } | undefined;
-        if (!(await readState()).projetos?.[nome]) return json(res, 404, { error: `projeto ${nome} não existe` });
-        // Remover é irreversível: o nome do projeto precisa ser repetido no corpo, como confirmação explícita.
-        if (corpo?.confirmar !== nome)
-          return json(res, 400, { error: `confirme a remoção enviando "confirmar" com o nome do projeto: ${nome}` });
-        let emAndamento: string[] = [];
-        let removido = false;
-        await harness.commit(async (tx) => {
-          const state = await tx.doc(StateDoc);
-          if (!state.projetos?.[nome]) return;
-          // Com Tarefa em andamento, nada muda: a remoção só sai quando o projeto não tem nenhuma (ticket 11).
-          emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
-          if (emAndamento.length > 0) return;
-          const guardada = lerConfiguracao(state.projetos[nome]);
-          removido = true;
-          state.projetos = semProjeto(state.projetos, nome);
-          state.projetosGitHub = semProjeto(state.projetosGitHub, nome);
-          state.repos = semProjeto(state.repos, nome);
-          state.sincronizadoEm = semProjeto(state.sincronizadoEm, nome);
-          state.projetosPausados = (state.projetosPausados ?? []).filter((p) => p !== nome);
-          state.projetosAguardandoConfirmacao = (state.projetosAguardandoConfirmacao ?? []).filter((p) => p !== nome);
-          const quando = new Date(clock.now()).toISOString();
-          state.projetosRemovidos = {
-            ...state.projetosRemovidos,
-            [nome]: { prefixo: guardada?.source.project ?? "", quando },
-          };
-          state.historicoConfig = {
-            ...state.historicoConfig,
-            [nome]: [
-              ...(state.historicoConfig?.[nome] ?? []),
-              { quando, autor: "usuario", campos: ["projeto removido"] },
-            ],
-          };
-          // Dentro do commit: nenhuma Tarefa nova entra no projeto entre a gravação e a saída da memória.
-          projects.delete(nome);
-          bases.delete(nome);
-          criadosPelaInterface.delete(nome);
-        }, context);
-        if (emAndamento.length > 0)
-          return json(res, 409, {
-            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para remover o projeto`,
-            tarefasEmAndamento: emAndamento,
-          });
-        if (!removido) return json(res, 404, { error: `projeto ${nome} não existe` });
-        const reserva = projetosReservados(await readState()).find((r) => r.nome === nome);
-        return json(res, 200, { removido: nome, prefixoReservado: reserva?.prefixo ?? null });
-      }
-      if (route === "GET /telegram/configuracao") {
-        const salvo = (await readState()).telegramConfig;
-        return salvo ? json(res, 200, salvo) : json(res, 404, { error: "Telegram não configurado" });
-      }
-      if (route === "PUT /telegram/configuracao") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const corpo = (await readBody(req)) as { chat?: unknown; credential?: unknown; usuario?: unknown } | undefined;
-        if (typeof corpo?.chat !== "string" || !/^-?\d+$/.test(corpo.chat.trim()))
-          return json(res, 400, { error: "informe chat, o id numérico da conversa do bot" });
-        if (typeof corpo.usuario !== "string" || !/^\d+$/.test(corpo.usuario.trim()))
-          return json(res, 400, {
-            error: "informe usuario, o id numérico do usuário autorizado a falar com a fábrica",
-          });
-        const credential = typeof corpo.credential === "string" ? corpo.credential.trim() : undefined;
-        if (credential !== undefined && !(await segredos.has(credential)))
-          return json(res, 400, { error: `credencial ${credential} não cadastrada` });
-        const configTelegram = {
-          chat: corpo.chat.trim(),
-          usuario: corpo.usuario.trim(),
-          ...(credential ? { credential } : {}),
-        };
-        await harness.commit(async (tx) => {
-          (await tx.doc(StateDoc)).telegramConfig = configTelegram;
-        }, context);
-        await reiniciarBridge();
-        return json(res, 200, configTelegram);
-      }
-      const historicoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/historico$/);
-      if (historicoMatch && req.method === "GET") {
-        const nome = decodeURIComponent(historicoMatch[1] ?? "");
-        const state = await readState();
-        // Depois da remoção o histórico continua consultável: o registro da remoção é a última alteração.
-        const existe = lerConfiguracao(state.projetos?.[nome]) !== undefined || nome in (state.projetosRemovidos ?? {});
-        if (!existe) return json(res, 404, { error: `projeto ${nome} não existe` });
-        return json(res, 200, state.historicoConfig?.[nome] ?? []);
-      }
-      const segredoMatch = url.pathname.match(/^\/segredos\/([^/]+)$/);
-      if (route === "GET /segredos") return json(res, 200, await segredos.list());
-      if (route === "GET /ferramentas") return json(res, 200, catalogoDeFerramentas());
-      if (segredoMatch && req.method === "PUT") {
-        const nomeSegredo = decodeURIComponent(segredoMatch[1] ?? "");
-        if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(nomeSegredo))
-          return json(res, 400, { error: "nome: use minúsculas, números e hífen (2 a 64 caracteres)" });
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const corpo = (await readBody(req)) as { valor?: unknown } | undefined;
-        if (typeof corpo?.valor !== "string" || corpo.valor.length === 0)
-          return json(res, 400, { error: "informe valor, o conteúdo da credencial" });
-        // Credencial em uso por projetos: a troca passa pelo mesmo teste de conexão do PUT da Fonte Jira
-        // (um valor inválido não deve degradar as tarefas em silêncio) e fica registrada no histórico.
-        const usadoPor: { nome: string; fonte: { type: string; baseUrl?: string; email?: string } }[] = [];
-        for (const [nome, bruto] of Object.entries((await readState()).projetos ?? {})) {
-          const config = lerConfiguracao(bruto);
-          if (config?.source.credential === nomeSegredo) usadoPor.push({ nome, fonte: config.source });
-        }
-        for (const { fonte } of usadoPor) {
-          if (fonte.type !== "jira" || !fonte.baseUrl || !fonte.email) continue;
-          const conexao = await testarConexaoJira({
-            baseUrl: fonte.baseUrl,
-            email: fonte.email,
-            token: corpo.valor,
-            fetch: opts.fetchFonte ?? fetch,
-          });
-          if (!conexao.ok)
-            return json(res, 400, {
-              error: `conexão com o Jira falhou (${conexao.motivo}); a credencial ${nomeSegredo} não foi trocada`,
-            });
-        }
-        const gravado = await segredos.put(nomeSegredo, corpo.valor);
-        // A interface do Telegram lê o token ao ligar: trocar a credencial do bot religa a interface na hora.
-        if ((await readState()).telegramConfig?.credential === nomeSegredo) await reiniciarBridge();
-        if (usadoPor.length > 0) {
-          await harness.commit(async (tx) => {
-            const state = await tx.doc(StateDoc);
-            const quando = new Date(clock.now()).toISOString();
-            const historico = { ...state.historicoConfig };
-            for (const { nome } of usadoPor)
-              historico[nome] = [
-                ...(historico[nome] ?? []),
-                { quando, autor: "usuario", campos: [`credencial ${nomeSegredo} trocada`] },
-              ];
-            state.historicoConfig = historico;
-          }, context);
-        }
-        return json(res, 200, gravado);
-      }
-      const configuracaoMatch = url.pathname.match(/^\/projetos\/([^/]+)\/configuracao$/);
-      if (configuracaoMatch && req.method === "GET") {
-        const nome = decodeURIComponent(configuracaoMatch[1] ?? "");
-        const guardada = lerConfiguracao((await readState()).projetos?.[nome]);
-        return guardada ? json(res, 200, guardada) : json(res, 404, { error: `projeto ${nome} não existe` });
-      }
-      if (configuracaoMatch && req.method === "PUT") {
-        const nome = decodeURIComponent(configuracaoMatch[1] ?? "");
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const lida = ProjectConfig.safeParse(await readBody(req));
-        if (!lida.success)
-          return json(res, 400, {
-            error: lida.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
-          });
-        if (lida.data.name !== nome) return json(res, 400, { error: "o nome do projeto no corpo não bate com a URL" });
-        const errosPerfis = validarPerfis({ profiles: lida.data.profiles, people: lida.data.people });
-        if (errosPerfis.length > 0) return json(res, 400, { error: errosPerfis[0] });
-        for (const repositorio of lida.data.repositories ?? []) {
-          if (!(await ehDiretorio(repositorio.path)))
-            return json(res, 400, { error: `caminho do repositório não existe: ${repositorio.path}` });
-        }
-        const erroFonte = await erroDaFonte(lida.data.source);
-        if (erroFonte) return json(res, 400, { error: erroFonte });
-        let existe = false;
-        let emAndamento: string[] = [];
-        await harness.commit(async (tx) => {
-          const state = await tx.doc(StateDoc);
-          const anterior = lerConfiguracao(state.projetos?.[nome]);
-          if (!anterior) return;
-          existe = true;
-          // Trocar a Fonte ou o repositório só sem tarefas em andamento (ticket 10): nada é gravado se houver.
-          const troca = trocouFonteOuRepositorio(anterior, lida.data);
-          if (troca) {
-            emAndamento = tarefasEmAndamento(state, nome).map((t) => t.id);
-            if (emAndamento.length > 0) return;
-            state.projetosAguardandoConfirmacao = [...new Set([...(state.projetosAguardandoConfirmacao ?? []), nome])];
-          }
-          state.projetos = { ...state.projetos, [nome]: JSON.stringify(lida.data) };
-          const campos = camposAlterados(anterior, lida.data);
-          if (campos.length > 0)
-            state.historicoConfig = {
-              ...state.historicoConfig,
-              [nome]: [
-                ...(state.historicoConfig?.[nome] ?? []),
-                { quando: new Date(clock.now()).toISOString(), autor: "usuario", campos },
-              ],
-            };
-        }, context);
-        if (!existe) return json(res, 404, { error: `projeto ${nome} não existe` });
-        if (emAndamento.length > 0)
-          return json(res, 409, {
-            error: `há tarefas em andamento no projeto ${nome}: conclua ou cancele-as para trocar a Fonte ou o repositório`,
-            tarefasEmAndamento: emAndamento,
-          });
-        aplicarConfiguracao(lida.data);
-        return json(res, 200, lida.data);
-      }
-      if (route === "GET /projetos")
-        return json(
-          res,
-          200,
-          [...projects.values()].map((p) => ({
-            nome: p.config.name,
-            fonte: p.config.source.type,
-            ensaio: p.config.dryRun,
-          })),
-        );
-      if (route === "GET /integracoes/canais")
-        return json(res, 200, [
-          ...canais.tipos().map((tipo) => ({ tipo, papel: "conversa", rotulo: rotulosCanais[tipo] ?? tipo })),
-          ...canaisDeAviso.tipos().map((tipo) => ({ tipo, papel: "aviso", rotulo: rotulosCanais[tipo] ?? tipo })),
-        ]);
-      if (route === "GET /integracoes/fontes") return json(res, 200, [ESQUEMA_JIRA, ESQUEMA_GITHUB, ESQUEMA_GITLAB]);
-      if (route === "GET /perfis/modelos") return json(res, 200, PERFIS_PRONTOS);
-      if (route === "GET /repos") return json(res, 200, await listRepos());
-      if (route === "GET /github-app") return json(res, 200, await githubAppPanel());
-      if (route === "GET /github/repos") return json(res, 200, await githubReposCatalog());
-      if (route === "POST /projetos/github") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as
-          | {
-              repoId?: unknown;
-              nome?: unknown;
-              fonte?: unknown;
-              horario?: unknown;
-              ensaio?: unknown;
-              comandoTeste?: unknown;
-              pessoas?: unknown;
-            }
-          | undefined;
-        if (
-          !Number.isInteger(body?.repoId) ||
-          typeof body?.nome !== "string" ||
-          typeof body?.fonte !== "object" ||
-          body.fonte === null ||
-          Array.isArray(body.fonte)
-        )
-          return json(res, 400, { error: "informe repoId, nome e a fonte (objeto com type e os campos dela)" });
-        if (body.horario !== undefined && body.horario !== "business-hours" && body.horario !== "always")
-          return json(res, 400, { error: "horario: use business-hours (horário comercial) ou always (sempre ativo)" });
-        const comando = Array.isArray(body.comandoTeste)
-          ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
-          : [];
-        // Sem comando nenhum o projeto nasce incompleto (ticket 08); um item vazio no meio do argv é erro de digitação.
-        if (comando.some((item) => item === ""))
-          return json(res, 400, { error: "comando de teste: cada argumento precisa ter texto" });
-        const result = await criarProjetoGithub({
-          repoId: body.repoId as number,
-          nome: body.nome.trim(),
-          fonte: body.fonte as Record<string, unknown>,
-          horario: body.horario === "always" ? "always" : "business-hours",
-          ensaio: body.ensaio !== false,
-          comandoTeste: comando,
-          pessoas: lerEscolhasPessoas(body.pessoas),
-        });
-        return json(res, result.status, result.body);
-      }
-      if (route === "POST /projetos/gitlab") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as
-          | {
-              nome?: unknown;
-              caminho?: unknown;
-              servidor?: unknown;
-              fonte?: unknown;
-              horario?: unknown;
-              ensaio?: unknown;
-              comandoTeste?: unknown;
-              pessoas?: unknown;
-            }
-          | undefined;
-        if (
-          typeof body?.nome !== "string" ||
-          typeof body?.caminho !== "string" ||
-          typeof body?.fonte !== "object" ||
-          body.fonte === null ||
-          Array.isArray(body.fonte)
-        )
-          return json(res, 400, { error: "informe nome, caminho (grupo/projeto), servidor e a fonte (objeto)" });
-        if (body.servidor !== undefined && typeof body.servidor !== "string")
-          return json(res, 400, { error: "servidor: informe a URL do GitLab como texto" });
-        if (body.horario !== undefined && body.horario !== "business-hours" && body.horario !== "always")
-          return json(res, 400, { error: "horario: use business-hours (horário comercial) ou always (sempre ativo)" });
-        const comando = Array.isArray(body.comandoTeste)
-          ? body.comandoTeste.map((item) => (typeof item === "string" ? item.trim() : ""))
-          : [];
-        // Sem comando nenhum o projeto nasce incompleto (ticket 08); um item vazio no meio do argv é erro de digitação.
-        if (comando.some((item) => item === ""))
-          return json(res, 400, { error: "comando de teste: cada argumento precisa ter texto" });
-        const result = await criarProjetoGitlab({
-          nome: body.nome.trim(),
-          caminho: body.caminho,
-          servidor: body.servidor ?? "",
-          fonte: body.fonte as Record<string, unknown>,
-          horario: body.horario === "always" ? "always" : "business-hours",
-          ensaio: body.ensaio !== false,
-          comandoTeste: comando,
-          pessoas: lerEscolhasPessoas(body.pessoas),
-        });
-        return json(res, result.status, result.body);
-      }
-      if (route === "POST /projetos/pessoas-da-fonte") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const result = await listarPessoasParaCriacao(await readBody(req));
-        return json(res, result.status, result.body);
-      }
-      if (route === "POST /github/importar") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { repoId?: unknown } | undefined;
-        if (!Number.isInteger(body?.repoId) || (body?.repoId as number) <= 0)
-          return json(res, 400, { error: "informe repoId, o id numérico do repositório no GitHub" });
-        const result = await importarRepo(body?.repoId as number);
-        return json(res, result.status, result.body);
-      }
-      if (route === "POST /repos/plugar" || route === "POST /repos/desplugar") {
-        if (!isJson(req)) return json(res, 415, { error: "envie Content-Type: application/json" });
-        const body = (await readBody(req)) as { repo?: unknown; force?: unknown } | undefined;
-        if (typeof body?.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(body.repo.trim()))
-          return json(res, 400, { error: "informe o repositório no formato dono/nome" });
-        const repo = body.repo.trim();
-        const result =
-          route === "POST /repos/plugar" ? await plugRepo(repo) : await unplugRepo(repo, body.force === true);
-        return json(res, result.status, result.body);
-      }
-      if (route === "GET /daemon") return json(res, 200, { paused: (await readState()).daemonPaused });
-      if (route === "POST /daemon/pause" || route === "POST /daemon/resume") {
-        await commands.setDaemonPaused(route.endsWith("pause"));
-        return json(res, 200, { ok: true });
-      }
-      if (route === "GET /events") return json(res, 200, events.list());
-      if (route === "GET /events/stream") {
+      // Guardas e rotas migradas: o adaptador responde tudo que casa com uma das rotas dele. A página de gestão passa
+      // pelas mesmas guardas (só clientes locais).
+      const tratado = await api.tratar({
+        metodo: req.method ?? "",
+        caminho: url.pathname,
+        host: req.headers.host,
+        origem: req.headers.origin,
+        contentType: req.headers["content-type"],
+        corpo: () => readBody(req),
+      });
+      if (tratado && "tipo" in tratado) {
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
@@ -3563,14 +2922,16 @@ export async function startFactory(opts: {
         });
         res.write(": conectado\n\n");
         streams.add(res);
-        const unsubscribe = events.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
+        const desligar = tratado.assinar((dados) => res.write(`data: ${dados}\n\n`));
         req.on("close", () => {
-          unsubscribe();
+          desligar();
           streams.delete(res);
         });
         return;
       }
-      if (route === "GET /openapi.json") return json(res, 200, API_SCHEMA);
+      if (tratado) return json(res, tratado.status, tratado.body);
+      const _route = `${req.method} ${url.pathname}`;
+
       const page = req.method === "GET" ? await webFile(url.pathname) : undefined;
       if (page) {
         res.writeHead(200, page.headers);
@@ -3689,11 +3050,11 @@ export async function startFactory(opts: {
     commands,
     applyGitHubDelivery,
     listRepos,
-    plugRepo,
-    unplugRepo,
+    plugRepo: (repo) => projetos.plugarRepo(repo),
+    unplugRepo: (repo, force) => projetos.desplugarRepo(repo, force),
     githubAppPanel,
     githubReposCatalog,
-    importarRepo,
+    importarRepo: (repoId) => projetos.importarRepo(repoId),
     close: async () => {
       closing = true;
       await avisos.flush();

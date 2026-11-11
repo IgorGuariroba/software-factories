@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import type { ManagementProgress } from "../src/durable.js";
 import type { FactoryEvent, NewEvent } from "../src/events.js";
 import { startManagementBridge } from "../src/management.js";
+import type { FactoryCommands } from "../src/packages/api-local/index.js";
 import { FakeClock } from "./fakes/fake-clock.js";
 import { FakeTelegram, TELEGRAM_CHAT } from "./fakes/fake-telegram.js";
 import { eventually } from "./harness.js";
@@ -51,7 +52,7 @@ it("fila da empresa sobrevive ao reinício sem bloquear mensagens pessoais", asy
         setDaemonPaused: async () => {},
         pausarProjeto: async () => {},
         retomarProjeto: async () => {},
-      },
+      } as unknown as FactoryCommands,
     });
   let bridge = await start();
   try {
@@ -132,7 +133,7 @@ it.each(["atual", "legado"])("aviso diferido %s full não vaza segredo ao mudar 
         setDaemonPaused: async () => {},
         pausarProjeto: async () => {},
         retomarProjeto: async () => {},
-      },
+      } as unknown as FactoryCommands,
     });
   let bridge = await start();
   try {
