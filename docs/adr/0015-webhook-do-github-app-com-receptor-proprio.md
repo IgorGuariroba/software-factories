@@ -1,5 +1,10 @@
 # Webhook do GitHub App com receptor próprio, fora da API local
 
+> **Substituída em parte pelas ADR-0026 e ADR-0027 (aceitas, ainda não implementadas):** o receptor deixa de aplicar o
+> payload e de guardar as entregas já aplicadas; cada entrega só agenda a reconciliação (ADR-0026). As escritas no GitHub
+> passam a sair pelo token de instalação do App, e não pela conta do usuário (ADR-0027). Continuam valendo o receptor
+> separado, a assinatura antes do parse, a identidade estável e os avisos em rajada.
+
 Os repositórios monitorados (ADR-0014) passam a ser sincronizados por eventos do GitHub, e não pela busca periódica
 da Fonte. A API local continua só para clientes locais (ADR-0002); o GitHub precisa de outra porta de entrada.
 

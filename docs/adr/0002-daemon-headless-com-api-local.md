@@ -1,5 +1,7 @@
 # Daemon headless com API local; interfaces e canais são clientes
 
+> **Complementada pela ADR-0023 (aceita, ainda não implementada):** a API passa a exigir sessão, além das guardas de Host e Origin.
+
 O núcleo da fábrica é um daemon sem UI que expõe uma API HTTP local e um stream de eventos (SSE/WS) com schema publicado. Todas as interfaces de gestão (web local, Telegram) e os canais de conversa (Teams, Jira etc.) são adaptadores sobre essa API, e um mesmo adaptador pode implementar os dois papéis. A TUI foi descartada: a web local servida pelo próprio daemon cobre o notebook e o Telegram cobre o celular.
 
 ## Consequences

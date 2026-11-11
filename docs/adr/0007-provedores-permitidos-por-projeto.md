@@ -3,5 +3,7 @@
 > **Substituída em parte pela ADR-0021:** a fábrica deixa de validar o modelo de cada etapa contra esta lista. A escolha
 > do modelo por etapa, feita na interface, vale como regra e fica sob responsabilidade do usuário. Continua vedado o uso
 > de planos fora da configuração do projeto e qualquer fallback automático.
+>
+> **Complementada pela ADR-0028 (aceita, ainda não implementada):** a fábrica não lê cota. Um limite do provedor aparece como erro, e a Tarefa volta à fila. A ADR-0028 mantém o modelo fixo por etapa e acrescenta orçamento por Tarefa e modelo de escalada, este sempre dentro dos provedores permitidos.
 
 Cada projeto declara os planos que podem receber seu conteúdo, e a lista vale para todos os papéis, inclusive o roteador. No projeto corporativo, o modo real foi liberado no M1, antes da validação formal da política corporativa, com os planos Claude, Codex, Cursor e Antigravity e um OpenRouter restrito: apenas modelos de uma allowlist explícita, sem alias móvel (inicialmente `typesafe/jev-1.14` e `openai/gpt-oss-120b`), sempre com `data_collection: deny` e retenção zero. Sem cota em nenhum provedor permitido, a tarefa dorme; a fábrica nunca usa um provedor fora da lista. A config é relida a cada etapa, então revogar um provedor tem efeito na etapa seguinte, e o histórico registra quais tarefas o usaram.

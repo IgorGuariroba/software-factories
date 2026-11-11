@@ -72,10 +72,26 @@ _Avoid_: QA, homologação
 Artefato que prova um critério de aceite, como um print anotado, uma resposta de endpoint ou um resultado de consulta, publicado no card.
 
 **Portão humano**:
-Ponto em que a fábrica não age e espera um humano. Hoje só existe um: o merge do MR.
+Ponto em que a fábrica não age e espera um humano. O merge do MR é sempre um; os demais são as prévias que a política de ações do projeto pede.
 
 **Guardrail**:
 Ação que a fábrica está proibida de executar, qualquer que seja a instrução recebida.
+
+**Efeito externo**:
+Mudança que a fábrica provoca num sistema fora dela: a Fonte, o repositório remoto, um Canal ou o serviço de uma ferramenta.
+_Avoid_: side effect, escrita (quando inclui mensagens e ferramentas)
+
+**Política de ações**:
+Regra do projeto que diz, para cada tipo de efeito externo, se a fábrica executa, pede prévia, só registra ou não faz.
+_Avoid_: permissões, modo
+
+**Prévia**:
+Conteúdo exato de um efeito externo, mostrado ao usuário para aprovação antes de acontecer. A aprovação vale só para aquele conteúdo e aquele destino.
+_Avoid_: preview, confirmação
+
+**Tipo de mudança**:
+Natureza da alteração de uma Tarefa (documentação, comportamento ou alto risco), que define a evidência mínima antes de publicar.
+_Avoid_: perfil (é a função de uma pessoa), categoria
 
 ## Pessoas e conversa
 
@@ -143,6 +159,14 @@ _Avoid_: tier
 
 **Cota**:
 Fração ainda disponível do limite de uso de um plano, com o momento do próximo reset.
+
+**Orçamento**:
+Limite de gasto de uma Tarefa em tokens, tempo ativo e tentativas. Ao atingi-lo, a Tarefa para e o usuário decide.
+_Avoid_: cota (é do plano), budget
+
+**Modelo de escalada**:
+Modelo que uma etapa passa a usar, uma única vez, depois de recusas seguidas do modelo configurado. Só existe se o usuário o configurar.
+_Avoid_: fallback
 
 ## Aprendizado
 

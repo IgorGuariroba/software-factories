@@ -1,5 +1,7 @@
 # Repositório GitHub como Fonte: toda issue aberta passa por triagem
 
+> **Complementada pelas ADR-0023 e ADR-0024 (aceitas, ainda não implementadas):** os testes passam a rodar na jaula, e a prévia da baixa (`triageApproval`) vira uma linha da política de ações.
+
 O usuário conecta um repositório e a fábrica passa a monitorá-lo. Diferente do Jira, onde só os cards atribuídos ao usuário entram, aqui **toda issue aberta** é candidata, inclusive as antigas. Como a maioria dos repositórios é pública, qualquer pessoa pode abrir uma issue: o texto dela é dado não confiável, nunca instrução.
 
 - **Fonte GitHub** (`source.type: github`), via `gh`: cada issue aberta vira um card `<project>-<número>` atribuído ao dono configurado; pull requests ficam de fora. O status vem de um label `fabrica:<status>` (sem label, `aberta`; fechada, `fechada`); transicionar troca o label, e `fechada` fecha a issue. Não há anexos. Comentários são escritos em Markdown.
