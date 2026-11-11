@@ -88,6 +88,7 @@ import {
   pendenciasDeConfiguracao,
   semearConfiguracoes,
 } from "./packages/config-store/index.js";
+import { criarEscalonador } from "./packages/escalonador/index.js";
 import { createIntegrationRegistry, testarConexaoJira } from "./packages/integracoes/index.js";
 import {
   avisoTeamsDe,
@@ -1658,61 +1659,14 @@ export async function startFactory(opts: {
     }, context);
   }
 
-  // --- Agendador -------------------------------------------------------------------------------
-
-  let closing = false;
-  let disarmRetry: (() => void) | undefined;
-  let known = new Map((await readState()).tasks.map((t) => [t.id, t.status]));
-
-  /** Tarefas enfileiradas cujo projeto sumiu da config: já avisadas neste processo (evita loop via react). */
-  const missingProjectReported = new Set<string>();
-
-  /** Ativa a próxima Tarefa se nenhuma estiver ativa. Abre o portão de uma Tarefa que estava pausada. */
-  async function schedule(): Promise<void> {
-    const state = await readState();
-    if (state.daemonPaused || state.tasks.some((t) => t.status === "ativa")) return;
-    const now = clock.now();
-    let next: QueuedTask | undefined;
-    let wakeAt = Number.POSITIVE_INFINITY;
-    for (const task of state.tasks) {
-      if (!["enfileirada", "aguardando-entrega"].includes(task.status) || task.pauseRequested) continue;
-      // Repositório desativado: a Tarefa espera o replugue ou o desplugue (ADR-0015).
-      if (repoDesativado(state, task.project)) continue;
-      // Projeto pausado: a Tarefa espera a retomada, sem começar (ticket 09).
-      if (projetoPausado(state, task.project)) continue;
-      // Projeto criado pela UI e incompleto não executa nenhuma ação (ADR-0022): a Tarefa espera o projeto ficar pronto.
-      if (pendenciasBloqueantes(task.project, state).length > 0) continue;
-      const project = projects.get(task.project);
-      if (!project) {
-        if (!missingProjectReported.has(task.id)) {
-          missingProjectReported.add(task.id);
-          await events.append({
-            type: "error",
-            project: task.project,
-            target: task.key,
-            message: `falha ao agendar: Projeto ${task.project} não está configurado`,
-          });
-        }
-        continue;
-      }
-      const at = Math.max(task.notBefore ?? 0, nextProjectActivity(project.config, now));
-      if (at <= now) {
-        if (!next) next = task;
-      } else if (at < wakeAt) {
-        wakeAt = at;
-      }
-    }
-    if (!next) {
-      if (Number.isFinite(wakeAt) && !closing) {
-        disarmRetry?.();
-        disarmRetry = armTimer(react, Math.max(0, wakeAt - now));
-      }
-      return;
-    }
+  // --- Escalonador ------------------------------------------------------------------------------
+  // Fila de buscas e sincronizações, reações a mudanças de estado e escolha da próxima Tarefa: no pacote escalonador.
+  // A fábrica fornece a execução: buscar na Fonte, gravar a ativação e publicar eventos.
+  async function ativarTarefa(id: string): Promise<void> {
     let gateToOpen: number | null = null;
     await harness.commit(async (tx) => {
       const draft = await tx.doc(StateDoc);
-      const task = draft.tasks.find((t) => t.id === next.id);
+      const task = draft.tasks.find((t) => t.id === id);
       if (
         !task ||
         !["enfileirada", "aguardando-entrega"].includes(task.status) ||
@@ -1735,56 +1689,31 @@ export async function startFactory(opts: {
     if (gateToOpen !== null) await harness.abortTask(gateToOpen as TaskId, context);
   }
 
-  /** Emite um evento para cada Tarefa que mudou de status desde a última vez. */
-  const lastEmitted = new Map<string, string>();
-  async function emitStatusChanges(): Promise<void> {
-    const state = await readState();
-    const changed = state.tasks.filter((t) => known.get(t.id) !== t.status);
-    known = new Map(state.tasks.map((t) => [t.id, t.status]));
-    for (const t of changed) {
-      // Acompanhamento do PR/MR: cada consulta passa por "ativa"; só registra quando o estado observado muda.
-      const signature = `${t.status}|${t.reason ?? ""}`;
-      const last = lastEmitted.get(t.id);
-      if (t.status === "ativa" && last?.startsWith("aguardando-entrega|")) continue;
-      if (last === signature) continue;
-      lastEmitted.set(t.id, signature);
-      await events.append({
-        type: "task",
-        project: t.project,
-        id: t.id,
-        key: t.key,
-        status: t.status,
-        ...(t.reason &&
-        (t.status === "bloqueada" ||
-          t.status === "enfileirada" ||
-          t.status === "vetada" ||
-          t.status === "aguardando-entrega")
-          ? { reason: t.reason }
-          : {}),
-      });
-    }
-  }
-
-  // Reage a cada commit: uma reação por vez, e no máximo uma pendente.
-  let reacting: Promise<void> = Promise.resolve();
-  let reactPending = false;
-  function react(): void {
-    if (reactPending || closing) return;
-    reactPending = true;
-    reacting = reacting.then(async () => {
-      reactPending = false;
-      if (closing) return;
-      try {
-        await emitStatusChanges();
-        await schedule();
-      } catch (err) {
-        if (!closing) console.error("[fábrica] erro no agendador:", err);
-      }
-    });
-  }
-  const observation = harness.observeCommits({ advance: () => queueMicrotask(react), end: () => undefined });
+  const escalonador = await criarEscalonador({
+    buscar: () => poll(),
+    estado: () => readState(),
+    agora: () => clock.now(),
+    armTimer,
+    proximaAtividade: (nome, agora) => {
+      const projeto = projects.get(nome);
+      return projeto ? nextProjectActivity(projeto.config, agora) : agora;
+    },
+    projetoConfigurado: (nome) => projects.has(nome),
+    pendenciasBloqueantes: (nome, estado) => pendenciasBloqueantes(nome, comoEstadoDaFabrica(estado)),
+    repoDesativado: (estado, projeto) => repoDesativado(comoEstadoDaFabrica(estado), projeto),
+    projetoPausado: (estado, projeto) => projetoPausado(comoEstadoDaFabrica(estado), projeto),
+    ativar: ativarTarefa,
+    registrarEvento: async (evento) => {
+      await events.append(evento as NewEvent);
+    },
+    registrarErro: (mensagem, erro) => console.error(mensagem, erro),
+  });
+  const observation = harness.observeCommits({
+    advance: () => queueMicrotask(() => escalonador.pedirReacao()),
+    end: () => undefined,
+  });
   harness.resume();
-  react();
+  escalonador.pedirReacao();
 
   // --- Comandos ----------------------------------------------------------------------------------
 
@@ -2426,7 +2355,7 @@ export async function startFactory(opts: {
       if (!recorded) return false;
       await events.append({ type: "question", ...recorded, n });
       if (recorded.status === "encaminhar") await forwardTechnical(id, n);
-      react();
+      escalonador.pedirReacao();
       return true;
     },
     pause: (id: string) =>
@@ -2663,7 +2592,7 @@ export async function startFactory(opts: {
     previaRetro: (id, etapa, n) => tratarRetro(id, etapa, n, false, undefined),
     aprovarRetro: (id, etapa, n, corpo) => tratarRetro(id, etapa, n, true, corpo),
     poll: async () => {
-      await serializedPoll();
+      await escalonador.pedirBusca();
       return { status: 200, body: { ok: true } };
     },
     // Projetos: leitura, confirmação e configuração.
@@ -2944,25 +2873,10 @@ export async function startFactory(opts: {
     }
   });
 
-  /** Uma busca por vez, venha ela do timer ou da API. */
-  let polling: Promise<void> = Promise.resolve();
-  let pendingPolls = 0;
-  function serializedPoll(): Promise<void> {
-    pendingPolls++;
-    const run = polling.then(poll).finally(() => pendingPolls--);
-    polling = run.catch(() => undefined);
-    return run;
-  }
-  /** Uma tarefa de sincronização na mesma fila das buscas: nunca roda ao mesmo tempo que elas. */
-  function serializedTask(task: () => Promise<void>): Promise<void> {
-    const run = polling.then(task);
-    polling = run.catch(() => undefined);
-    return run;
-  }
   // Sincronização de startup (ADR-0015): recupera o que o webhook perdeu enquanto o daemon esteve fora.
-  void serializedTask(reconcileRepos).catch((err) =>
-    console.error("[fábrica] sincronização de startup falhou:", redactSecrets(String(err))),
-  );
+  void escalonador
+    .sincronizar(reconcileRepos)
+    .catch((err) => console.error("[fábrica] sincronização de startup falhou:", redactSecrets(String(err))));
   // Importações que o daemon deixou em `importando` (ele caiu no meio) voltam para a fila; a escrita é uma só, então
   // rodar de novo não duplica nada.
   void readState()
@@ -2976,8 +2890,8 @@ export async function startFactory(opts: {
   const pollTimer =
     opts.pollIntervalMs &&
     setInterval(() => {
-      if (pendingPolls > 0) return;
-      serializedPoll().catch((err) => console.error("[fábrica] erro na busca:", err));
+      if (escalonador.buscasPendentes() > 0) return;
+      escalonador.pedirBusca().catch((err) => console.error("[fábrica] erro na busca:", err));
     }, opts.pollIntervalMs);
 
   // --- Interface de gestão ------------------------------------------------------------------------
@@ -3056,16 +2970,14 @@ export async function startFactory(opts: {
     githubReposCatalog,
     importarRepo: (repoId) => projetos.importarRepo(repoId),
     close: async () => {
-      closing = true;
+      escalonador.parar();
       await avisos.flush();
       await bridge?.stop();
       await webhookListener?.close();
       if (pollTimer) clearInterval(pollTimer);
-      disarmRetry?.();
       for (const stream of streams) stream.end();
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
-      await polling;
-      await reacting;
+      await escalonador.ociosa();
       observation.detach();
       await harness.close(context);
     },
