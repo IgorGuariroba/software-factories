@@ -259,7 +259,7 @@ const DEFINICOES: Definicao[] = [
     documentada: "/repos/plugar",
     criar: (c) => async (pedido) => {
       if (!ehJson(pedido.contentType)) return SEM_JSON;
-      const body = (await pedido.corpo()) as { repo?: unknown; force?: unknown } | undefined;
+      const body = (await pedido.corpo()) as { repo?: unknown } | undefined;
       if (typeof body?.repo !== "string" || !REGEX_REPO.test(body.repo.trim()))
         return { status: 400, body: { error: "informe o repositório no formato dono/nome" } };
       return c.projetos.plugarRepo(body.repo.trim());
