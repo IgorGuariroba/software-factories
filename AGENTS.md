@@ -28,3 +28,17 @@ Sem as variáveis do Telegram, o daemon funciona apenas com a API/web local. Par
 ## Validação de mudanças
 
 Execute os checks pertinentes de `package.json`: `npm run typecheck`, `npm run lint` e `npm test`. Testes contra serviços reais são opt-in; use os fakes por padrão, conforme `CONTRIBUTING.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues no GitHub (`IgorGuariroba/software-factories`), operadas pelo `gh`. Ver `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Rótulos padrão: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. Ver `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Layout single-context: `GLOSSARY.md` e `docs/adr/` na raiz. Ver `docs/agents/domain.md`.
