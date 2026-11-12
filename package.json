@@ -28,7 +28,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.5",
+    "@biomejs/biome": "2.6.6",
     "@swc/core": "^1.16.22",
     "@types/node": "^26.6.6",
     "dependency-cruiser": "^18.7.2",
